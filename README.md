@@ -1,163 +1,143 @@
 # conductor-cli
 
-`conductor-cli` is a local-first command line tool for running parallel AI coding work in isolated git worktrees.
+`conductor-cli` is a small CLI for running AI coding work in isolated git worktrees.
 
-It mirrors the core Conductor workflow in CLI form:
-
-- Register a project for a local git repository.
-- Create one workspace per task, branch, issue, or PR.
-- Start Codex, Claude, or any custom command inside that workspace.
-- Check git and PR readiness from the terminal.
-- Watch PRs and clean up merged worktrees automatically.
+Use it when you want several Codex or Claude sessions working on separate branches without touching your main checkout.
 
 ## Install
 
 ```sh
 ./install.sh
-conductor-cli --help
 ```
 
-The installer symlinks `bin/conductor-cli.js` into `/usr/local/bin` when writable, otherwise `~/.local/bin`. Override with:
+Then run:
 
 ```sh
-CONDUCTOR_CLI_INSTALL_DIR="$HOME/bin" ./install.sh
+conductor-cli
 ```
+
+The installer links the CLI into `/usr/local/bin` when possible, otherwise `~/.local/bin`.
 
 ## Requirements
 
 - Node.js 18+
 - Git
 - GitHub CLI (`gh`) for PR checks and merged-PR cleanup
-- Optional: `codex` and/or `claude` for agent sessions
+- Optional: `codex` and `claude`
 
-Run:
+Check your setup:
 
 ```sh
 conductor-cli doctor
 ```
 
-## Basic Flow
+## How It Works
 
-Run the interactive menu:
+A **project** is a registered git repo.
+
+A **workspace** is one task branch plus one git worktree:
+
+```text
+project: conductor-cli
+workspace: add-pr-cleanup
+branch: padamchopra/add-pr-cleanup
+path: ~/.conductor-cli/worktrees/conductor-cli/add-pr-cleanup
+```
+
+Each workspace can run its own agent session.
+
+## Recommended Flow
+
+Start with the interactive menu:
 
 ```sh
 conductor-cli
 ```
 
-You can also open it explicitly:
+From there you can:
+
+- register a project
+- create a workspace
+- start a Codex, Claude, or custom session
+- list and delete workspaces
+- check PR status
+- run merged-PR cleanup
+- manage settings, including completion sounds
+
+You can also open the menu explicitly:
 
 ```sh
 conductor-cli menu
 ```
 
-Register a project:
+## Useful Commands
+
+Register a repo:
 
 ```sh
 conductor-cli project add app ~/src/app
 ```
 
-By default, new project worktrees live under `~/.conductor-cli/worktrees/<project>/`.
-New workspaces branch from `origin/main` and use a branch name like `<github-user>/<workspace>`.
-
-Create a worktree workspace and start Codex in it:
+Create a workspace and start Codex:
 
 ```sh
 conductor-cli workspace create app auth --agent codex
 ```
 
-Create a workspace but run a custom command instead:
+Start a session in an existing workspace:
 
 ```sh
-conductor-cli workspace create app tests -- npm test -- --watch
+conductor-cli session start app auth --agent claude
 ```
 
-List active workspaces:
+List workspaces:
 
 ```sh
 conductor-cli workspace list app
 ```
 
-Check workspace state:
-
-```sh
-conductor-cli checks app auth
-```
-
-Watch GitHub PRs and remove worktrees after merge:
-
-```sh
-conductor-cli pr watch app --cleanup
-```
-
-For a one-shot scan:
-
-```sh
-conductor-cli pr watch app --once --cleanup
-```
-
-## Workspace Cleanup
-
-Workspaces are not deleted automatically unless a cleanup watcher is running.
-
-Manual cleanup:
+Remove a workspace:
 
 ```sh
 conductor-cli workspace remove app auth
 ```
 
-Merged-PR cleanup:
+Clean up merged PR workspaces:
 
 ```sh
-conductor-cli pr watch app --cleanup
+conductor-cli pr watch app --once --cleanup
 ```
 
-Use `--once` for a single scan, or omit it to keep watching until you stop the process.
-The interactive menu exposes the same cleanup choices under `PR cleanup watch`.
+For continuous cleanup, omit `--once`.
 
-## Commands
+Configure session completion sounds:
 
 ```sh
-conductor-cli
-conductor-cli menu
+conductor-cli settings show
+conductor-cli settings sound Glass
+conductor-cli settings hooks install all
 ```
+
+Claude uses `Stop` and `SubagentStop` hooks. Codex uses its `notify` command.
+
+## Defaults
+
+- Config lives in `~/.conductor-cli/config.json`.
+- Worktrees live in `~/.conductor-cli/worktrees/<project>/<workspace>`.
+- New workspaces branch from `origin/main`.
+- Branches default to `<github-user>/<workspace>`.
+- Workspaces are not deleted automatically unless you run PR cleanup.
+- Agent completion sounds are opt-in through `settings hooks install`.
+
+## More Help
+
+Use built-in help instead of memorizing commands:
 
 ```sh
-conductor-cli project add <name> <repo-path> [--worktrees-dir <dir>] [--base <ref>] [--gh-user <username>]
-conductor-cli project list
-conductor-cli project info <name>
-conductor-cli project remove <name>
+conductor-cli --help
+conductor-cli help project
+conductor-cli help workspace
+conductor-cli help session
+conductor-cli help pr
+conductor-cli help settings
 ```
-
-```sh
-conductor-cli workspace create <project> <name> [--branch <branch>] [--base <branch>] [--agent <agent>] [--port <port>] [-- <command>...]
-conductor-cli workspace list [project] [--all]
-conductor-cli workspace status <project> <name>
-conductor-cli workspace path <project> <name>
-conductor-cli workspace archive <project> <name>
-conductor-cli workspace remove <project> <name> [--force] [--delete-branch]
-```
-
-```sh
-conductor-cli session start <project> <workspace> [--agent <agent>] [--name <name>] [--port <port>] [-- <command>...]
-conductor-cli session list [project] [workspace] [--all]
-conductor-cli session stop <session-id>
-conductor-cli session logs <session-id> [--tail <lines>]
-```
-
-```sh
-conductor-cli pr watch [project] [--once] [--interval <seconds>] [--cleanup] [--force] [--delete-branch]
-```
-
-## Data Model
-
-State is stored in `~/.conductor-cli/config.json` unless `CONDUCTOR_CLI_HOME` is set.
-
-- A project points at one local git repository.
-- A workspace maps to one branch and one git worktree.
-- By default, worktrees are created under `~/.conductor-cli/worktrees/<project>/<workspace>`.
-- By default, workspace branches are created from `origin/main`.
-- Branch names default to `<github-user>/<workspace>`. The username is read from `--gh-user`, `CONDUCTOR_CLI_GH_USER`, `GITHUB_USER`, `GH_USER`, `git config github.user`, or `gh api user --jq .login`. If none is available, the branch prefix falls back to `conductor`.
-- A session is a detached local process running inside a workspace.
-- PR cleanup uses `gh pr view` from each active workspace branch.
-
-Workspace `.context/` directories are created and excluded from that worktree's git status so agents can receive uncommitted notes and handoffs.

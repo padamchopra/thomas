@@ -17,6 +17,8 @@ const CONFIG_DIR =
   path.join(os.homedir(), ".conductor-cli");
 const CONFIG_PATH = path.join(CONFIG_DIR, "config.json");
 const LOG_DIR = path.join(CONFIG_DIR, "logs");
+const HOOKS_DIR = path.join(CONFIG_DIR, "hooks");
+const HOOK_SCRIPT_PATH = path.join(HOOKS_DIR, "agent-notify.js");
 
 class CliError extends Error {
   constructor(message, exitCode = 1) {
@@ -84,6 +86,10 @@ async function main(argv) {
       break;
     case "pr":
       commandPr(rest);
+      break;
+    case "settings":
+    case "setting":
+      commandSettings(rest);
       break;
     default:
       throw new CliError(`Unknown command: ${command}\nRun conductor-cli --help`);
@@ -158,6 +164,26 @@ Notes:
     return;
   }
 
+  if (topic === "settings" || topic === "setting") {
+    console.log(`Settings commands
+
+Usage:
+  conductor-cli settings show
+  conductor-cli settings notifications on|off
+  conductor-cli settings sound <sound-name|none>
+  conductor-cli settings macos-notification on|off
+  conductor-cli settings hooks status
+  conductor-cli settings hooks install <claude|codex|all>
+  conductor-cli settings hooks remove <claude|codex|all>
+  conductor-cli settings test
+
+Notes:
+  Claude uses Stop and SubagentStop hooks.
+  Codex uses its notify command from ~/.codex/config.toml.
+`);
+    return;
+  }
+
   console.log(`conductor-cli ${PACKAGE.version}
 
 Local-first multi-agent workspace management with git worktrees.
@@ -174,6 +200,7 @@ Commands:
   session     Start, list, stop, and inspect detached agent sessions
   checks      Show git and GitHub PR readiness for a workspace
   pr          Watch PR state and clean up merged workspaces
+  settings    Configure agent completion hooks and sounds
   doctor      Check local tool availability
 
 Common flow:
@@ -256,6 +283,11 @@ async function runInteractiveMenu() {
           description: "show registered repos",
         },
         {
+          label: "Settings",
+          value: "settings",
+          description: "configure agent completion hooks",
+        },
+        {
           label: "Doctor",
           value: "doctor",
           description: "check local tool availability",
@@ -317,6 +349,9 @@ async function runInteractiveAction(rl, action) {
       return true;
     case "pr-watch":
       return interactivePrWatch(rl);
+    case "settings":
+      await interactiveSettings(rl);
+      return true;
     case "doctor":
       commandDoctor();
       return true;
@@ -532,8 +567,95 @@ async function interactiveHelp(rl) {
     { label: "Workspaces", value: "workspace" },
     { label: "Sessions", value: "session" },
     { label: "Pull requests", value: "pr" },
+    { label: "Settings", value: "settings" },
   ]);
   printHelp(topic);
+}
+
+async function interactiveSettings(rl) {
+  while (true) {
+    const config = loadConfig();
+    printSettings(config);
+    console.log("");
+
+    const action = await choose(rl, "Settings", [
+      { label: "Toggle notifications", value: "toggle-notifications" },
+      { label: "Choose sound", value: "choose-sound" },
+      { label: "Toggle macOS banner", value: "toggle-banner" },
+      {
+        label: "Install Claude hook",
+        value: "install-claude",
+        description: "Stop and SubagentStop",
+      },
+      {
+        label: "Install Codex hook",
+        value: "install-codex",
+        description: "notify command",
+      },
+      { label: "Remove Claude hook", value: "remove-claude" },
+      { label: "Remove Codex hook", value: "remove-codex" },
+      { label: "Test notification", value: "test" },
+      { label: "Back", value: "back" },
+    ]);
+
+    if (action === "back") return;
+
+    if (action === "toggle-notifications") {
+      config.settings.notifications.enabled =
+        !config.settings.notifications.enabled;
+      saveConfig(config);
+      console.log(
+        `Notifications ${config.settings.notifications.enabled ? "enabled" : "disabled"}.`,
+      );
+    } else if (action === "choose-sound") {
+      await interactiveChooseSound(rl, config);
+    } else if (action === "toggle-banner") {
+      config.settings.notifications.macosNotification =
+        !config.settings.notifications.macosNotification;
+      saveConfig(config);
+      console.log(
+        `macOS banner ${config.settings.notifications.macosNotification ? "enabled" : "disabled"}.`,
+      );
+    } else if (action === "install-claude") {
+      installClaudeHook(config);
+      saveConfig(config);
+      console.log("Installed Claude completion hook.");
+    } else if (action === "install-codex") {
+      installCodexHook(config);
+      saveConfig(config);
+      console.log("Installed Codex notify hook.");
+    } else if (action === "remove-claude") {
+      removeClaudeHook(config);
+      saveConfig(config);
+      console.log("Removed Claude completion hook.");
+    } else if (action === "remove-codex") {
+      removeCodexHook(config);
+      saveConfig(config);
+      console.log("Removed Codex notify hook.");
+    } else if (action === "test") {
+      ensureHookScript(config);
+      sendNotification(config.settings.notifications, "test", "conductor-cli/settings");
+      console.log("Notification test sent.");
+    }
+
+    console.log("");
+  }
+}
+
+async function interactiveChooseSound(rl, config) {
+  const choices = [
+    { label: "No sound", value: "none" },
+    ...listSystemSounds().map((sound) => ({ label: sound, value: sound })),
+    { label: "Custom name", value: "__custom__" },
+  ];
+  const selected = await choose(rl, "Sound", choices);
+  const sound = selected === "__custom__"
+    ? await askRequired(rl, "Sound name")
+    : selected;
+
+  config.settings.notifications.soundName = sound;
+  saveConfig(config);
+  console.log(`Sound set to ${sound}.`);
 }
 
 async function selectProject(rl, config, options = {}) {
@@ -969,6 +1091,92 @@ function workspaceRemove(args) {
   });
   saveConfig(config);
   console.log(`Removed workspace ${projectName}/${workspaceName}`);
+}
+
+function commandSettings(args) {
+  const sub = args[0] || "show";
+
+  if (sub === "--help" || sub === "-h") {
+    printHelp("settings");
+    return;
+  }
+
+  const config = loadConfig();
+
+  switch (sub) {
+    case "show":
+      printSettings(config);
+      break;
+    case "notifications":
+      config.settings.notifications.enabled = requireBoolean(
+        args[1],
+        "Usage: conductor-cli settings notifications on|off",
+      );
+      saveConfig(config);
+      console.log(
+        `Notifications ${config.settings.notifications.enabled ? "enabled" : "disabled"}.`,
+      );
+      break;
+    case "sound":
+      if (!args[1]) {
+        throw new CliError("Usage: conductor-cli settings sound <sound-name|none>");
+      }
+      config.settings.notifications.soundName = args[1];
+      saveConfig(config);
+      console.log(`Sound set to ${args[1]}.`);
+      break;
+    case "macos-notification":
+      config.settings.notifications.macosNotification = requireBoolean(
+        args[1],
+        "Usage: conductor-cli settings macos-notification on|off",
+      );
+      saveConfig(config);
+      console.log(
+        `macOS banner ${config.settings.notifications.macosNotification ? "enabled" : "disabled"}.`,
+      );
+      break;
+    case "hooks":
+      commandSettingsHooks(config, args.slice(1));
+      break;
+    case "test":
+      ensureHookScript(config);
+      sendNotification(config.settings.notifications, "test", "conductor-cli/settings");
+      console.log("Notification test sent.");
+      break;
+    default:
+      throw new CliError(`Unknown settings command: ${sub}`);
+  }
+}
+
+function commandSettingsHooks(config, args) {
+  const sub = args[0] || "status";
+  const target = args[1] || "all";
+
+  switch (sub) {
+    case "status":
+      printHookStatus(config);
+      break;
+    case "install":
+      if (target === "claude" || target === "all") installClaudeHook(config);
+      if (target === "codex" || target === "all") installCodexHook(config);
+      if (!["claude", "codex", "all"].includes(target)) {
+        throw new CliError("Usage: conductor-cli settings hooks install <claude|codex|all>");
+      }
+      saveConfig(config);
+      console.log(`Installed ${target} hook${target === "all" ? "s" : ""}.`);
+      break;
+    case "remove":
+      if (target === "claude" || target === "all") removeClaudeHook(config);
+      if (target === "codex" || target === "all") removeCodexHook(config);
+      if (!["claude", "codex", "all"].includes(target)) {
+        throw new CliError("Usage: conductor-cli settings hooks remove <claude|codex|all>");
+      }
+      saveConfig(config);
+      console.log(`Removed ${target} hook${target === "all" ? "s" : ""}.`);
+      break;
+    default:
+      throw new CliError(`Unknown settings hooks command: ${sub}`);
+  }
 }
 
 function commandSession(args) {
@@ -1632,21 +1840,460 @@ function parseOptions(args, schema = {}) {
   return parsed;
 }
 
-function loadConfig() {
-  if (!fs.existsSync(CONFIG_PATH)) {
-    return {
-      version: 1,
-      projects: {},
-      workspaces: {},
-      sessions: {},
-    };
-  }
+function defaultConfig() {
+  return {
+    version: 1,
+    projects: {},
+    workspaces: {},
+    sessions: {},
+    settings: defaultSettings(),
+  };
+}
 
-  const config = JSON.parse(fs.readFileSync(CONFIG_PATH, "utf8"));
+function defaultSettings() {
+  return {
+    notifications: {
+      enabled: true,
+      soundName: "Glass",
+      macosNotification: false,
+    },
+    agentHooks: {
+      claude: {},
+      codex: {
+        previousNotify: null,
+      },
+    },
+  };
+}
+
+function normalizeConfig(config) {
+  const defaults = defaultConfig();
+  config.version = config.version || defaults.version;
   config.projects = config.projects || {};
   config.workspaces = config.workspaces || {};
   config.sessions = config.sessions || {};
+  config.settings = {
+    ...defaults.settings,
+    ...(config.settings || {}),
+    notifications: {
+      ...defaults.settings.notifications,
+      ...((config.settings || {}).notifications || {}),
+    },
+    agentHooks: {
+      ...defaults.settings.agentHooks,
+      ...((config.settings || {}).agentHooks || {}),
+      claude: {
+        ...defaults.settings.agentHooks.claude,
+        ...(((config.settings || {}).agentHooks || {}).claude || {}),
+      },
+      codex: {
+        ...defaults.settings.agentHooks.codex,
+        ...(((config.settings || {}).agentHooks || {}).codex || {}),
+      },
+    },
+  };
   return config;
+}
+
+function printSettings(config) {
+  const settings = config.settings.notifications;
+  console.log(`notifications: ${settings.enabled ? "on" : "off"}`);
+  console.log(`sound: ${settings.soundName}`);
+  console.log(`macOS banner: ${settings.macosNotification ? "on" : "off"}`);
+  printHookStatus(config);
+}
+
+function printHookStatus(config) {
+  const claude = getClaudeHookStatus(config);
+  const codex = getCodexHookStatus(config);
+  console.log(`Claude hook: ${claude.installed ? "installed" : "not installed"} (${claude.path})`);
+  console.log(`Codex notify: ${codex.installed ? "installed" : "not installed"} (${codex.path})`);
+}
+
+function requireBoolean(value, usage) {
+  const parsed = parseBoolean(value);
+  if (parsed === null) throw new CliError(usage);
+  return parsed;
+}
+
+function parseBoolean(value) {
+  if (value === undefined) return null;
+  const normalized = String(value).trim().toLowerCase();
+  if (["on", "true", "yes", "1", "enable", "enabled"].includes(normalized)) {
+    return true;
+  }
+  if (["off", "false", "no", "0", "disable", "disabled"].includes(normalized)) {
+    return false;
+  }
+  return null;
+}
+
+function ensureHookScript(config) {
+  fs.mkdirSync(HOOKS_DIR, { recursive: true });
+  const script = buildHookScript(CONFIG_PATH);
+  if (!fs.existsSync(HOOK_SCRIPT_PATH) || fs.readFileSync(HOOK_SCRIPT_PATH, "utf8") !== script) {
+    fs.writeFileSync(HOOK_SCRIPT_PATH, script);
+    fs.chmodSync(HOOK_SCRIPT_PATH, 0o755);
+  }
+  config.settings.agentHooks.scriptPath = HOOK_SCRIPT_PATH;
+}
+
+function buildHookScript(configPath) {
+  return `#!/usr/bin/env node
+"use strict";
+
+const fs = require("fs");
+const path = require("path");
+const { spawnSync } = require("child_process");
+
+const CONFIG_PATH = ${JSON.stringify(configPath)};
+
+function main() {
+  const agent = process.argv[2] || "agent";
+  const config = loadConfig();
+  const settings = config.settings?.notifications || {};
+
+  const input = readStdin();
+  const hook = parseJson(input);
+  const event = hook?.hook_event_name || hook?.hookEventName || "done";
+  const target = hook?.cwd || hook?.workspace || hook?.project_dir || "";
+  const label = target ? path.basename(target) : agent;
+
+  if (settings.enabled !== false) {
+    play(settings.soundName || "Glass");
+    if (settings.macosNotification) {
+      notify("Agent done", agent + " " + event + " in " + label, settings.soundName);
+    }
+  }
+
+  const previous = config.settings?.agentHooks?.codex?.previousNotify;
+  if (agent === "codex" && Array.isArray(previous) && !process.env.CONDUCTOR_CLI_NOTIFY_CHAINED) {
+    spawnSync(previous[0], previous.slice(1), {
+      stdio: "ignore",
+      env: { ...process.env, CONDUCTOR_CLI_NOTIFY_CHAINED: "1" },
+    });
+  }
+}
+
+function loadConfig() {
+  try {
+    return JSON.parse(fs.readFileSync(CONFIG_PATH, "utf8"));
+  } catch (error) {
+    return {};
+  }
+}
+
+function readStdin() {
+  try {
+    return fs.readFileSync(0, "utf8");
+  } catch (error) {
+    return "";
+  }
+}
+
+function parseJson(input) {
+  if (!input.trim()) return null;
+  try {
+    return JSON.parse(input);
+  } catch (error) {
+    return null;
+  }
+}
+
+function play(soundName) {
+  if (!soundName || soundName === "none") return;
+  const soundPath = findSound(soundName);
+  if (soundPath) {
+    spawnSync("afplay", [soundPath], { stdio: "ignore" });
+    return;
+  }
+  spawnSync("osascript", ["-e", "beep"], { stdio: "ignore" });
+}
+
+function notify(title, message, soundName) {
+  const script = soundName && soundName !== "none"
+    ? "display notification " + osa(message) + " with title " + osa(title) + " sound name " + osa(soundName)
+    : "display notification " + osa(message) + " with title " + osa(title);
+  spawnSync("osascript", ["-e", script], { stdio: "ignore" });
+}
+
+function osa(value) {
+  return JSON.stringify(String(value));
+}
+
+function findSound(soundName) {
+  const name = String(soundName).replace(/\\.(aiff|aif|wav|mp3)$/i, "");
+  const dirs = ["/System/Library/Sounds", "/Library/Sounds"];
+  const extensions = [".aiff", ".aif", ".wav", ".mp3"];
+  for (const dir of dirs) {
+    for (const extension of extensions) {
+      const candidate = path.join(dir, name + extension);
+      if (fs.existsSync(candidate)) return candidate;
+    }
+  }
+  return null;
+}
+
+main();
+`;
+}
+
+function installClaudeHook(config) {
+  ensureHookScript(config);
+  const settingsPath = getClaudeSettingsPath();
+  const settings = readJsonFile(settingsPath, {});
+  const command = `node ${shellQuote(HOOK_SCRIPT_PATH)} claude`;
+
+  settings.hooks = settings.hooks || {};
+  settings.hooks.Stop = addClaudeHook(settings.hooks.Stop, command);
+  settings.hooks.SubagentStop = addClaudeHook(settings.hooks.SubagentStop, command);
+
+  writeJsonFile(settingsPath, settings);
+  config.settings.agentHooks.claude = {
+    installedAt: new Date().toISOString(),
+    settingsPath,
+    command,
+  };
+}
+
+function removeClaudeHook(config) {
+  const settingsPath = getClaudeSettingsPath();
+  const settings = readJsonFile(settingsPath, {});
+  const command = `node ${shellQuote(HOOK_SCRIPT_PATH)} claude`;
+
+  if (settings.hooks) {
+    settings.hooks.Stop = removeClaudeHookCommand(settings.hooks.Stop, command);
+    settings.hooks.SubagentStop = removeClaudeHookCommand(settings.hooks.SubagentStop, command);
+    for (const event of ["Stop", "SubagentStop"]) {
+      if (Array.isArray(settings.hooks[event]) && settings.hooks[event].length === 0) {
+        delete settings.hooks[event];
+      }
+    }
+    if (Object.keys(settings.hooks).length === 0) delete settings.hooks;
+  }
+
+  writeJsonFile(settingsPath, settings);
+  config.settings.agentHooks.claude = {};
+}
+
+function addClaudeHook(existing, command) {
+  const entries = Array.isArray(existing) ? existing : [];
+  const filtered = removeClaudeHookCommand(entries, command);
+  filtered.push({
+    hooks: [
+      {
+        type: "command",
+        command,
+        timeout: 10,
+      },
+    ],
+  });
+  return filtered;
+}
+
+function removeClaudeHookCommand(existing, command) {
+  if (!Array.isArray(existing)) return [];
+  return existing
+    .map((entry) => ({
+      ...entry,
+      hooks: (entry.hooks || []).filter((hook) => hook.command !== command),
+    }))
+    .filter((entry) => entry.hooks.length > 0);
+}
+
+function getClaudeHookStatus(config) {
+  const settingsPath = getClaudeSettingsPath();
+  const settings = readJsonFile(settingsPath, {});
+  const command = `node ${shellQuote(HOOK_SCRIPT_PATH)} claude`;
+  const installed = ["Stop", "SubagentStop"].every((event) =>
+    hookListContains(settings.hooks?.[event], command),
+  );
+  return {
+    installed,
+    path: settingsPath,
+    configuredAt: config.settings.agentHooks.claude.installedAt || null,
+  };
+}
+
+function installCodexHook(config) {
+  ensureHookScript(config);
+  const configPath = getCodexConfigPath();
+  const current = fs.existsSync(configPath) ? fs.readFileSync(configPath, "utf8") : "";
+  const existing = readCodexNotify(current);
+  const notify = ["node", HOOK_SCRIPT_PATH, "codex"];
+
+  if (existing && !isManagedCodexNotify(existing)) {
+    config.settings.agentHooks.codex.previousNotify = existing;
+  }
+
+  fs.mkdirSync(path.dirname(configPath), { recursive: true });
+  fs.writeFileSync(configPath, writeCodexNotify(current, notify));
+  config.settings.agentHooks.codex.installedAt = new Date().toISOString();
+  config.settings.agentHooks.codex.configPath = configPath;
+}
+
+function removeCodexHook(config) {
+  const configPath = getCodexConfigPath();
+  if (!fs.existsSync(configPath)) {
+    config.settings.agentHooks.codex.installedAt = null;
+    return;
+  }
+
+  const current = fs.readFileSync(configPath, "utf8");
+  const existing = readCodexNotify(current);
+  if (!isManagedCodexNotify(existing)) return;
+
+  const previous = config.settings.agentHooks.codex.previousNotify;
+  fs.writeFileSync(
+    configPath,
+    previous ? writeCodexNotify(current, previous) : removeCodexNotifyLine(current),
+  );
+  config.settings.agentHooks.codex.installedAt = null;
+}
+
+function getCodexHookStatus(config) {
+  const configPath = getCodexConfigPath();
+  const toml = fs.existsSync(configPath) ? fs.readFileSync(configPath, "utf8") : "";
+  return {
+    installed: isManagedCodexNotify(readCodexNotify(toml)),
+    path: configPath,
+    configuredAt: config.settings.agentHooks.codex.installedAt || null,
+  };
+}
+
+function hookListContains(entries, command) {
+  return Array.isArray(entries) && entries.some((entry) =>
+    Array.isArray(entry.hooks) && entry.hooks.some((hook) => hook.command === command),
+  );
+}
+
+function readCodexNotify(toml) {
+  const match = toml.match(/^notify\s*=\s*(\[[^\n]*\])\s*$/m);
+  if (!match) return null;
+  try {
+    const parsed = JSON.parse(match[1]);
+    return Array.isArray(parsed) ? parsed : null;
+  } catch (error) {
+    return null;
+  }
+}
+
+function writeCodexNotify(toml, notify) {
+  const line = `notify = ${JSON.stringify(notify)}\n`;
+  if (/^notify\s*=/m.test(toml)) {
+    return toml.replace(/^notify\s*=\s*\[[^\n]*\]\s*$/m, line.trimEnd());
+  }
+  return toml ? `${line}${toml}` : line;
+}
+
+function removeCodexNotifyLine(toml) {
+  return toml.replace(/^notify\s*=\s*\[[^\n]*\]\s*\n?/m, "");
+}
+
+function isManagedCodexNotify(notify) {
+  return Array.isArray(notify) &&
+    notify.length >= 3 &&
+    notify[0] === "node" &&
+    path.resolve(notify[1]) === HOOK_SCRIPT_PATH &&
+    notify[2] === "codex";
+}
+
+function sendNotification(settings, agent, target) {
+  if (!settings.enabled) return;
+  if (settings.soundName && settings.soundName !== "none") {
+    playSystemSound(settings.soundName);
+  }
+  if (settings.macosNotification) {
+    sendMacOsNotification("Agent done", `${agent} finished in ${target}`, settings.soundName);
+  }
+}
+
+function playSystemSound(soundName) {
+  const soundPath = findSystemSoundPath(soundName);
+  if (soundPath) {
+    run("afplay", [soundPath], { allowFailure: true });
+    return;
+  }
+  run("osascript", ["-e", "beep"], { allowFailure: true });
+}
+
+function sendMacOsNotification(title, message, soundName) {
+  const script = soundName && soundName !== "none"
+    ? `display notification ${JSON.stringify(message)} with title ${JSON.stringify(title)} sound name ${JSON.stringify(soundName)}`
+    : `display notification ${JSON.stringify(message)} with title ${JSON.stringify(title)}`;
+  run("osascript", ["-e", script], { allowFailure: true });
+}
+
+function listSystemSounds() {
+  const sounds = new Set();
+  for (const dir of ["/System/Library/Sounds", "/Library/Sounds"]) {
+    if (!fs.existsSync(dir)) continue;
+    for (const file of fs.readdirSync(dir)) {
+      if (/\.(aiff|aif|wav|mp3)$/i.test(file)) {
+        sounds.add(file.replace(/\.(aiff|aif|wav|mp3)$/i, ""));
+      }
+    }
+  }
+  if (sounds.size === 0) {
+    ["Basso", "Funk", "Glass", "Hero", "Ping", "Pop", "Submarine", "Tink"]
+      .forEach((sound) => sounds.add(sound));
+  }
+  return [...sounds].sort((a, b) => a.localeCompare(b));
+}
+
+function findSystemSoundPath(soundName) {
+  const name = String(soundName || "").replace(/\.(aiff|aif|wav|mp3)$/i, "");
+  for (const dir of ["/System/Library/Sounds", "/Library/Sounds"]) {
+    for (const extension of [".aiff", ".aif", ".wav", ".mp3"]) {
+      const candidate = path.join(dir, `${name}${extension}`);
+      if (fs.existsSync(candidate)) return candidate;
+    }
+  }
+  return null;
+}
+
+function getClaudeSettingsPath() {
+  return path.resolve(
+    expandHome(
+      process.env.CONDUCTOR_CLI_CLAUDE_SETTINGS ||
+        path.join(os.homedir(), ".claude", "settings.json"),
+    ),
+  );
+}
+
+function getCodexConfigPath() {
+  return path.resolve(
+    expandHome(
+      process.env.CONDUCTOR_CLI_CODEX_CONFIG ||
+        path.join(os.homedir(), ".codex", "config.toml"),
+    ),
+  );
+}
+
+function readJsonFile(filePath, fallback) {
+  if (!fs.existsSync(filePath)) return fallback;
+  try {
+    return JSON.parse(fs.readFileSync(filePath, "utf8"));
+  } catch (error) {
+    throw new CliError(`Invalid JSON: ${filePath}`);
+  }
+}
+
+function writeJsonFile(filePath, value) {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  fs.writeFileSync(filePath, `${JSON.stringify(value, null, 2)}\n`);
+}
+
+function shellQuote(value) {
+  return `'${String(value).replace(/'/g, `'\\''`)}'`;
+}
+
+function loadConfig() {
+  if (!fs.existsSync(CONFIG_PATH)) {
+    return defaultConfig();
+  }
+
+  return normalizeConfig(JSON.parse(fs.readFileSync(CONFIG_PATH, "utf8")));
 }
 
 function saveConfig(config) {
