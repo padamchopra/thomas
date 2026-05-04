@@ -54,6 +54,8 @@ Start with the interactive menu:
 conductor-cli
 ```
 
+Use arrow keys or `j`/`k` to move, then press Enter. Number keys still work.
+
 From there you can:
 
 - register a project

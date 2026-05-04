@@ -4,6 +4,7 @@
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+const readlineCore = require("readline");
 const readline = require("readline/promises");
 const { spawn, spawnSync } = require("child_process");
 
@@ -705,6 +706,10 @@ async function selectWorkspace(rl, config, projectName, options = {}) {
 }
 
 async function choose(rl, prompt, choices) {
+  if (supportsArrowMenu()) {
+    return chooseWithArrows(rl, prompt, choices);
+  }
+
   console.log(prompt);
   choices.forEach((choice, index) => {
     const suffix = choice.description ? ` - ${choice.description}` : "";
@@ -725,6 +730,181 @@ async function choose(rl, prompt, choices) {
 
     console.log(`Enter a number from 1 to ${choices.length}.`);
   }
+}
+
+function supportsArrowMenu() {
+  return Boolean(
+    process.stdin.isTTY &&
+      process.stdout.isTTY &&
+      typeof process.stdin.setRawMode === "function",
+  );
+}
+
+async function chooseWithArrows(rl, prompt, choices) {
+  const input = process.stdin;
+  const output = process.stdout;
+  const previousRawMode = input.isRaw;
+  let selected = 0;
+  let renderedLines = 0;
+  let digitBuffer = "";
+  let digitTimer = null;
+  let onKeypress = null;
+
+  readlineCore.emitKeypressEvents(input, rl);
+  rl.pause();
+  input.setRawMode(true);
+  input.resume();
+  output.write("\x1b[?25l");
+
+  const clearDigitTimer = () => {
+    if (digitTimer) clearTimeout(digitTimer);
+    digitTimer = null;
+  };
+
+  const clearRendered = () => {
+    if (renderedLines === 0) return;
+    readlineCore.moveCursor(output, 0, -renderedLines);
+    for (let index = 0; index < renderedLines; index += 1) {
+      readlineCore.clearLine(output, 0);
+      readlineCore.cursorTo(output, 0);
+      if (index < renderedLines - 1) readlineCore.moveCursor(output, 0, 1);
+    }
+    if (renderedLines > 1) {
+      readlineCore.moveCursor(output, 0, -(renderedLines - 1));
+    }
+    readlineCore.cursorTo(output, 0);
+    renderedLines = 0;
+  };
+
+  const cleanup = () => {
+    clearDigitTimer();
+    input.off("keypress", onKeypress);
+    input.setRawMode(previousRawMode || false);
+    output.write("\x1b[?25h");
+    clearRendered();
+    rl.resume();
+  };
+
+  const render = () => {
+    const lines = buildChoiceLines(prompt, choices, selected);
+    if (renderedLines > 0) {
+      readlineCore.moveCursor(output, 0, -renderedLines);
+    }
+
+    for (const line of lines) {
+      readlineCore.clearLine(output, 0);
+      readlineCore.cursorTo(output, 0);
+      output.write(line);
+      output.write("\n");
+    }
+
+    renderedLines = lines.length;
+  };
+
+  return new Promise((resolve, reject) => {
+    const finish = (choice) => {
+      cleanup();
+      resolve(choice.value);
+    };
+
+    const fail = (error) => {
+      cleanup();
+      reject(error);
+    };
+
+    onKeypress = (str, key = {}) => {
+      if (key.ctrl && key.name === "c") {
+        fail(new CliError("Interrupted", 130));
+        return;
+      }
+
+      if (key.name === "up" || key.name === "k") {
+        selected = (selected - 1 + choices.length) % choices.length;
+        digitBuffer = "";
+        render();
+        return;
+      }
+
+      if (key.name === "down" || key.name === "j" || key.name === "tab") {
+        selected = (selected + 1) % choices.length;
+        digitBuffer = "";
+        render();
+        return;
+      }
+
+      if (key.name === "return" || key.name === "enter") {
+        finish(choices[selected]);
+        return;
+      }
+
+      if (key.name === "escape" || key.name === "q") {
+        const backChoice = choices.find((choice) =>
+          ["back", "quit"].includes(String(choice.value).toLowerCase()),
+        );
+        if (backChoice) finish(backChoice);
+        return;
+      }
+
+      if (/^\d$/.test(str || "")) {
+        digitBuffer += str;
+        clearDigitTimer();
+        const index = Number.parseInt(digitBuffer, 10) - 1;
+        if (index >= 0 && index < choices.length) {
+          selected = index;
+          render();
+          const canBeLonger = choices.length >= Number.parseInt(`${digitBuffer}0`, 10);
+          if (!canBeLonger) {
+            finish(choices[selected]);
+            return;
+          }
+        }
+        digitTimer = setTimeout(() => {
+          const bufferedIndex = Number.parseInt(digitBuffer, 10) - 1;
+          digitBuffer = "";
+          if (bufferedIndex >= 0 && bufferedIndex < choices.length) {
+            finish(choices[bufferedIndex]);
+          }
+        }, 500);
+      }
+    };
+
+    input.on("keypress", onKeypress);
+    render();
+  });
+}
+
+function buildChoiceLines(prompt, choices, selected) {
+  const width = Math.max(40, process.stdout.columns || 100);
+  const numberWidth = String(choices.length).length;
+  const lines = [
+    prompt,
+    dim("Use up/down, j/k, or numbers. Enter selects."),
+  ];
+
+  choices.forEach((choice, index) => {
+    const number = `${index + 1}.`.padStart(numberWidth + 1);
+    const suffix = choice.description ? ` - ${choice.description}` : "";
+    const marker = index === selected ? ">" : " ";
+    const rawLine = `${marker} ${number} ${choice.label}${suffix}`;
+    const visible = truncate(rawLine, width);
+    lines.push(index === selected ? inverse(visible.padEnd(Math.min(width, visible.length + 2))) : visible);
+  });
+
+  return lines;
+}
+
+function truncate(value, width) {
+  if (value.length <= width) return value;
+  if (width <= 3) return value.slice(0, width);
+  return `${value.slice(0, width - 3)}...`;
+}
+
+function inverse(value) {
+  return `\x1b[7m${value}\x1b[0m`;
+}
+
+function dim(value) {
+  return `\x1b[2m${value}\x1b[0m`;
 }
 
 async function ask(rl, prompt, defaultValue) {
