@@ -6,7 +6,8 @@
     "conductor-cli": "./bin/conductor-cli.js"
   },
   "scripts": {
-    "check": "node --check bin/conductor-cli.js"
+    "check": "node --check bin/conductor-cli.js",
+    "build:macos-menu": "./macos/ConductorMenu/build-app.sh"
   },
   "license": "MIT",
   "engines": {

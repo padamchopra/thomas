@@ -157,3 +157,15 @@ conductor-cli help session
 conductor-cli help pr
 conductor-cli help settings
 ```
+
+## macOS Menu App
+
+There is an early native menu bar app in `macos/ConductorMenu`.
+It uses `conductor-cli state` for JSON state and calls the CLI for actions, so
+the CLI config stays the single source of truth.
+
+Build it with:
+
+```sh
+./macos/ConductorMenu/build-app.sh
+```

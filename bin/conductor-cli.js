@@ -69,6 +69,9 @@ async function main(argv) {
     case "doctor":
       commandDoctor();
       break;
+    case "state":
+      commandState(rest);
+      break;
     case "project":
     case "projects":
       commandProject(rest);
@@ -121,7 +124,7 @@ Aliases:
     console.log(`Workspace commands
 
 Usage:
-  conductor-cli workspace create <project> <name> [--branch <branch>] [--base <branch>] [--agent <codex|claude>] [--port <port>] [--terminal <auto|terminal|iterm|warp>] [--attach|--detach] [-- <command>...]
+  conductor-cli workspace create <project> <name> [--base <branch>] [--agent <codex|claude>] [--port <port>] [--terminal <auto|terminal|iterm|warp>] [--attach|--detach] [-- <command>...]
   conductor-cli workspace list [project] [--all]
   conductor-cli workspace status <project> <name>
   conductor-cli workspace path <project> <name>
@@ -131,6 +134,7 @@ Usage:
 Notes:
   create uses git worktree add. If --agent or a command after -- is provided,
   an agent session is opened in a new terminal tab by default.
+  The workspace name determines the branch: <github-user>/<workspace>.
 `);
     return;
   }
@@ -196,6 +200,19 @@ Notes:
     return;
   }
 
+  if (topic === "state") {
+    console.log(`State command
+
+Usage:
+  conductor-cli state
+
+Notes:
+  Prints the normalized conductor-cli state as JSON for GUI and automation
+  clients. The CLI config remains the source of truth.
+`);
+    return;
+  }
+
   console.log(`conductor-cli ${PACKAGE.version}
 
 Local-first multi-agent workspace management with git worktrees.
@@ -213,6 +230,7 @@ Commands:
   checks      Show git and GitHub PR readiness for a workspace
   pr          Watch PR state and clean up merged workspaces
   settings    Configure agent completion hooks and sounds
+  state       Print JSON state for app integrations
   doctor      Check local tool availability
 
 Common flow:
@@ -238,6 +256,45 @@ function commandDoctor() {
 
   printTable(rows, ["tool", "status", "purpose"]);
   console.log(`config: ${CONFIG_PATH}`);
+}
+
+function commandState(args) {
+  if (args[0] === "--help" || args[0] === "-h") {
+    printHelp("state");
+    return;
+  }
+
+  if (args.length > 0) {
+    throw new CliError("Usage: conductor-cli state");
+  }
+
+  const config = loadConfig();
+  refreshSessionStates(config);
+  saveConfig(config);
+  console.log(JSON.stringify(buildAppState(config), null, 2));
+}
+
+function buildAppState(config) {
+  return {
+    version: config.version,
+    cliVersion: PACKAGE.version,
+    generatedAt: new Date().toISOString(),
+    configPath: CONFIG_PATH,
+    projects: Object.values(config.projects).sort((a, b) =>
+      a.name.localeCompare(b.name),
+    ),
+    workspaces: Object.values(config.workspaces)
+      .flatMap((workspaces) => Object.values(workspaces))
+      .sort((a, b) =>
+        `${a.project}/${a.name}`.localeCompare(`${b.project}/${b.name}`),
+      ),
+    sessions: Object.values(config.sessions).sort((a, b) =>
+      String(b.startedAt || b.openedAt || "").localeCompare(
+        String(a.startedAt || a.openedAt || ""),
+      ),
+    ),
+    settings: config.settings,
+  };
 }
 
 async function runInteractiveMenu() {
@@ -434,11 +491,11 @@ async function interactiveCreateWorkspace(rl) {
 
   const project = requireProject(config, projectName);
   const workspaceName = await askRequired(rl, "Workspace name");
-  const branch = await ask(
-    rl,
-    "Branch",
-    defaultWorkspaceBranch(project, normalizeName(workspaceName, "workspace")),
+  const branch = defaultWorkspaceBranch(
+    project,
+    normalizeName(workspaceName, "workspace"),
   );
+  console.log(`Branch: ${branch}`);
   const base = await ask(rl, "Base ref", project.mainBranch || "origin/main");
   const sessionMode = await choose(rl, "Start a session now?", [
     { label: "No", value: "none" },
@@ -448,7 +505,6 @@ async function interactiveCreateWorkspace(rl) {
   ]);
 
   const args = [projectName, workspaceName];
-  if (branch) args.push("--branch", branch);
   if (base) args.push("--base", base);
   let customCommand = null;
 
@@ -1165,7 +1221,7 @@ function commandWorkspace(args) {
 function workspaceCreate(args) {
   const parsed = parseOptions(args, {
     boolean: ["attach", "detach"],
-    string: ["branch", "base", "path", "agent", "session", "port", "terminal"],
+    string: ["base", "path", "agent", "session", "port", "terminal"],
   });
 
   const [projectName, rawName] = parsed._;
@@ -1186,7 +1242,7 @@ function workspaceCreate(args) {
     );
   }
 
-  const branch = parsed.branch || defaultWorkspaceBranch(project, workspaceName);
+  const branch = defaultWorkspaceBranch(project, workspaceName);
   const base = parsed.base || project.mainBranch || "origin/main";
   const workspacePath = path.resolve(
     parsed.path || path.join(project.worktreesDir, workspaceName),
