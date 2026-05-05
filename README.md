@@ -45,6 +45,8 @@ path: ~/.conductor-cli/worktrees/conductor-cli/add-pr-cleanup
 ```
 
 Each workspace can run its own agent session.
+Codex and Claude sessions open in a new terminal tab by default, so the agent
+gets a real interactive terminal.
 
 ## Recommended Flow
 
@@ -121,6 +123,16 @@ conductor-cli settings hooks install all
 ```
 
 Claude uses `Stop` and `SubagentStop` hooks. Codex uses its `notify` command.
+Hook notifications only fire for conductor-launched sessions, even though the
+Claude and Codex hook entries are installed globally.
+
+Agent sessions auto-detect your terminal on macOS:
+
+- Terminal.app opens a new Terminal tab
+- iTerm opens a new iTerm tab
+- Warp opens a Warp launch session for the workspace and command
+
+Use `--detach` only when you explicitly want background log mode.
 
 ## Defaults
 
@@ -128,8 +140,10 @@ Claude uses `Stop` and `SubagentStop` hooks. Codex uses its `notify` command.
 - Worktrees live in `~/.conductor-cli/worktrees/<project>/<workspace>`.
 - New workspaces branch from `origin/main`.
 - Branches default to `<github-user>/<workspace>`.
+- Codex and Claude sessions open in a new terminal tab.
 - Workspaces are not deleted automatically unless you run PR cleanup.
 - Agent completion sounds are opt-in through `settings hooks install`.
+- Hook notifications only fire for conductor sessions.
 
 ## More Help
 

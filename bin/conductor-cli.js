@@ -20,6 +20,10 @@ const CONFIG_PATH = path.join(CONFIG_DIR, "config.json");
 const LOG_DIR = path.join(CONFIG_DIR, "logs");
 const HOOKS_DIR = path.join(CONFIG_DIR, "hooks");
 const HOOK_SCRIPT_PATH = path.join(HOOKS_DIR, "agent-notify.js");
+const NOTIFIER_SOURCE_PATH = path.join(HOOKS_DIR, "ConductorNotifier.swift");
+const NOTIFIER_EXECUTABLE_PATH = path.join(HOOKS_DIR, "conductor-notifier");
+const SWIFT_MODULE_CACHE_DIR = path.join(HOOKS_DIR, "swift-module-cache");
+const WARP_LAUNCH_DIR = path.join(CONFIG_DIR, "warp-launches");
 
 class CliError extends Error {
   constructor(message, exitCode = 1) {
@@ -117,7 +121,7 @@ Aliases:
     console.log(`Workspace commands
 
 Usage:
-  conductor-cli workspace create <project> <name> [--branch <branch>] [--base <branch>] [--agent <codex|claude>] [--port <port>] [-- <command>...]
+  conductor-cli workspace create <project> <name> [--branch <branch>] [--base <branch>] [--agent <codex|claude>] [--port <port>] [--terminal <auto|terminal|iterm|warp>] [--attach|--detach] [-- <command>...]
   conductor-cli workspace list [project] [--all]
   conductor-cli workspace status <project> <name>
   conductor-cli workspace path <project> <name>
@@ -126,7 +130,7 @@ Usage:
 
 Notes:
   create uses git worktree add. If --agent or a command after -- is provided,
-  an agent session is started in the new workspace.
+  an agent session is opened in a new terminal tab by default.
 `);
     return;
   }
@@ -135,14 +139,20 @@ Notes:
     console.log(`Session commands
 
 Usage:
-  conductor-cli session start <project> <workspace> [--agent <codex|claude>] [--name <name>] [--port <port>] [-- <command>...]
+  conductor-cli session start <project> <workspace> [--agent <codex|claude>] [--name <name>] [--port <port>] [--terminal <auto|terminal|iterm|warp>] [--attach|--detach] [-- <command>...]
   conductor-cli session list [project] [workspace] [--all]
   conductor-cli session stop <session-id>
   conductor-cli session logs <session-id> [--tail <lines>]
 
 Examples:
   conductor-cli session start app auth --agent codex
+  conductor-cli session start app auth --agent claude --terminal warp
+  conductor-cli session start app auth --agent codex --detach
   conductor-cli session start app auth -- npm test -- --watch
+
+Notes:
+  Codex and Claude open in a new terminal tab by default. Use --detach for
+  background log mode, or --attach to run in the current terminal.
 `);
     return;
   }
@@ -181,6 +191,7 @@ Usage:
 Notes:
   Claude uses Stop and SubagentStop hooks.
   Codex uses its notify command from ~/.codex/config.toml.
+  Hook notifications default to conductor-launched sessions only.
 `);
     return;
   }
@@ -198,7 +209,7 @@ Commands:
   project     Register and inspect repositories
   register    Alias for project add
   workspace   Create, inspect, archive, and remove git worktree workspaces
-  session     Start, list, stop, and inspect detached agent sessions
+  session     Start, list, stop, and inspect agent sessions
   checks      Show git and GitHub PR readiness for a workspace
   pr          Watch PR state and clean up merged workspaces
   settings    Configure agent completion hooks and sounds
@@ -210,6 +221,8 @@ Common flow:
   conductor-cli workspace list app
   conductor-cli checks app auth
   conductor-cli pr watch app --cleanup
+
+Codex and Claude sessions open in a new terminal tab by default.
 
 Run conductor-cli help <command> for command details.
 `);
@@ -384,6 +397,36 @@ async function interactiveRegisterProject(rl) {
   projectAdd(args);
 }
 
+async function askSessionLaunchMode(rl) {
+  return choose(rl, "Launch mode", [
+    {
+      label: "New terminal tab",
+      value: "terminal",
+      description: "auto-detect Terminal, iTerm, or Warp",
+    },
+    {
+      label: "Current terminal",
+      value: "attach",
+      description: "use this pane until the command exits",
+    },
+    {
+      label: "Background log",
+      value: "detach",
+      description: "no interactive terminal",
+    },
+  ]);
+}
+
+function appendLaunchArgs(args, launchMode) {
+  if (launchMode === "terminal") {
+    args.push("--terminal", "auto");
+  } else if (launchMode === "attach") {
+    args.push("--attach");
+  } else if (launchMode === "detach") {
+    args.push("--detach");
+  }
+}
+
 async function interactiveCreateWorkspace(rl) {
   const config = loadConfig();
   const projectName = await selectProject(rl, config);
@@ -407,6 +450,7 @@ async function interactiveCreateWorkspace(rl) {
   const args = [projectName, workspaceName];
   if (branch) args.push("--branch", branch);
   if (base) args.push("--base", base);
+  let customCommand = null;
 
   if (sessionMode === "codex" || sessionMode === "claude") {
     args.push("--agent", sessionMode);
@@ -416,7 +460,12 @@ async function interactiveCreateWorkspace(rl) {
     const command = await askRequired(rl, "Command to run");
     const port = await ask(rl, "CONDUCTOR_PORT", "");
     if (port) args.push("--port", port);
-    args.push("--", "sh", "-lc", command);
+    customCommand = ["sh", "-lc", command];
+  }
+
+  if (sessionMode !== "none") {
+    appendLaunchArgs(args, await askSessionLaunchMode(rl));
+    if (customCommand) args.push("--", ...customCommand);
   }
 
   workspaceCreate(args);
@@ -494,13 +543,17 @@ async function interactiveStartSession(rl) {
   const port = await ask(rl, "CONDUCTOR_PORT", "");
   if (name) args.push("--name", name);
   if (port) args.push("--port", port);
+  let customCommand = null;
 
   if (sessionMode === "custom") {
     const command = await askRequired(rl, "Command to run");
-    args.push("--", "sh", "-lc", command);
+    customCommand = ["sh", "-lc", command];
   } else {
     args.push("--agent", sessionMode);
   }
+
+  appendLaunchArgs(args, await askSessionLaunchMode(rl));
+  if (customCommand) args.push("--", ...customCommand);
 
   sessionStart(args);
 }
@@ -1111,7 +1164,8 @@ function commandWorkspace(args) {
 
 function workspaceCreate(args) {
   const parsed = parseOptions(args, {
-    string: ["branch", "base", "path", "agent", "session", "port"],
+    boolean: ["attach", "detach"],
+    string: ["branch", "base", "path", "agent", "session", "port", "terminal"],
   });
 
   const [projectName, rawName] = parsed._;
@@ -1176,15 +1230,17 @@ function workspaceCreate(args) {
 
   if (parsed.agent || parsed["--"].length > 0) {
     const updatedConfig = loadConfig();
-    const session = startSession(updatedConfig, projectName, workspaceName, {
+    const session = launchSession(updatedConfig, projectName, workspaceName, {
       agent: parsed.agent,
       name: parsed.session,
       port: parsed.port,
       command: parsed["--"],
+      attach: parsed.attach,
+      detach: parsed.detach,
+      terminal: parsed.terminal,
     });
     saveConfig(updatedConfig);
-    console.log(`session: ${session.id}`);
-    console.log(`log: ${session.logPath}`);
+    printSessionLaunch(session, { compact: true });
   }
 }
 
@@ -1285,6 +1341,8 @@ function commandSettings(args) {
 
   switch (sub) {
     case "show":
+      refreshHookScriptIfInstalled(config);
+      saveConfig(config);
       printSettings(config);
       break;
     case "notifications":
@@ -1334,6 +1392,8 @@ function commandSettingsHooks(config, args) {
 
   switch (sub) {
     case "status":
+      refreshHookScriptIfInstalled(config);
+      saveConfig(config);
       printHookStatus(config);
       break;
     case "install":
@@ -1389,7 +1449,8 @@ function commandSession(args) {
 
 function sessionStart(args) {
   const parsed = parseOptions(args, {
-    string: ["agent", "name", "port"],
+    boolean: ["attach", "detach"],
+    string: ["agent", "name", "port", "terminal"],
   });
   const [projectName, workspaceName] = parsed._;
   if (!projectName || !workspaceName) {
@@ -1399,18 +1460,19 @@ function sessionStart(args) {
   }
 
   const config = loadConfig();
-  const session = startSession(config, projectName, workspaceName, {
+  const session = launchSession(config, projectName, workspaceName, {
     agent: parsed.agent,
     name: parsed.name,
     port: parsed.port,
     command: parsed["--"],
+    attach: parsed.attach,
+    detach: parsed.detach,
+    terminal: parsed.terminal,
   });
   saveConfig(config);
 
-  console.log(`Started session ${session.id}`);
-  console.log(`pid: ${session.pid}`);
-  console.log(`cwd: ${session.cwd}`);
-  console.log(`log: ${session.logPath}`);
+  printSessionLaunch(session);
+  if (session.exitCode && session.exitCode !== 0) process.exitCode = session.exitCode;
 }
 
 function sessionList(args) {
@@ -1422,8 +1484,9 @@ function sessionList(args) {
 
   const rows = Object.values(config.sessions)
     .filter((session) => {
-      const active =
-        session.status === "running" || session.status === "stop_failed";
+      const active = ["running", "opened", "attached", "stop_failed"].includes(
+        session.status,
+      );
       if (!parsed.all && !active) return false;
       if (projectName && session.project !== projectName) return false;
       if (workspaceName && session.workspace !== workspaceName) return false;
@@ -1436,7 +1499,7 @@ function sessionList(args) {
       session.agent,
       session.status,
       String(session.pid || ""),
-      session.logPath,
+      session.logPath || "",
     ]);
 
   if (rows.length === 0) {
@@ -1472,6 +1535,10 @@ function sessionLogs(args) {
   const config = loadConfig();
   const session = config.sessions[id];
   if (!session) throw new CliError(`Unknown session: ${id}`);
+  if (!session.logPath) {
+    console.log("No log file for this session.");
+    return;
+  }
   if (!fs.existsSync(session.logPath)) {
     console.log("");
     return;
@@ -1479,6 +1546,38 @@ function sessionLogs(args) {
 
   const tail = Number.parseInt(parsed.tail || "100", 10);
   console.log(tailFile(session.logPath, Number.isFinite(tail) ? tail : 100));
+}
+
+function printSessionLaunch(session, options = {}) {
+  if (options.compact) {
+    console.log(`session: ${session.id}`);
+    console.log(`launch: ${describeSessionLaunch(session)}`);
+    if (session.logPath) console.log(`log: ${session.logPath}`);
+    return;
+  }
+
+  const verb =
+    session.launchMode === "terminal"
+      ? "Opened"
+      : session.launchMode === "attach"
+        ? "Finished"
+        : "Started";
+
+  console.log(`${verb} session ${session.id}`);
+  if (session.launchMode === "terminal") console.log(`terminal: ${session.terminal}`);
+  if (session.pid) console.log(`pid: ${session.pid}`);
+  console.log(`cwd: ${session.cwd}`);
+  console.log(`command: ${shellJoin(session.command)}`);
+  if (session.logPath) console.log(`log: ${session.logPath}`);
+  if (session.launchMode === "attach") {
+    console.log(`exit: ${session.exitCode}`);
+  }
+}
+
+function describeSessionLaunch(session) {
+  if (session.launchMode === "terminal") return `terminal tab (${session.terminal})`;
+  if (session.launchMode === "attach") return `current terminal (exit ${session.exitCode})`;
+  return `background log (${session.pid})`;
 }
 
 function commandChecks(args) {
@@ -1641,7 +1740,46 @@ function printPrStatus(workspace) {
   if (pr.mergedAt) console.log(`merged: ${pr.mergedAt}`);
 }
 
-function startSession(config, projectName, workspaceName, options) {
+function launchSession(config, projectName, workspaceName, options) {
+  const launch = resolveSessionLaunch(options);
+
+  if (launch.mode === "attach") {
+    return startAttachedSession(config, projectName, workspaceName, options);
+  }
+
+  if (launch.mode === "terminal") {
+    return startTerminalSession(config, projectName, workspaceName, {
+      ...options,
+      terminal: launch.terminal,
+    });
+  }
+
+  return startDetachedSession(config, projectName, workspaceName, options);
+}
+
+function resolveSessionLaunch(options) {
+  const requestedModes = [options.attach, options.detach, Boolean(options.terminal)]
+    .filter(Boolean).length;
+  if (requestedModes > 1) {
+    throw new CliError("Choose only one of --terminal, --attach, or --detach");
+  }
+
+  if (options.attach) return { mode: "attach" };
+  if (options.detach) return { mode: "detach" };
+  if (options.terminal) {
+    return { mode: "terminal", terminal: normalizeTerminalApp(options.terminal) };
+  }
+
+  const hasCommand = (options.command || []).length > 0;
+  const agent = options.agent || (hasCommand ? null : "codex");
+  if (agent === "codex" || agent === "claude") {
+    return { mode: "terminal", terminal: "auto" };
+  }
+
+  return { mode: "detach" };
+}
+
+function prepareSession(config, projectName, workspaceName, options) {
   const workspace = requireWorkspace(config, projectName, workspaceName);
   if (workspace.status !== "active") {
     throw new CliError(
@@ -1666,25 +1804,45 @@ function startSession(config, projectName, workspaceName, options) {
     throw new CliError(`Command not found: ${command[0]}`);
   }
 
-  fs.mkdirSync(LOG_DIR, { recursive: true });
   const sessionName = normalizeName(
     options.name || `${workspace.name}-${agent}`,
     "session",
   );
   const id = uniqueSessionId(config, sessionName);
-  const logPath = path.join(LOG_DIR, `${id}.log`);
+  const env = {
+    CONDUCTOR_CLI: "1",
+    CONDUCTOR_SESSION_ID: id,
+    CONDUCTOR_SESSION_NAME: sessionName,
+    CONDUCTOR_PROJECT: projectName,
+    CONDUCTOR_WORKSPACE: workspace.name,
+    CONDUCTOR_BRANCH: workspace.branch,
+    ...(options.port ? { CONDUCTOR_PORT: String(options.port) } : {}),
+  };
+
+  return {
+    id,
+    sessionName,
+    projectName,
+    workspace,
+    agent,
+    command,
+    env,
+  };
+}
+
+function startDetachedSession(config, projectName, workspaceName, options) {
+  const prepared = prepareSession(config, projectName, workspaceName, options);
+  fs.mkdirSync(LOG_DIR, { recursive: true });
+  const logPath = path.join(LOG_DIR, `${prepared.id}.log`);
   const out = fs.openSync(logPath, "a");
 
-  const child = spawn(command[0], command.slice(1), {
-    cwd: workspace.path,
+  const child = spawn(prepared.command[0], prepared.command.slice(1), {
+    cwd: prepared.workspace.path,
     detached: true,
     stdio: ["ignore", out, out],
     env: {
       ...process.env,
-      CONDUCTOR_PROJECT: projectName,
-      CONDUCTOR_WORKSPACE: workspace.name,
-      CONDUCTOR_BRANCH: workspace.branch,
-      ...(options.port ? { CONDUCTOR_PORT: String(options.port) } : {}),
+      ...prepared.env,
     },
   });
 
@@ -1692,21 +1850,246 @@ function startSession(config, projectName, workspaceName, options) {
   fs.closeSync(out);
 
   const session = {
-    id,
-    name: sessionName,
+    id: prepared.id,
+    name: prepared.sessionName,
     project: projectName,
-    workspace: workspace.name,
-    agent,
-    command,
+    workspace: prepared.workspace.name,
+    agent: prepared.agent,
+    command: prepared.command,
     pid: child.pid,
-    cwd: workspace.path,
+    cwd: prepared.workspace.path,
     logPath,
     status: "running",
+    launchMode: "detach",
     startedAt: new Date().toISOString(),
   };
 
-  config.sessions[id] = session;
+  config.sessions[prepared.id] = session;
   return session;
+}
+
+function startAttachedSession(config, projectName, workspaceName, options) {
+  const prepared = prepareSession(config, projectName, workspaceName, options);
+  const session = {
+    id: prepared.id,
+    name: prepared.sessionName,
+    project: projectName,
+    workspace: prepared.workspace.name,
+    agent: prepared.agent,
+    command: prepared.command,
+    pid: null,
+    cwd: prepared.workspace.path,
+    logPath: null,
+    status: "attached",
+    launchMode: "attach",
+    startedAt: new Date().toISOString(),
+  };
+
+  config.sessions[prepared.id] = session;
+  console.log(`Starting session ${session.id} in current terminal`);
+  console.log(`cwd: ${session.cwd}`);
+  console.log(`command: ${shellJoin(session.command)}`);
+
+  const result = spawnSync(prepared.command[0], prepared.command.slice(1), {
+    cwd: prepared.workspace.path,
+    stdio: "inherit",
+    env: {
+      ...process.env,
+      ...prepared.env,
+    },
+  });
+
+  if (result.error) {
+    session.status = "failed";
+    session.error = result.error.message;
+    session.exitedAt = new Date().toISOString();
+    throw new CliError(result.error.message);
+  }
+
+  session.status = "exited";
+  session.exitCode = result.status === null ? 1 : result.status;
+  if (result.signal) session.signal = result.signal;
+  session.exitedAt = new Date().toISOString();
+  return session;
+}
+
+function startTerminalSession(config, projectName, workspaceName, options) {
+  const prepared = prepareSession(config, projectName, workspaceName, options);
+  const terminal = resolveTerminalApp(options.terminal || "auto");
+  const shellCommand = buildSessionShellCommand(
+    prepared.workspace.path,
+    prepared.env,
+    prepared.command,
+  );
+
+  const openResult = openTerminalTab(terminal, {
+    id: prepared.id,
+    title: prepared.sessionName,
+    cwd: prepared.workspace.path,
+    shellCommand,
+  });
+
+  const session = {
+    id: prepared.id,
+    name: prepared.sessionName,
+    project: projectName,
+    workspace: prepared.workspace.name,
+    agent: prepared.agent,
+    command: prepared.command,
+    pid: null,
+    cwd: prepared.workspace.path,
+    logPath: null,
+    status: "opened",
+    launchMode: "terminal",
+    terminal: openResult.terminal,
+    terminalConfigPath: openResult.configPath || null,
+    openedAt: new Date().toISOString(),
+  };
+
+  config.sessions[prepared.id] = session;
+  return session;
+}
+
+function normalizeTerminalApp(value) {
+  const terminal = String(value || "auto").toLowerCase();
+  if (terminal === "auto") return "auto";
+  if (["terminal", "terminal.app", "apple", "apple_terminal"].includes(terminal)) {
+    return "terminal";
+  }
+  if (["iterm", "iterm2", "iterm.app"].includes(terminal)) return "iterm";
+  if (["warp", "warppreview", "warp-preview"].includes(terminal)) return terminal;
+  throw new CliError(
+    "Unknown terminal app. Use auto, terminal, iterm, warp, or warppreview.",
+  );
+}
+
+function resolveTerminalApp(value) {
+  const requested = normalizeTerminalApp(value);
+  if (requested !== "auto") return requested;
+
+  const termProgram = String(process.env.TERM_PROGRAM || "").toLowerCase();
+  if (termProgram.includes("warp")) return "warp";
+  if (termProgram.includes("iterm")) return "iterm";
+  if (termProgram.includes("apple_terminal")) return "terminal";
+  if (process.env.WARP_IS_LOCAL_SHELL_SESSION) return "warp";
+
+  if (process.platform === "darwin") return "terminal";
+  throw new CliError(
+    "New terminal tabs are only auto-detected on macOS. Use --attach or --detach.",
+  );
+}
+
+function buildSessionShellCommand(cwd, env, command) {
+  const envPrefix = Object.entries(env)
+    .map(([key, value]) => `${key}=${shellQuote(value)}`)
+    .join(" ");
+  const commandText = shellJoin(command);
+  return `cd ${shellQuote(cwd)} && ${envPrefix ? `${envPrefix} ` : ""}${commandText}`;
+}
+
+function openTerminalTab(terminal, session) {
+  if (process.platform !== "darwin") {
+    throw new CliError("Opening new terminal tabs is currently supported on macOS only.");
+  }
+
+  if (terminal === "terminal") {
+    openAppleTerminalTab(session.shellCommand);
+    return { terminal: "Terminal.app" };
+  }
+
+  if (terminal === "iterm") {
+    openITermTab(session.shellCommand);
+    return { terminal: "iTerm" };
+  }
+
+  if (terminal === "warp" || terminal === "warppreview") {
+    const configPath = openWarpLaunchConfig(terminal, session);
+    return {
+      terminal: terminal === "warppreview" ? "Warp Preview" : "Warp",
+      configPath,
+    };
+  }
+
+  throw new CliError(`Unsupported terminal app: ${terminal}`);
+}
+
+function openAppleTerminalTab(shellCommand) {
+  runAppleScript([
+    'tell application "Terminal"',
+    "activate",
+    "if (count of windows) = 0 then",
+    `do script ${appleScriptQuote(shellCommand)}`,
+    "else",
+    'tell application "System Events" to keystroke "t" using command down',
+    "delay 0.2",
+    `do script ${appleScriptQuote(shellCommand)} in selected tab of front window`,
+    "end if",
+    "end tell",
+  ]);
+}
+
+function openITermTab(shellCommand) {
+  runAppleScript([
+    'tell application "iTerm2"',
+    "activate",
+    "if (count of windows) = 0 then",
+    "create window with default profile",
+    "else",
+    "tell current window to create tab with default profile",
+    "end if",
+    `tell current session of current window to write text ${appleScriptQuote(shellCommand)}`,
+    "end tell",
+  ]);
+}
+
+function openWarpLaunchConfig(terminal, session) {
+  fs.mkdirSync(WARP_LAUNCH_DIR, { recursive: true });
+  const configPath = path.join(WARP_LAUNCH_DIR, `${session.id}.yaml`);
+  const yaml = [
+    "---",
+    `name: ${yamlQuote(`conductor-cli ${session.title}`)}`,
+    "windows:",
+    "  - tabs:",
+    `      - title: ${yamlQuote(session.title)}`,
+    "        layout:",
+    `          cwd: ${yamlQuote(session.cwd)}`,
+    "          commands:",
+    `            - exec: ${yamlQuote(session.shellCommand)}`,
+    "        color: cyan",
+    "",
+  ].join("\n");
+
+  fs.writeFileSync(configPath, yaml);
+  const scheme = terminal === "warppreview" ? "warppreview" : "warp";
+  const uri = `${scheme}://launch/${encodeURIComponent(configPath)}`;
+  const result = spawnSync("open", [uri], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+
+  if (result.status !== 0) {
+    throw new CliError(
+      `Unable to open Warp launch config: ${(result.stderr || result.stdout).trim()}`,
+    );
+  }
+
+  return configPath;
+}
+
+function runAppleScript(lines) {
+  const args = [];
+  for (const line of lines) args.push("-e", line);
+
+  const result = spawnSync("osascript", args, {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+
+  if (result.status !== 0) {
+    const message = (result.stderr || result.stdout || "unknown AppleScript error")
+      .trim();
+    throw new CliError(`Unable to open terminal tab: ${message}`);
+  }
 }
 
 function stopSession(session) {
@@ -1776,7 +2159,7 @@ function removeWorkspace(config, projectName, workspaceName, options) {
       if (
         session.project === projectName &&
         session.workspace === workspace.name &&
-        session.status === "running"
+        ["running", "opened", "attached"].includes(session.status)
       ) {
         stopSession(session);
       }
@@ -2072,6 +2455,7 @@ function normalizeConfig(config) {
       },
     },
   };
+  delete config.settings.notifications.scope;
   return config;
 }
 
@@ -2110,7 +2494,8 @@ function parseBoolean(value) {
 
 function ensureHookScript(config) {
   fs.mkdirSync(HOOKS_DIR, { recursive: true });
-  const script = buildHookScript(CONFIG_PATH);
+  const notifierExecutable = ensureNotifierApp(config);
+  const script = buildHookScript(CONFIG_PATH, notifierExecutable);
   if (!fs.existsSync(HOOK_SCRIPT_PATH) || fs.readFileSync(HOOK_SCRIPT_PATH, "utf8") !== script) {
     fs.writeFileSync(HOOK_SCRIPT_PATH, script);
     fs.chmodSync(HOOK_SCRIPT_PATH, 0o755);
@@ -2118,7 +2503,114 @@ function ensureHookScript(config) {
   config.settings.agentHooks.scriptPath = HOOK_SCRIPT_PATH;
 }
 
-function buildHookScript(configPath) {
+function ensureNotifierApp(config = null) {
+  if (process.platform !== "darwin") return null;
+
+  fs.mkdirSync(HOOKS_DIR, { recursive: true });
+  cleanupLegacyNotifierApp();
+
+  const source = buildNotifierSwift();
+  const sourceChanged =
+    !fs.existsSync(NOTIFIER_SOURCE_PATH) ||
+    fs.readFileSync(NOTIFIER_SOURCE_PATH, "utf8") !== source;
+
+  if (sourceChanged) {
+    fs.writeFileSync(NOTIFIER_SOURCE_PATH, source);
+  }
+
+  if (!hasCommand("swiftc")) {
+    setNotifierAppError(config, "swiftc not found");
+    return null;
+  }
+
+  if (sourceChanged || !fs.existsSync(NOTIFIER_EXECUTABLE_PATH)) {
+    fs.mkdirSync(SWIFT_MODULE_CACHE_DIR, { recursive: true });
+    const tmpExecutable = `${NOTIFIER_EXECUTABLE_PATH}.tmp`;
+    fs.rmSync(tmpExecutable, { force: true });
+    const result = run("swiftc", [NOTIFIER_SOURCE_PATH, "-o", tmpExecutable], {
+      allowFailure: true,
+      env: {
+        ...process.env,
+        CLANG_MODULE_CACHE_PATH: SWIFT_MODULE_CACHE_DIR,
+      },
+    });
+    if (result.status !== 0 || !fs.existsSync(NOTIFIER_EXECUTABLE_PATH)) {
+      if (!fs.existsSync(tmpExecutable)) {
+        setNotifierAppError(
+          config,
+          (result.stderr || result.stdout || "failed to compile notifier").trim(),
+        );
+        return fs.existsSync(NOTIFIER_EXECUTABLE_PATH) ? NOTIFIER_EXECUTABLE_PATH : null;
+      }
+    }
+    fs.renameSync(tmpExecutable, NOTIFIER_EXECUTABLE_PATH);
+    fs.chmodSync(NOTIFIER_EXECUTABLE_PATH, 0o755);
+  }
+
+  if (config?.settings?.agentHooks) {
+    config.settings.agentHooks.notifierPath = NOTIFIER_EXECUTABLE_PATH;
+    delete config.settings.agentHooks.notifierAppPath;
+    delete config.settings.agentHooks.notifierAppError;
+  }
+  return NOTIFIER_EXECUTABLE_PATH;
+}
+
+function setNotifierAppError(config, message) {
+  if (config?.settings?.agentHooks) {
+    config.settings.agentHooks.notifierPath = null;
+    delete config.settings.agentHooks.notifierAppPath;
+    config.settings.agentHooks.notifierAppError = message;
+  }
+}
+
+function cleanupLegacyNotifierApp() {
+  fs.rmSync(path.join(HOOKS_DIR, "ConductorNotifier.app"), {
+    recursive: true,
+    force: true,
+  });
+  fs.rmSync(path.join(HOOKS_DIR, "ConductorNotifier.applescript"), { force: true });
+}
+
+function buildNotifierSwift() {
+  return `import Foundation
+import AppKit
+
+class NotificationDelegate: NSObject, NSUserNotificationCenterDelegate {
+  func userNotificationCenter(
+    _ center: NSUserNotificationCenter,
+    shouldPresent notification: NSUserNotification
+  ) -> Bool {
+    return true
+  }
+}
+
+let title = CommandLine.arguments.count > 1 ? CommandLine.arguments[1] : "Agent done"
+let message = CommandLine.arguments.count > 2 ? CommandLine.arguments[2] : ""
+let delegate = NotificationDelegate()
+let center = NSUserNotificationCenter.default
+center.delegate = delegate
+
+let notification = NSUserNotification()
+notification.title = title
+notification.informativeText = message
+center.deliver(notification)
+RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.5))
+`;
+}
+
+function refreshHookScriptIfInstalled(config) {
+  const hooks = config.settings?.agentHooks || {};
+  if (
+    hooks.scriptPath ||
+    hooks.claude?.installedAt ||
+    hooks.codex?.installedAt ||
+    fs.existsSync(HOOK_SCRIPT_PATH)
+  ) {
+    ensureHookScript(config);
+  }
+}
+
+function buildHookScript(configPath, notifierExecutable) {
   return `#!/usr/bin/env node
 "use strict";
 
@@ -2127,32 +2619,49 @@ const path = require("path");
 const { spawnSync } = require("child_process");
 
 const CONFIG_PATH = ${JSON.stringify(configPath)};
+const NOTIFIER_EXECUTABLE = ${JSON.stringify(notifierExecutable || "")};
 
 function main() {
   const agent = process.argv[2] || "agent";
   const config = loadConfig();
   const settings = config.settings?.notifications || {};
+  const isConductorSession =
+    process.env.CONDUCTOR_CLI === "1" ||
+    Boolean(
+      process.env.CONDUCTOR_SESSION_ID ||
+        process.env.CONDUCTOR_PROJECT ||
+        process.env.CONDUCTOR_WORKSPACE,
+    );
 
   const input = readStdin();
   const hook = parseJson(input);
   const event = hook?.hook_event_name || hook?.hookEventName || "done";
-  const target = hook?.cwd || hook?.workspace || hook?.project_dir || "";
-  const label = target ? path.basename(target) : agent;
+  const text = notificationText(agent, event, hook);
 
-  if (settings.enabled !== false) {
+  if (settings.enabled !== false && isConductorSession) {
     play(settings.soundName || "Glass");
     if (settings.macosNotification) {
-      notify("Agent done", agent + " " + event + " in " + label, settings.soundName);
+      notify(text.title, text.message);
     }
   }
 
-  const previous = config.settings?.agentHooks?.codex?.previousNotify;
-  if (agent === "codex" && Array.isArray(previous) && !process.env.CONDUCTOR_CLI_NOTIFY_CHAINED) {
-    spawnSync(previous[0], previous.slice(1), {
-      stdio: "ignore",
-      env: { ...process.env, CONDUCTOR_CLI_NOTIFY_CHAINED: "1" },
-    });
-  }
+}
+
+function notificationText(agent, event, hook) {
+  const project = process.env.CONDUCTOR_PROJECT || "";
+  const workspace = process.env.CONDUCTOR_WORKSPACE || "";
+  const session = process.env.CONDUCTOR_SESSION_NAME || process.env.CONDUCTOR_SESSION_ID || "";
+  const branch = process.env.CONDUCTOR_BRANCH || "";
+  const target = hook?.cwd || hook?.workspace || hook?.project_dir || "";
+  const fallback = target ? path.basename(target) : "workspace";
+  const location = project && workspace ? project + "/" + workspace : fallback;
+  const details = [agent + " " + event];
+  if (session) details.push(session);
+  if (branch) details.push(branch);
+  return {
+    title: "Agent done: " + location,
+    message: details.join(" - "),
+  };
 }
 
 function loadConfig() {
@@ -2184,21 +2693,32 @@ function play(soundName) {
   if (!soundName || soundName === "none") return;
   const soundPath = findSound(soundName);
   if (soundPath) {
-    spawnSync("afplay", [soundPath], { stdio: "ignore" });
-    return;
+    spawnSync("afplay", [soundPath], { stdio: "ignore", timeout: 5000 });
   }
-  spawnSync("osascript", ["-e", "beep"], { stdio: "ignore" });
 }
 
-function notify(title, message, soundName) {
-  const script = soundName && soundName !== "none"
-    ? "display notification " + osa(message) + " with title " + osa(title) + " sound name " + osa(soundName)
-    : "display notification " + osa(message) + " with title " + osa(title);
-  spawnSync("osascript", ["-e", script], { stdio: "ignore" });
+function notify(title, message) {
+  if (NOTIFIER_EXECUTABLE && fs.existsSync(NOTIFIER_EXECUTABLE)) {
+    const result = spawnSync(NOTIFIER_EXECUTABLE, [title, message], {
+      stdio: "ignore",
+      timeout: 5000,
+    });
+    if (!result.error && result.status === 0) return;
+  }
+
+  if (hasCommand("terminal-notifier")) {
+    spawnSync("terminal-notifier", ["-title", title, "-message", message], {
+      stdio: "ignore",
+      timeout: 5000,
+    });
+  }
 }
 
-function osa(value) {
-  return JSON.stringify(String(value));
+function hasCommand(command) {
+  const result = spawnSync("which", [command], {
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  return result.status === 0;
 }
 
 function findSound(soundName) {
@@ -2301,9 +2821,14 @@ function installCodexHook(config) {
   const current = fs.existsSync(configPath) ? fs.readFileSync(configPath, "utf8") : "";
   const existing = readCodexNotify(current);
   const notify = ["node", HOOK_SCRIPT_PATH, "codex"];
+  const storedPrevious = config.settings.agentHooks.codex.previousNotify;
 
   if (existing && !isManagedCodexNotify(existing)) {
-    config.settings.agentHooks.codex.previousNotify = existing;
+    config.settings.agentHooks.codex.previousNotify = isCodexComputerUseNotify(existing)
+      ? null
+      : existing;
+  } else if (isCodexComputerUseNotify(storedPrevious)) {
+    config.settings.agentHooks.codex.previousNotify = null;
   }
 
   fs.mkdirSync(path.dirname(configPath), { recursive: true });
@@ -2324,9 +2849,10 @@ function removeCodexHook(config) {
   if (!isManagedCodexNotify(existing)) return;
 
   const previous = config.settings.agentHooks.codex.previousNotify;
+  const restorePrevious = previous && !isCodexComputerUseNotify(previous);
   fs.writeFileSync(
     configPath,
-    previous ? writeCodexNotify(current, previous) : removeCodexNotifyLine(current),
+    restorePrevious ? writeCodexNotify(current, previous) : removeCodexNotifyLine(current),
   );
   config.settings.agentHooks.codex.installedAt = null;
 }
@@ -2378,13 +2904,18 @@ function isManagedCodexNotify(notify) {
     notify[2] === "codex";
 }
 
+function isCodexComputerUseNotify(notify) {
+  return Array.isArray(notify) &&
+    notify.some((part) => String(part).includes("SkyComputerUseClient"));
+}
+
 function sendNotification(settings, agent, target) {
   if (!settings.enabled) return;
   if (settings.soundName && settings.soundName !== "none") {
     playSystemSound(settings.soundName);
   }
   if (settings.macosNotification) {
-    sendMacOsNotification("Agent done", `${agent} finished in ${target}`, settings.soundName);
+    sendMacOsNotification("Agent done", `${agent} finished in ${target}`);
   }
 }
 
@@ -2392,16 +2923,20 @@ function playSystemSound(soundName) {
   const soundPath = findSystemSoundPath(soundName);
   if (soundPath) {
     run("afplay", [soundPath], { allowFailure: true });
-    return;
   }
-  run("osascript", ["-e", "beep"], { allowFailure: true });
 }
 
-function sendMacOsNotification(title, message, soundName) {
-  const script = soundName && soundName !== "none"
-    ? `display notification ${JSON.stringify(message)} with title ${JSON.stringify(title)} sound name ${JSON.stringify(soundName)}`
-    : `display notification ${JSON.stringify(message)} with title ${JSON.stringify(title)}`;
-  run("osascript", ["-e", script], { allowFailure: true });
+function sendMacOsNotification(title, message) {
+  const notifierExecutable = ensureNotifierApp();
+  if (notifierExecutable) {
+    run(notifierExecutable, [title, message], { allowFailure: true });
+    return;
+  }
+  if (hasCommand("terminal-notifier")) {
+    run("terminal-notifier", ["-title", title, "-message", message], {
+      allowFailure: true,
+    });
+  }
 }
 
 function listSystemSounds() {
@@ -2466,6 +3001,18 @@ function writeJsonFile(filePath, value) {
 
 function shellQuote(value) {
   return `'${String(value).replace(/'/g, `'\\''`)}'`;
+}
+
+function shellJoin(values) {
+  return values.map((value) => shellQuote(value)).join(" ");
+}
+
+function appleScriptQuote(value) {
+  return `"${String(value).replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+}
+
+function yamlQuote(value) {
+  return JSON.stringify(String(value));
 }
 
 function loadConfig() {
