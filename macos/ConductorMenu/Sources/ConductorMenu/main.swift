@@ -35,9 +35,12 @@ struct Session: Decodable {
   let agent: String
   let status: String
   let cwd: String?
+  let runCommand: String?
+  let resumeCommand: String?
 }
 
 struct SettingsState: Decodable {
+  let terminalApp: String?
   let notifications: NotificationSettings?
   let agentHooks: AgentHooksState?
 }
@@ -83,10 +86,12 @@ struct WorkspaceCreationForm {
 final class ConductorService {
   let command: ConductorCommand
   let nodePath: String?
+  let autoTerminalApp: String
   let processEnvironment: [String: String]
 
   init() {
     self.nodePath = Self.resolveNodePath()
+    self.autoTerminalApp = Self.resolvePreferredTerminal()
     self.processEnvironment = Self.defaultProcessEnvironment(nodePath: self.nodePath)
     self.command = Self.resolveCommand()
   }
@@ -151,6 +156,31 @@ final class ConductorService {
     }
   }
 
+  func terminalArgument(for setting: String?) -> String {
+    Self.normalizeTerminalName(setting ?? "auto") ?? "auto"
+  }
+
+  func terminalDescription(for setting: String?) -> String {
+    let terminal = terminalArgument(for: setting)
+    if terminal == "auto" {
+      return "Auto (\(terminalLabel(autoTerminalApp)))"
+    }
+    return terminalLabel(terminal)
+  }
+
+  private func terminalLabel(_ terminal: String) -> String {
+    switch terminal {
+    case "warp":
+      return "Warp"
+    case "warppreview":
+      return "Warp Preview"
+    case "iterm":
+      return "iTerm"
+    default:
+      return "Terminal"
+    }
+  }
+
   private static func resolveCommand() -> ConductorCommand {
     let environment = ProcessInfo.processInfo.environment
     if let explicit = environment["CONDUCTOR_CLI_BIN"], !explicit.isEmpty {
@@ -212,6 +242,50 @@ final class ConductorService {
     }
 
     return loginShellPath(for: "node")
+  }
+
+  private static func resolvePreferredTerminal() -> String {
+    let environment = ProcessInfo.processInfo.environment
+    for key in ["CONDUCTOR_TERMINAL_APP", "CONDUCTOR_CLI_TERMINAL"] {
+      if let explicit = environment[key],
+        let terminal = normalizeTerminalName(explicit),
+        terminal != "auto" {
+        return terminal
+      }
+    }
+
+    if applicationExists(named: "Warp.app") { return "warp" }
+    if applicationExists(named: "Warp Preview.app") { return "warppreview" }
+    if applicationExists(named: "iTerm.app") || applicationExists(named: "iTerm2.app") {
+      return "iterm"
+    }
+    return "terminal"
+  }
+
+  private static func normalizeTerminalName(_ value: String) -> String? {
+    switch value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+    case "auto":
+      return "auto"
+    case "terminal", "terminal.app", "apple", "apple_terminal":
+      return "terminal"
+    case "iterm", "iterm2", "iterm.app":
+      return "iterm"
+    case "warp":
+      return "warp"
+    case "warppreview", "warp-preview", "warp preview":
+      return "warppreview"
+    default:
+      return nil
+    }
+  }
+
+  private static func applicationExists(named appName: String) -> Bool {
+    let home = FileManager.default.homeDirectoryForCurrentUser.path
+    let paths = [
+      "/Applications/\(appName)",
+      "\(home)/Applications/\(appName)",
+    ]
+    return paths.contains { FileManager.default.fileExists(atPath: $0) }
   }
 
   private static func loginShellPath(for command: String) -> String? {
@@ -326,6 +400,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
     let menu = NSMenu()
     menu.addItem(disabledItem("Conductor"))
     menu.addItem(disabledItem(service.commandDescription()))
+    menu.addItem(disabledItem("Terminal: \(service.terminalDescription(for: currentTerminalSetting()))"))
     menu.addItem(.separator())
 
     if let lastError {
@@ -375,13 +450,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
       }
 
       let runningSessions = state.sessions
-        .filter { ["running", "opened", "attached"].contains($0.status) }
+        .filter { ["ready", "running", "opened", "attached"].contains($0.status) }
       if !runningSessions.isEmpty {
         menu.addItem(.separator())
         menu.addItem(disabledItem("Sessions"))
         for session in runningSessions.prefix(8) {
-          menu.addItem(disabledItem("\(session.agent): \(session.project)/\(session.workspace)"))
+          let item = NSMenuItem(
+            title: "\(session.agent): \(session.project)/\(session.workspace)",
+            action: nil,
+            keyEquivalent: ""
+          )
+          item.submenu = sessionMenu(session)
+          menu.addItem(item)
         }
+        if runningSessions.count > 8 {
+          menu.addItem(disabledItem("+ \(runningSessions.count - 8) more sessions"))
+        }
+        menu.addItem(
+          actionItem(
+            "Close All Sessions...",
+            action: #selector(closeAllSessions(_:)),
+            object: runningSessions.map(\.id)
+          )
+        )
       }
 
       menu.addItem(.separator())
@@ -458,14 +549,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
     if workspace.status == "active" {
       menu.addItem(
         actionItem(
-          "Start Codex",
+          "Open Codex Terminal...",
           action: #selector(startCodex(_:)),
           object: workspaceObject(workspace)
         )
       )
       menu.addItem(
         actionItem(
-          "Start Claude",
+          "Open Claude Terminal...",
           action: #selector(startClaude(_:)),
           object: workspaceObject(workspace)
         )
@@ -501,17 +592,51 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
     return menu
   }
 
+  private func sessionMenu(_ session: Session) -> NSMenu {
+    let menu = NSMenu()
+    menu.addItem(disabledItem("Status: \(session.status)"))
+    menu.addItem(disabledItem("ID: \(session.id)"))
+    if session.status == "ready", let runCommand = session.runCommand, !runCommand.isEmpty {
+      menu.addItem(actionItem("Copy Start Command", action: #selector(copyText(_:)), object: runCommand))
+    }
+    if let resumeCommand = session.resumeCommand, !resumeCommand.isEmpty {
+      menu.addItem(actionItem("Copy Resume Command", action: #selector(copyText(_:)), object: resumeCommand))
+    }
+    if let cwd = session.cwd, !cwd.isEmpty {
+      if menu.items.count > 2 {
+        menu.addItem(.separator())
+      }
+      menu.addItem(actionItem("Open Folder", action: #selector(openPath(_:)), object: cwd))
+      menu.addItem(actionItem("Copy Folder Path", action: #selector(copyPath(_:)), object: cwd))
+    }
+    menu.addItem(.separator())
+    menu.addItem(
+      actionItem(
+        "Close Session...",
+        action: #selector(closeSession(_:)),
+        object: sessionObject(session)
+      )
+    )
+    return menu
+  }
+
   private func settingsMenu(_ settings: SettingsState?) -> NSMenu {
     let menu = NSMenu()
+    let terminalSetting = settings?.terminalApp ?? "auto"
     let notifications = settings?.notifications
     let enabled = notifications?.enabled ?? true
     let bannerEnabled = notifications?.macosNotification ?? false
     let soundName = notifications?.soundName ?? "Glass"
 
+    menu.addItem(disabledItem("Terminal: \(service.terminalDescription(for: terminalSetting))"))
     menu.addItem(disabledItem("Notifications: \(enabled ? "On" : "Off")"))
     menu.addItem(disabledItem("Sound: \(soundName)"))
     menu.addItem(disabledItem("macOS Banner: \(bannerEnabled ? "On" : "Off")"))
     menu.addItem(.separator())
+
+    let terminalItem = NSMenuItem(title: "Terminal App", action: nil, keyEquivalent: "")
+    terminalItem.submenu = terminalMenu(current: terminalSetting)
+    menu.addItem(terminalItem)
 
     let notificationsItem = actionItem(
       enabled ? "Turn Notifications Off" : "Turn Notifications On",
@@ -549,6 +674,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
     return menu
   }
 
+  private func currentTerminalSetting() -> String {
+    state?.settings?.terminalApp ?? "auto"
+  }
+
+  private func currentTerminalArgument() -> String {
+    service.terminalArgument(for: currentTerminalSetting())
+  }
+
+  private func terminalMenu(current: String) -> NSMenu {
+    let menu = NSMenu()
+    let options = [
+      ("Auto", "auto"),
+      ("Terminal", "terminal"),
+      ("iTerm", "iterm"),
+      ("Warp", "warp"),
+      ("Warp Preview", "warppreview"),
+    ]
+    let normalizedCurrent = service.terminalArgument(for: current)
+    for (title, value) in options {
+      let label = value == "auto" ? service.terminalDescription(for: "auto") : title
+      let item = actionItem(label, action: #selector(setTerminal(_:)), object: value)
+      item.state = value == normalizedCurrent ? .on : .off
+      menu.addItem(item)
+    }
+    return menu
+  }
+
   private func soundMenu(current: String) -> NSMenu {
     let menu = NSMenu()
     for sound in ["Glass", "Ping", "Pop", "Hero", "Submarine", "Tink", "none"] {
@@ -574,7 +726,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
       let name = workspace["name"] else { return }
 
     do {
-      try service.run([
+      let output = try service.run([
         "session",
         "start",
         project,
@@ -582,11 +734,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
         "--agent",
         agent,
         "--terminal",
-        "auto",
+        currentTerminalArgument(),
       ])
+      copyPreparedSessionCommand(output: output)
       refresh(silent: true)
     } catch {
-      showError(title: "Unable to start \(agent)", message: error.localizedDescription)
+      showError(title: "Unable to prepare \(agent)", message: error.localizedDescription)
     }
   }
 
@@ -617,11 +770,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
       args.append(contentsOf: ["--base", form.base])
     }
     if form.agent != "none" {
-      args.append(contentsOf: ["--agent", form.agent, "--terminal", "auto"])
+      args.append(contentsOf: ["--agent", form.agent, "--terminal", currentTerminalArgument()])
     }
 
     do {
-      try service.run(args)
+      let output = try service.run(args)
+      if form.agent != "none" {
+        copyPreparedSessionCommand(output: output)
+      }
       refresh(silent: true)
     } catch {
       showError(title: "Unable to create workspace", message: error.localizedDescription)
@@ -664,6 +820,47 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
     }
   }
 
+  @objc private func closeSession(_ sender: NSMenuItem) {
+    guard let session = sender.representedObject as? [String: String],
+      let id = session["id"],
+      let project = session["project"],
+      let workspace = session["workspace"] else { return }
+
+    guard confirm(
+      title: "Close Session",
+      message: "Close \(project)/\(workspace) session \(id)?"
+    ) else { return }
+
+    do {
+      try service.run(["session", "stop", id])
+      refresh(silent: true)
+    } catch {
+      showError(title: "Unable to close session", message: error.localizedDescription)
+    }
+  }
+
+  @objc private func closeAllSessions(_ sender: NSMenuItem) {
+    guard let ids = sender.representedObject as? [String], !ids.isEmpty else { return }
+
+    guard confirm(
+      title: "Close All Sessions",
+      message: "Close \(ids.count) active conductor session\(ids.count == 1 ? "" : "s")?"
+    ) else { return }
+
+    var failures: [String] = []
+    for id in ids {
+      do {
+        try service.run(["session", "stop", id])
+      } catch {
+        failures.append("\(id): \(error.localizedDescription)")
+      }
+    }
+    refresh(silent: true)
+    if !failures.isEmpty {
+      showError(title: "Some sessions did not close", message: failures.joined(separator: "\n"))
+    }
+  }
+
   @objc private func toggleNotifications(_ sender: NSMenuItem) {
     let currentlyEnabled = sender.representedObject as? Bool ?? true
     runSettings(["notifications", currentlyEnabled ? "off" : "on"], title: "Unable to update notifications")
@@ -672,6 +869,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
   @objc private func toggleBanner(_ sender: NSMenuItem) {
     let currentlyEnabled = sender.representedObject as? Bool ?? false
     runSettings(["macos-notification", currentlyEnabled ? "off" : "on"], title: "Unable to update banner setting")
+  }
+
+  @objc private func setTerminal(_ sender: NSMenuItem) {
+    guard let terminal = sender.representedObject as? String else { return }
+    runSettings(["terminal", terminal], title: "Unable to update terminal app")
   }
 
   @objc private func setSound(_ sender: NSMenuItem) {
@@ -702,6 +904,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
     }
   }
 
+  private func copyPreparedSessionCommand(output: String) {
+    guard let command = runCommand(from: output) else { return }
+    copyToPasteboard(command)
+  }
+
+  private func runCommand(from output: String) -> String? {
+    for line in output.components(separatedBy: .newlines) {
+      if line.hasPrefix("run: ") {
+        return String(line.dropFirst(5))
+      }
+    }
+    return nil
+  }
+
   @objc private func openPath(_ sender: NSMenuItem) {
     guard let path = sender.representedObject as? String else { return }
     NSWorkspace.shared.open(URL(fileURLWithPath: path))
@@ -709,8 +925,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
 
   @objc private func copyPath(_ sender: NSMenuItem) {
     guard let path = sender.representedObject as? String else { return }
+    copyToPasteboard(path)
+  }
+
+  @objc private func copyText(_ sender: NSMenuItem) {
+    guard let text = sender.representedObject as? String else { return }
+    copyToPasteboard(text)
+  }
+
+  private func copyToPasteboard(_ text: String) {
     NSPasteboard.general.clearContents()
-    NSPasteboard.general.setString(path, forType: .string)
+    NSPasteboard.general.setString(text, forType: .string)
   }
 
   @objc private func openPR(_ sender: NSMenuItem) {
@@ -775,6 +1000,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
     ]
   }
 
+  private func sessionObject(_ session: Session) -> [String: String] {
+    [
+      "id": session.id,
+      "project": session.project,
+      "workspace": session.workspace,
+      "agent": session.agent,
+      "status": session.status,
+    ]
+  }
+
   private func projectObject(_ project: Project) -> [String: String] {
     [
       "name": project.name,
@@ -817,7 +1052,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
     stack.addArrangedSubview(labeledField("Workspace", nameField))
     stack.addArrangedSubview(labeledControl("Branch", branchPreview))
     stack.addArrangedSubview(labeledField("Base ref", baseField))
-    stack.addArrangedSubview(labeledControl("Start agent", agentPopup))
+    stack.addArrangedSubview(labeledControl("Prepare agent", agentPopup))
     stack.frame = NSRect(x: 0, y: 0, width: 360, height: 160)
 
     let alert = NSAlert()

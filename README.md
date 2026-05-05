@@ -45,8 +45,8 @@ path: ~/.conductor-cli/worktrees/conductor-cli/add-pr-cleanup
 ```
 
 Each workspace can run its own agent session.
-Codex and Claude sessions open in a new terminal tab by default, so the agent
-gets a real interactive terminal.
+Codex and Claude sessions prepare a terminal tab by default, then you run the
+printed command inside it so the agent gets a real interactive terminal.
 
 ## Recommended Flow
 
@@ -62,7 +62,7 @@ From there you can:
 
 - register a project
 - create a workspace
-- start a Codex, Claude, or custom session
+- prepare a Codex, Claude, or custom session
 - list and delete workspaces
 - check PR status
 - run merged-PR cleanup
@@ -82,16 +82,22 @@ Register a repo:
 conductor-cli project add app ~/src/app
 ```
 
-Create a workspace and start Codex:
+Create a workspace and prepare Codex:
 
 ```sh
 conductor-cli workspace create app auth --agent codex
 ```
 
-Start a session in an existing workspace:
+Prepare a session in an existing workspace:
 
 ```sh
 conductor-cli session start app auth --agent claude
+```
+
+Resume a stored agent session:
+
+```sh
+conductor-cli session resume <session-id>
 ```
 
 List workspaces:
@@ -118,6 +124,7 @@ Configure session completion sounds:
 
 ```sh
 conductor-cli settings show
+conductor-cli settings terminal warp
 conductor-cli settings sound Glass
 conductor-cli settings hooks install all
 ```
@@ -126,12 +133,14 @@ Claude uses `Stop` and `SubagentStop` hooks. Codex uses its `notify` command.
 Hook notifications only fire for conductor-launched sessions, even though the
 Claude and Codex hook entries are installed globally.
 
-Agent sessions auto-detect your terminal on macOS:
+Terminal sessions auto-detect your terminal on macOS:
 
-- Terminal.app opens a new Terminal tab
-- iTerm opens a new iTerm tab
-- Warp opens a Warp launch session for the workspace and command
+- Terminal.app opens a terminal at the workspace
+- iTerm opens a terminal at the workspace
+- Warp opens a new tab at the workspace
 
+The agent does not auto-run in the new terminal. Run the printed
+`conductor-cli session run <id>` command there; the menu app copies it for you.
 Use `--detach` only when you explicitly want background log mode.
 
 ## Defaults
@@ -140,7 +149,9 @@ Use `--detach` only when you explicitly want background log mode.
 - Worktrees live in `~/.conductor-cli/worktrees/<project>/<workspace>`.
 - New workspaces branch from `origin/main`.
 - Branches default to `<github-user>/<workspace>`.
-- Codex and Claude sessions open in a new terminal tab.
+- Codex and Claude sessions prepare a terminal tab and print a run command.
+- The terminal app defaults to `auto`; set it to `terminal`, `iterm`, `warp`,
+  or `warppreview` from settings.
 - Workspaces are not deleted automatically unless you run PR cleanup.
 - Agent completion sounds are opt-in through `settings hooks install`.
 - Hook notifications only fire for conductor sessions.
