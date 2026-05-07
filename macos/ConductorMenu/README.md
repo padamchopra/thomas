@@ -49,8 +49,8 @@ The bundle also includes a copy of `bin/conductor-cli.js` and `package.json` in
 `Contents/Resources`, so GitHub Actions builds can run without pointing at the
 CI checkout path. `CONDUCTOR_CLI_BIN` can still override the command at runtime.
 
-## CI Builds
+## Release Builds
 
 The root workflow at `.github/workflows/build-mac-app.yml` builds, ad-hoc signs,
-zips, and uploads `Conductor.app` as a workflow artifact. On `v*` tags, it also
-attaches the zip to the GitHub release.
+packages `Conductor.app` into `Conductor.dmg`, and attaches the DMG to GitHub
+releases for version tags.

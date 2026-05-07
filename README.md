@@ -194,7 +194,6 @@ Build, install, and launch it with:
 
 Use `./install-mac-app.sh --no-open` if you only want to install it.
 
-GitHub Actions builds a zipped `Conductor.app` artifact on pushes, PRs, and
-manual runs. Pushing a `v*` tag also attaches the zip to the GitHub release.
-The app is ad-hoc signed but not notarized, so macOS may still show a first-run
-Gatekeeper warning.
+GitHub Actions builds `Conductor.dmg` for release tags and attaches it to the
+GitHub release. The app is ad-hoc signed but not notarized, so macOS may still
+show a first-run Gatekeeper warning.
