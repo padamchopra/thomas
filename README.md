@@ -129,6 +129,16 @@ conductor-cli settings sound Glass
 conductor-cli settings hooks install all
 ```
 
+Agent profiles choose the command used when a session starts. `claude` and
+`codex` are built in, and `claude` is the default:
+
+```sh
+conductor-cli agent-profile list
+conductor-cli agent-profile default codex
+conductor-cli agent-profile add work claude-work
+conductor-cli project set-agent-profile app work
+```
+
 Claude uses `Stop` and `SubagentStop` hooks. Codex uses its `notify` command.
 Hook notifications only fire for conductor-launched sessions, even though the
 Claude and Codex hook entries are installed globally.
@@ -150,6 +160,7 @@ Use `--detach` only when you explicitly want background log mode.
 - New workspaces branch from `origin/main`.
 - Branches default to `<github-user>/<workspace>`.
 - Codex and Claude sessions prepare a terminal tab and print a run command.
+- Agent profiles always include `claude` and `codex`; the default is `claude`.
 - The terminal app defaults to `auto`; set it to `terminal`, `iterm`, `warp`,
   or `warppreview` from settings.
 - Workspaces are not deleted automatically unless you run PR cleanup.
@@ -175,8 +186,15 @@ There is an early native menu bar app in `macos/ConductorMenu`.
 It uses `conductor-cli state` for JSON state and calls the CLI for actions, so
 the CLI config stays the single source of truth.
 
-Build it with:
+Build, install, and launch it with:
 
 ```sh
-./macos/ConductorMenu/build-app.sh
+./install-mac-app.sh
 ```
+
+Use `./install-mac-app.sh --no-open` if you only want to install it.
+
+GitHub Actions builds a zipped `Conductor.app` artifact on pushes, PRs, and
+manual runs. Pushing a `v*` tag also attaches the zip to the GitHub release.
+The app is ad-hoc signed but not notarized, so macOS may still show a first-run
+Gatekeeper warning.

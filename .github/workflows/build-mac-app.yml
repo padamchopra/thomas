@@ -1,0 +1,62 @@
+name: Build macOS App
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - "v*"
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build Conductor.app
+    runs-on: macos-14
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Check CLI syntax
+        run: npm run check
+
+      - name: Build app bundle
+        run: ./macos/ConductorMenu/build-app.sh
+
+      - name: Ad-hoc sign app
+        run: codesign --force --deep --sign - macos/ConductorMenu/.build/ConductorMenu.app
+
+      - name: Verify signature
+        run: codesign --verify --deep --strict --verbose=2 macos/ConductorMenu/.build/ConductorMenu.app
+
+      - name: Zip app
+        run: ditto -c -k --sequesterRsrc --keepParent macos/ConductorMenu/.build/ConductorMenu.app Conductor.app.zip
+
+      - name: Upload app artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Conductor.app
+          path: Conductor.app.zip
+          if-no-files-found: error
+
+      - name: Attach app to GitHub release
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          if gh release view "$TAG_NAME" >/dev/null 2>&1
+          then
+            gh release upload "$TAG_NAME" Conductor.app.zip --clobber
+          else
+            gh release create "$TAG_NAME" Conductor.app.zip --title "$TAG_NAME" --notes "Conductor macOS menu app."
+          fi

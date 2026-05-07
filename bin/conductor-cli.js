@@ -94,9 +94,13 @@ async function main(argv) {
     case "pr":
       commandPr(rest);
       break;
+    case "agent-profile":
+    case "agent-profiles":
+      commandAgentProfile(rest);
+      break;
     case "claude-profile":
     case "claude-profiles":
-      commandClaudeProfile(rest);
+      commandAgentProfile(rest, { legacyName: "claude-profile" });
       break;
     case "settings":
     case "setting":
@@ -112,14 +116,15 @@ function printHelp(topic) {
     console.log(`Project commands
 
 Usage:
-  conductor-cli project add <name> <repo-path> [--worktrees-dir <dir>] [--base <ref>] [--gh-user <username>] [--claude-profile <profile>]
+  conductor-cli project add <name> <repo-path> [--worktrees-dir <dir>] [--base <ref>] [--gh-user <username>] [--agent-profile <profile>]
   conductor-cli project list
   conductor-cli project info <name>
-  conductor-cli project set-claude-profile <name> <profile|default|none>
+  conductor-cli project set-agent-profile <name> <profile|default|none>
   conductor-cli project remove <name>
 
 Aliases:
   conductor-cli register <name> <repo-path>
+  conductor-cli project set-claude-profile <name> <profile|default|none>
 `);
     return;
   }
@@ -128,7 +133,7 @@ Aliases:
     console.log(`Workspace commands
 
 Usage:
-  conductor-cli workspace create <project> <name> [--base <branch>] [--agent <codex|claude>] [--port <port>] [--terminal <auto|terminal|iterm|warp>] [--attach|--detach] [-- <command>...]
+  conductor-cli workspace create <project> <name> [--base <branch>] [--agent <profile>] [--port <port>] [--terminal <auto|terminal|iterm|warp>] [--attach|--detach] [-- <command>...]
   conductor-cli workspace list [project] [--all]
   conductor-cli workspace status <project> <name>
   conductor-cli workspace path <project> <name>
@@ -147,7 +152,7 @@ Notes:
     console.log(`Session commands
 
 Usage:
-  conductor-cli session start <project> <workspace> [--agent <codex|claude>] [--name <name>] [--port <port>] [--terminal <auto|terminal|iterm|warp>] [--attach|--detach] [-- <command>...]
+  conductor-cli session start <project> <workspace> [--agent <profile>] [--name <name>] [--port <port>] [--terminal <auto|terminal|iterm|warp>] [--attach|--detach] [-- <command>...]
   conductor-cli session run <session-id>
   conductor-cli session resume <session-id>
   conductor-cli session list [project] [workspace] [--all]
@@ -189,26 +194,34 @@ Notes:
     return;
   }
 
-  if (topic === "claude-profile" || topic === "claude-profiles") {
-    console.log(`Claude profile commands
+  if (
+    topic === "agent-profile" ||
+    topic === "agent-profiles" ||
+    topic === "claude-profile" ||
+    topic === "claude-profiles"
+  ) {
+    console.log(`Agent profile commands
 
 Usage:
-  conductor-cli claude-profile add <name> <command>
-  conductor-cli claude-profile list
-  conductor-cli claude-profile default <name>
-  conductor-cli claude-profile remove <name>
-  conductor-cli claude-profile resolve [project]
+  conductor-cli agent-profile add <name> <command>
+  conductor-cli agent-profile list
+  conductor-cli agent-profile default <name>
+  conductor-cli agent-profile remove <name>
+  conductor-cli agent-profile resolve [project]
 
 Examples:
-  conductor-cli claude-profile add personal claude
-  conductor-cli claude-profile add work claude-work
-  conductor-cli claude-profile default personal
-  conductor-cli project set-claude-profile app work
+  conductor-cli agent-profile add work claude-work
+  conductor-cli agent-profile default codex
+  conductor-cli project set-agent-profile app work
 
 Behavior:
-  Projects use their assigned Claude profile. If no project profile is set,
-  conductor-cli uses the default Claude profile. If no default is configured,
-  the command is claude.
+  Projects use their assigned agent profile. If no project profile is set,
+  conductor-cli uses the default agent profile.
+  The built-in claude and codex profiles are always available. The default is
+  claude unless you change it.
+
+Aliases:
+  conductor-cli claude-profile ...
 `);
     return;
   }
@@ -265,8 +278,8 @@ Commands:
   session     Start, list, stop, and inspect agent sessions
   checks      Show git and GitHub PR readiness for a workspace
   pr          Watch PR state and clean up merged workspaces
-  claude-profile
-               Configure named Claude command profiles
+  agent-profile
+               Configure named agent command profiles
   settings    Configure agent completion hooks and sounds
   state       Print JSON state for app integrations
   doctor      Check local tool availability
@@ -278,7 +291,7 @@ Common flow:
   conductor-cli checks app auth
   conductor-cli pr watch app --cleanup
 
-Codex and Claude sessions prepare a terminal tab by default.
+Agent sessions prepare a terminal tab by default.
 
 Run conductor-cli help <command> for command details.
 `);
@@ -363,7 +376,7 @@ async function runInteractiveMenu() {
         {
           label: "Start session",
           value: "start-session",
-          description: "launch Codex, Claude, or a command in a workspace",
+          description: "launch an agent profile or command in a workspace",
         },
         {
           label: "Check workspace",
@@ -482,6 +495,7 @@ async function runInteractiveAction(rl, action) {
 }
 
 async function interactiveRegisterProject(rl) {
+  const config = loadConfig();
   const defaultRepo = tryRepoRoot(process.cwd()) || process.cwd();
   const defaultName = normalizeName(path.basename(defaultRepo), "project");
   const name = await ask(rl, "Project name", defaultName);
@@ -493,11 +507,16 @@ async function interactiveRegisterProject(rl) {
     "Worktrees dir",
     defaultWorktreesDir(name),
   );
+  const agentProfile = await choose(rl, "Agent profile", [
+    { label: `Default (${config.settings.agentProfiles.default})`, value: "default" },
+    ...agentProfileChoices(config),
+  ]);
 
   const args = [name, repoPath];
   if (worktreesDir) args.push("--worktrees-dir", worktreesDir);
   if (base) args.push("--base", base);
   if (ghUser) args.push("--gh-user", ghUser);
+  if (agentProfile !== "default") args.push("--agent-profile", agentProfile);
   projectAdd(args);
 }
 
@@ -544,18 +563,17 @@ async function interactiveCreateWorkspace(rl) {
   );
   console.log(`Branch: ${branch}`);
   const base = await ask(rl, "Base ref", project.mainBranch || "origin/main");
-  const sessionMode = await choose(rl, "Start a session now?", [
-    { label: "No", value: "none" },
-    { label: "Codex", value: "codex" },
-    { label: "Claude", value: "claude" },
-    { label: "Custom command", value: "custom" },
-  ]);
+  const sessionMode = await choose(
+    rl,
+    "Start a session now?",
+    agentProfileChoices(config, { includeNone: true, includeCustom: true }),
+  );
 
   const args = [projectName, workspaceName];
   if (base) args.push("--base", base);
   let customCommand = null;
 
-  if (sessionMode === "codex" || sessionMode === "claude") {
+  if (sessionMode !== "none" && sessionMode !== "custom") {
     args.push("--agent", sessionMode);
     const port = await ask(rl, "CONDUCTOR_PORT", "");
     if (port) args.push("--port", port);
@@ -637,12 +655,11 @@ async function interactiveStartSession(rl) {
   const workspaceName = await selectWorkspace(rl, config, projectName);
   if (!workspaceName) return;
 
-  const sessionMode = await choose(rl, "Session type", [
-    { label: "Codex", value: "codex" },
-    { label: "Claude", value: "claude" },
-    { label: "Custom command", value: "custom" },
-    { label: "Back", value: "back" },
-  ]);
+  const sessionMode = await choose(
+    rl,
+    "Session type",
+    agentProfileChoices(config, { includeCustom: true, includeBack: true }),
+  );
   if (sessionMode === "back") return;
 
   const args = [projectName, workspaceName];
@@ -732,6 +749,7 @@ async function interactiveHelp(rl) {
     { label: "Workspaces", value: "workspace" },
     { label: "Sessions", value: "session" },
     { label: "Pull requests", value: "pr" },
+    { label: "Agent profiles", value: "agent-profile" },
     { label: "Settings", value: "settings" },
   ]);
   printHelp(topic);
@@ -877,6 +895,35 @@ async function selectWorkspace(rl, config, projectName, options = {}) {
       description: `${workspace.branch} (${workspace.status})`,
     })),
   );
+}
+
+function agentProfileChoices(config, options = {}) {
+  const defaultName = config.settings.agentProfiles.default || "claude";
+  const profiles = Object.values(config.settings.agentProfiles.profiles || {})
+    .sort((a, b) =>
+      agentProfileChoiceSortKey(a.name, defaultName)
+        .localeCompare(agentProfileChoiceSortKey(b.name, defaultName)),
+    );
+  const choices = profiles.map((profile) => ({
+    label: profile.name === defaultName ? `${profile.name} (default)` : profile.name,
+    value: profile.name,
+    description: profile.command,
+  }));
+  if (options.includeNone) {
+    choices.unshift({ label: "No", value: "none" });
+  }
+  if (options.includeCustom) {
+    choices.push({ label: "Custom command", value: "custom" });
+  }
+  if (options.includeBack) {
+    choices.push({ label: "Back", value: "back" });
+  }
+  return choices;
+}
+
+function agentProfileChoiceSortKey(name, defaultName) {
+  if (name === defaultName) return "0";
+  return `1-${agentProfileSortKey(name)}`;
 }
 
 async function choose(rl, prompt, choices) {
@@ -1132,8 +1179,11 @@ function commandProject(args) {
     case "info":
       projectInfo(args.slice(1));
       break;
+    case "set-agent-profile":
+      projectSetAgentProfile(args.slice(1));
+      break;
     case "set-claude-profile":
-      projectSetClaudeProfile(args.slice(1));
+      projectSetAgentProfile(args.slice(1), { legacyName: "set-claude-profile" });
       break;
     case "remove":
     case "rm":
@@ -1146,7 +1196,14 @@ function commandProject(args) {
 
 function projectAdd(args) {
   const parsed = parseOptions(args, {
-    string: ["worktrees-dir", "main", "base", "gh-user", "claude-profile"],
+    string: [
+      "worktrees-dir",
+      "main",
+      "base",
+      "gh-user",
+      "agent-profile",
+      "claude-profile",
+    ],
   });
 
   const [name, repoInput] = parsed._;
@@ -1161,14 +1218,16 @@ function projectAdd(args) {
   );
   const mainBranch = parsed.base || parsed.main || "origin/main";
   const githubUser = parsed["gh-user"] || detectGithubUsername(repoPath);
-  const claudeProfile = normalizeOptionalClaudeProfile(parsed["claude-profile"]);
+  const agentProfile = normalizeOptionalAgentProfile(
+    parsed["agent-profile"] || parsed["claude-profile"],
+  );
   const remote = git(repoPath, ["config", "--get", "remote.origin.url"], {
     allowFailure: true,
   }).stdout.trim();
 
   const config = loadConfig();
-  if (claudeProfile && !config.settings.claudeProfiles.profiles[claudeProfile]) {
-    throw new CliError(`Unknown Claude profile: ${claudeProfile}`);
+  if (agentProfile && !config.settings.agentProfiles.profiles[agentProfile]) {
+    throw new CliError(`Unknown agent profile: ${agentProfile}`);
   }
   if (config.projects[name]) {
     throw new CliError(`Project already exists: ${name}`);
@@ -1180,7 +1239,7 @@ function projectAdd(args) {
     worktreesDir,
     mainBranch,
     githubUser: githubUser || null,
-    claudeProfile,
+    agentProfile,
     remote: remote || null,
     createdAt: new Date().toISOString(),
   };
@@ -1192,7 +1251,7 @@ function projectAdd(args) {
   console.log(`worktrees: ${worktreesDir}`);
   console.log(`base: ${mainBranch}`);
   console.log(`branch prefix: ${githubUser || "conductor"}/*`);
-  console.log(`Claude profile: ${claudeProfile || "default"}`);
+  console.log(`Agent profile: ${agentProfile || "default"}`);
 }
 
 function projectList() {
@@ -1204,7 +1263,7 @@ function projectList() {
       project.name,
       project.repoPath,
       project.mainBranch,
-      project.claudeProfile || "default",
+      project.agentProfile || "default",
       String(active),
       project.worktreesDir,
     ];
@@ -1215,7 +1274,7 @@ function projectList() {
     return;
   }
 
-  printTable(rows, ["name", "repo", "base", "claude", "active", "worktrees"]);
+  printTable(rows, ["name", "repo", "base", "agent", "active", "worktrees"]);
 }
 
 function projectInfo(args) {
@@ -1231,25 +1290,28 @@ function projectInfo(args) {
   console.log(`worktrees: ${project.worktreesDir}`);
   console.log(`base: ${project.mainBranch}`);
   console.log(`branch prefix: ${project.githubUser || "conductor"}/*`);
-  console.log(`Claude profile: ${project.claudeProfile || "default"} (${resolveClaudeProfileCommand(config, project.name)})`);
+  const resolved = resolveAgentProfile(config, project.name);
+  console.log(`Agent profile: ${project.agentProfile || "default"} (${resolved.name} -> ${resolved.command})`);
   if (project.remote) console.log(`remote: ${project.remote}`);
   console.log(`workspaces: ${workspaces.length}`);
 }
 
-function projectSetClaudeProfile(args) {
+function projectSetAgentProfile(args, options = {}) {
   const [name, profileInput] = args;
   if (!name || !profileInput) {
-    throw new CliError("Usage: conductor-cli project set-claude-profile <name> <profile|default|none>");
+    const sub = options.legacyName || "set-agent-profile";
+    throw new CliError(`Usage: conductor-cli project ${sub} <name> <profile|default|none>`);
   }
   const config = loadConfig();
   const project = requireProject(config, name);
-  const profile = normalizeOptionalClaudeProfile(profileInput);
-  if (profile && !config.settings.claudeProfiles.profiles[profile]) {
-    throw new CliError(`Unknown Claude profile: ${profile}`);
+  const profile = normalizeOptionalAgentProfile(profileInput);
+  if (profile && !config.settings.agentProfiles.profiles[profile]) {
+    throw new CliError(`Unknown agent profile: ${profile}`);
   }
-  project.claudeProfile = profile;
+  project.agentProfile = profile;
+  delete project.claudeProfile;
   saveConfig(config);
-  console.log(`Project ${name} Claude profile set to ${profile || "default"}.`);
+  console.log(`Project ${name} agent profile set to ${profile || "default"}.`);
 }
 
 function projectRemove(args) {
@@ -1477,93 +1539,133 @@ function workspaceRemove(args) {
   console.log(`Removed workspace ${projectName}/${workspaceName}`);
 }
 
-function commandClaudeProfile(args) {
+function commandAgentProfile(args, options = {}) {
   const sub = args[0] || "list";
   if (sub === "--help" || sub === "-h") {
-    printHelp("claude-profile");
+    printHelp("agent-profile");
     return;
   }
+  const commandName = options.legacyName || "agent-profile";
   const config = loadConfig();
   switch (sub) {
     case "add": {
       const [name, command, ...extra] = args.slice(1);
-      if (!name || !command || extra.length > 0) throw new CliError("Usage: conductor-cli claude-profile add <name> <command>");
-      validateClaudeProfileName(name);
-      config.settings.claudeProfiles.profiles[name] = { name, command };
-      if (!config.settings.claudeProfiles.default) config.settings.claudeProfiles.default = name;
+      if (!name || !command || extra.length > 0) {
+        throw new CliError(`Usage: conductor-cli ${commandName} add <name> <command>`);
+      }
+      validateAgentProfileName(name, { allowBuiltin: false });
+      config.settings.agentProfiles.profiles[name] = { name, command };
       saveConfig(config);
-      console.log(`Claude profile ${name} -> ${command}`);
+      console.log(`Agent profile ${name} -> ${command}`);
       break;
     }
     case "list":
     case "ls":
-      printClaudeProfiles(config);
+      printAgentProfiles(config);
       break;
     case "default": {
       const name = args[1];
-      if (!name) throw new CliError("Usage: conductor-cli claude-profile default <name>");
-      if (!config.settings.claudeProfiles.profiles[name]) throw new CliError(`Unknown Claude profile: ${name}`);
-      config.settings.claudeProfiles.default = name;
+      if (!name) throw new CliError(`Usage: conductor-cli ${commandName} default <name>`);
+      if (!config.settings.agentProfiles.profiles[name]) {
+        throw new CliError(`Unknown agent profile: ${name}`);
+      }
+      config.settings.agentProfiles.default = name;
       saveConfig(config);
-      console.log(`Default Claude profile set to ${name}.`);
+      console.log(`Default agent profile set to ${name}.`);
       break;
     }
     case "remove":
     case "rm": {
       const name = args[1];
-      if (!name) throw new CliError("Usage: conductor-cli claude-profile remove <name>");
-      if (!config.settings.claudeProfiles.profiles[name]) throw new CliError(`Unknown Claude profile: ${name}`);
-      delete config.settings.claudeProfiles.profiles[name];
-      if (config.settings.claudeProfiles.default === name) config.settings.claudeProfiles.default = null;
+      if (!name) throw new CliError(`Usage: conductor-cli ${commandName} remove <name>`);
+      if (isBuiltinAgentProfile(name)) {
+        throw new CliError("Built-in agent profiles cannot be removed.");
+      }
+      if (!config.settings.agentProfiles.profiles[name]) {
+        throw new CliError(`Unknown agent profile: ${name}`);
+      }
+      delete config.settings.agentProfiles.profiles[name];
+      if (config.settings.agentProfiles.default === name) {
+        config.settings.agentProfiles.default = "claude";
+      }
       for (const project of Object.values(config.projects)) {
-        if (project.claudeProfile === name) project.claudeProfile = null;
+        if (project.agentProfile === name) project.agentProfile = null;
       }
       saveConfig(config);
-      console.log(`Removed Claude profile ${name}.`);
+      console.log(`Removed agent profile ${name}.`);
       break;
     }
     case "resolve": {
       const project = args[1] || null;
-      console.log(resolveClaudeProfileCommand(config, project));
+      const profile = resolveAgentProfile(config, project);
+      console.log(`${profile.name}: ${profile.command}`);
       break;
     }
     default:
-      throw new CliError(`Unknown claude-profile command: ${sub}`);
+      throw new CliError(`Unknown ${commandName} command: ${sub}`);
   }
 }
 
-function printClaudeProfiles(config) {
-  const profiles = Object.values(config.settings.claudeProfiles.profiles || {});
-  if (profiles.length === 0) {
-    console.log("No Claude profiles configured. Default command: claude");
-    return;
-  }
-  const defaultName = config.settings.claudeProfiles.default;
-  printTable(profiles.map((profile) => [profile.name, profile.command, profile.name === defaultName ? "yes" : ""]), ["name", "command", "default"]);
+function printAgentProfiles(config) {
+  const profiles = Object.values(config.settings.agentProfiles.profiles || {})
+    .sort((a, b) => agentProfileSortKey(a.name).localeCompare(agentProfileSortKey(b.name)));
+  const defaultName = config.settings.agentProfiles.default || "claude";
+  printTable(
+    profiles.map((profile) => [
+      profile.name,
+      profile.command,
+      profile.name === defaultName ? "yes" : "",
+      isBuiltinAgentProfile(profile.name) ? "yes" : "",
+    ]),
+    ["name", "command", "default", "built-in"],
+  );
 }
 
-function normalizeOptionalClaudeProfile(value) {
+function normalizeOptionalAgentProfile(value) {
   if (!value || value === "default" || value === "none") return null;
-  validateClaudeProfileName(value);
+  validateAgentProfileName(value, { allowBuiltin: true });
   return value;
 }
 
-function validateClaudeProfileName(name) {
-  validateName(name, "Claude profile");
+function validateAgentProfileName(name, options = {}) {
+  validateName(name, "agent profile");
   if (name === "default" || name === "none") {
-    throw new CliError("Claude profile names 'default' and 'none' are reserved.");
+    throw new CliError("Agent profile names 'default' and 'none' are reserved.");
+  }
+  if (!options.allowBuiltin && isBuiltinAgentProfile(name)) {
+    throw new CliError("Built-in agent profile names 'claude' and 'codex' are reserved.");
   }
 }
 
-function resolveClaudeProfileCommand(config, projectName = null) {
-  const profiles = config.settings.claudeProfiles || { default: null, profiles: {} };
+function resolveAgentProfile(config, projectName = null, requestedName = null) {
+  const profiles = config.settings.agentProfiles || defaultAgentProfiles();
   let profileName = null;
+  if (requestedName) profileName = requestedName;
   if (projectName && config.projects[projectName]) {
-    profileName = config.projects[projectName].claudeProfile || null;
+    profileName = profileName || config.projects[projectName].agentProfile || null;
   }
   profileName = profileName || profiles.default;
-  if (profileName && profiles.profiles?.[profileName]?.command) return profiles.profiles[profileName].command;
-  return "claude";
+  if (profileName && profiles.profiles?.[profileName]?.command) {
+    return profiles.profiles[profileName];
+  }
+  if (requestedName) {
+    throw new CliError(`Unknown agent profile: ${requestedName}`);
+  }
+  return profiles.profiles.claude || { name: "claude", command: "claude" };
+}
+
+function resolveAgentProfileCommand(config, projectName = null, requestedName = null) {
+  return resolveAgentProfile(config, projectName, requestedName).command;
+}
+
+function isBuiltinAgentProfile(name) {
+  return name === "claude" || name === "codex";
+}
+
+function agentProfileSortKey(name) {
+  if (name === "claude") return "0";
+  if (name === "codex") return "1";
+  return `2-${name}`;
 }
 
 function commandSettings(args) {
@@ -1816,10 +1918,10 @@ function sessionResumeAgentCommand(session) {
     .toLowerCase();
   const binary = path.basename(String(executable || "")).toLowerCase();
 
-  if (agent.includes("codex") || binary === "codex") {
+  if (agent.includes("codex") || binary.includes("codex")) {
     return [executable || "codex", "resume", "--last"];
   }
-  if (agent.includes("claude") || binary === "claude") {
+  if (agent.includes("claude") || binary.includes("claude")) {
     return [executable || "claude", "--continue"];
   }
   return null;
@@ -2153,8 +2255,8 @@ function resolveSessionLaunch(config, options) {
   }
 
   const hasCommand = (options.command || []).length > 0;
-  const agent = options.agent || (hasCommand ? null : "codex");
-  if (agent === "codex" || agent === "claude") {
+  const agent = options.agent || (hasCommand ? null : config.settings.agentProfiles.default);
+  if (!hasCommand && config.settings.agentProfiles.profiles[agent]) {
     return {
       mode: "terminal",
       terminal: normalizeTerminalSetting(config.settings?.terminalApp || "auto"),
@@ -2179,8 +2281,9 @@ function prepareSession(config, projectName, workspaceName, options) {
   let agent = options.agent;
 
   if (command.length === 0) {
-    agent = agent || "codex";
-    command = [agent === "claude" ? resolveClaudeProfileCommand(config, projectName) : agent];
+    const profile = resolveAgentProfile(config, projectName, agent);
+    agent = profile.name;
+    command = [profile.command];
   } else {
     agent = agent || command[0];
   }
@@ -2768,51 +2871,88 @@ function defaultSettings() {
         previousNotify: null,
       },
     },
-    claudeProfiles: {
-      default: null,
-      profiles: {},
+    agentProfiles: defaultAgentProfiles(),
+  };
+}
+
+function defaultAgentProfiles() {
+  return {
+    default: "claude",
+    profiles: {
+      claude: { name: "claude", command: "claude" },
+      codex: { name: "codex", command: "codex" },
     },
   };
 }
 
 function normalizeConfig(config) {
   const defaults = defaultConfig();
+  const rawSettings = config.settings || {};
+  const rawAgentProfiles = rawSettings.agentProfiles || {};
+  const rawClaudeProfiles = rawSettings.claudeProfiles || {};
+  const agentProfiles = {
+    default:
+      rawAgentProfiles.default ||
+      rawClaudeProfiles.default ||
+      defaults.settings.agentProfiles.default,
+    profiles: {
+      ...defaults.settings.agentProfiles.profiles,
+      ...(rawClaudeProfiles.profiles || {}),
+      ...(rawAgentProfiles.profiles || {}),
+    },
+  };
+  for (const [name, profile] of Object.entries(agentProfiles.profiles)) {
+    agentProfiles.profiles[name] = {
+      name: profile.name || name,
+      command: profile.command,
+    };
+  }
+  if (!agentProfiles.profiles[agentProfiles.default]) {
+    agentProfiles.default = defaults.settings.agentProfiles.default;
+  }
+
   config.version = config.version || defaults.version;
   config.projects = config.projects || {};
   config.workspaces = config.workspaces || {};
   config.sessions = config.sessions || {};
   config.settings = {
     ...defaults.settings,
-    ...(config.settings || {}),
+    ...rawSettings,
     terminalApp: normalizeTerminalSetting(
-      (config.settings || {}).terminalApp || defaults.settings.terminalApp,
+      rawSettings.terminalApp || defaults.settings.terminalApp,
     ),
     notifications: {
       ...defaults.settings.notifications,
-      ...((config.settings || {}).notifications || {}),
+      ...(rawSettings.notifications || {}),
     },
     agentHooks: {
       ...defaults.settings.agentHooks,
-      ...((config.settings || {}).agentHooks || {}),
+      ...(rawSettings.agentHooks || {}),
       claude: {
         ...defaults.settings.agentHooks.claude,
-        ...(((config.settings || {}).agentHooks || {}).claude || {}),
+        ...((rawSettings.agentHooks || {}).claude || {}),
       },
       codex: {
         ...defaults.settings.agentHooks.codex,
-        ...(((config.settings || {}).agentHooks || {}).codex || {}),
+        ...((rawSettings.agentHooks || {}).codex || {}),
       },
     },
-    claudeProfiles: {
-      ...defaults.settings.claudeProfiles,
-      ...((config.settings || {}).claudeProfiles || {}),
-      profiles: {
-        ...defaults.settings.claudeProfiles.profiles,
-        ...(((config.settings || {}).claudeProfiles || {}).profiles || {}),
-      },
-    },
+    agentProfiles,
   };
+  delete config.settings.claudeProfiles;
   delete config.settings.notifications.scope;
+  for (const project of Object.values(config.projects)) {
+    if (!project.agentProfile && project.claudeProfile) {
+      project.agentProfile = project.claudeProfile;
+    }
+    delete project.claudeProfile;
+    if (
+      project.agentProfile &&
+      !config.settings.agentProfiles.profiles[project.agentProfile]
+    ) {
+      project.agentProfile = null;
+    }
+  }
   return config;
 }
 
@@ -2822,7 +2962,7 @@ function printSettings(config) {
   console.log(`notifications: ${settings.enabled ? "on" : "off"}`);
   console.log(`sound: ${settings.soundName}`);
   console.log(`macOS banner: ${settings.macosNotification ? "on" : "off"}`);
-  console.log(`default Claude profile: ${config.settings.claudeProfiles.default || "claude"}`);
+  console.log(`default agent profile: ${config.settings.agentProfiles.default || "claude"}`);
   printHookStatus(config);
 }
 

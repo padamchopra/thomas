@@ -17,6 +17,7 @@ struct Project: Decodable {
   let mainBranch: String?
   let worktreesDir: String?
   let githubUser: String?
+  let agentProfile: String?
   let claudeProfile: String?
 }
 
@@ -44,15 +45,18 @@ struct SettingsState: Decodable {
   let terminalApp: String?
   let notifications: NotificationSettings?
   let agentHooks: AgentHooksState?
+  let agentProfiles: AgentProfilesState?
   let claudeProfiles: ClaudeProfilesState?
 }
 
-struct ClaudeProfilesState: Decodable {
+struct AgentProfilesState: Decodable {
   let `default`: String?
-  let profiles: [String: ClaudeProfileState]?
+  let profiles: [String: AgentProfileState]?
 }
 
-struct ClaudeProfileState: Decodable {
+typealias ClaudeProfilesState = AgentProfilesState
+
+struct AgentProfileState: Decodable {
   let name: String?
   let command: String
 }
@@ -87,7 +91,7 @@ struct RegistrationForm {
   let base: String
   let githubUser: String
   let worktreesDir: String
-  let claudeProfile: String
+  let agentProfile: String
 }
 
 struct WorkspaceCreationForm {
@@ -96,7 +100,7 @@ struct WorkspaceCreationForm {
   let agent: String
 }
 
-struct ClaudeProfileForm {
+struct AgentProfileForm {
   let name: String
   let command: String
 }
@@ -203,6 +207,14 @@ final class ConductorService {
     let environment = ProcessInfo.processInfo.environment
     if let explicit = environment["CONDUCTOR_CLI_BIN"], !explicit.isEmpty {
       return command(for: explicit)
+    }
+
+    if let bundled = Bundle.main.resourceURL?
+      .appendingPathComponent("bin")
+      .appendingPathComponent("conductor-cli.js")
+      .path,
+      FileManager.default.fileExists(atPath: bundled) {
+      return command(for: bundled)
     }
 
     if let resourcePath = Bundle.main.path(
@@ -515,12 +527,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
     if let worktreesDir = project.worktreesDir {
       menu.addItem(disabledItem("Worktrees: \(worktreesDir)"))
     }
-    menu.addItem(disabledItem("Claude: \(projectClaudeProfileLabel(project))"))
+    menu.addItem(disabledItem("Agent: \(projectAgentProfileLabel(project))"))
     menu.addItem(.separator())
     menu.addItem(
       actionItem(
-        "Set Claude Profile...",
-        action: #selector(setProjectClaudeProfile(_:)),
+        "Set Agent Profile...",
+        action: #selector(setProjectAgentProfile(_:)),
         object: projectObject(project)
       )
     )
@@ -574,20 +586,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
     }
     menu.addItem(.separator())
     if workspace.status == "active" {
-      menu.addItem(
-        actionItem(
-          "Open Codex Terminal...",
-          action: #selector(startCodex(_:)),
-          object: workspaceObject(workspace)
+      for profile in agentProfileNames() {
+        menu.addItem(
+          actionItem(
+            "Open \(profile) Terminal...",
+            action: #selector(startAgentProfile(_:)),
+            object: workspaceObject(workspace, agentProfile: profile)
+          )
         )
-      )
-      menu.addItem(
-        actionItem(
-          "Open Claude Terminal...",
-          action: #selector(startClaude(_:)),
-          object: workspaceObject(workspace)
-        )
-      )
+      }
       menu.addItem(.separator())
       menu.addItem(
         actionItem(
@@ -656,7 +663,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
     let soundName = notifications?.soundName ?? "Glass"
 
     menu.addItem(disabledItem("Terminal: \(service.terminalDescription(for: terminalSetting))"))
-    menu.addItem(disabledItem("Default Claude: \(defaultClaudeProfileLabel(settings))"))
+    menu.addItem(disabledItem("Default Agent: \(defaultAgentProfileLabel(settings))"))
     menu.addItem(disabledItem("Notifications: \(enabled ? "On" : "Off")"))
     menu.addItem(disabledItem("Sound: \(soundName)"))
     menu.addItem(disabledItem("macOS Banner: \(bannerEnabled ? "On" : "Off")"))
@@ -666,9 +673,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
     terminalItem.submenu = terminalMenu(current: terminalSetting)
     menu.addItem(terminalItem)
 
-    let claudeItem = NSMenuItem(title: "Claude Profiles", action: nil, keyEquivalent: "")
-    claudeItem.submenu = claudeProfilesMenu(settings?.claudeProfiles)
-    menu.addItem(claudeItem)
+    let agentItem = NSMenuItem(title: "Agent Profiles", action: nil, keyEquivalent: "")
+    agentItem.submenu = agentProfilesMenu(currentAgentProfiles(settings))
+    menu.addItem(agentItem)
 
     let notificationsItem = actionItem(
       enabled ? "Turn Notifications Off" : "Turn Notifications On",
@@ -714,39 +721,55 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
     service.terminalArgument(for: currentTerminalSetting())
   }
 
-  private func defaultClaudeProfileLabel(_ settings: SettingsState?) -> String {
-    guard let name = settings?.claudeProfiles?.default, !name.isEmpty else { return "claude" }
+  private func defaultAgentProfileLabel(_ settings: SettingsState?) -> String {
+    guard let name = currentAgentProfiles(settings)?.default, !name.isEmpty else { return "claude" }
     return name
   }
 
-  private func projectClaudeProfileLabel(_ project: Project) -> String {
+  private func projectAgentProfileLabel(_ project: Project) -> String {
+    if let profile = project.agentProfile, !profile.isEmpty { return profile }
     if let profile = project.claudeProfile, !profile.isEmpty { return profile }
-    return "default (\(defaultClaudeProfileLabel(state?.settings)))"
+    return "default (\(defaultAgentProfileLabel(state?.settings)))"
   }
 
-  private func claudeProfileNames() -> [String] {
-    guard let profiles = state?.settings?.claudeProfiles?.profiles else { return [] }
-    return Array(profiles.keys).sorted()
+  private func agentProfileNames() -> [String] {
+    agentProfileEntries(currentAgentProfiles(state?.settings)).map(\.0)
   }
 
-  private func claudeProfilesMenu(_ profiles: ClaudeProfilesState?) -> NSMenu {
+  private func currentAgentProfiles(_ settings: SettingsState?) -> AgentProfilesState? {
+    settings?.agentProfiles ?? settings?.claudeProfiles
+  }
+
+  private func agentProfilesMenu(_ profiles: AgentProfilesState?) -> NSMenu {
     let menu = NSMenu()
-    let defaultName = profiles?.default
-    let entries = (profiles?.profiles ?? [:]).sorted { $0.key < $1.key }
-    if entries.isEmpty {
-      menu.addItem(disabledItem("No profiles configured"))
-      menu.addItem(disabledItem("Fallback command: claude"))
-    } else {
-      for (name, profile) in entries {
-        let title = name == defaultName ? "✓ \(name) → \(profile.command)" : "\(name) → \(profile.command)"
-        let item = actionItem(title, action: #selector(setDefaultClaudeProfile(_:)), object: name)
-        item.state = name == defaultName ? .on : .off
-        menu.addItem(item)
-      }
+    let defaultName = profiles?.default ?? "claude"
+    let entries = agentProfileEntries(profiles)
+    for (name, profile) in entries {
+      let title = name == defaultName ? "✓ \(name) -> \(profile.command)" : "\(name) -> \(profile.command)"
+      let item = actionItem(title, action: #selector(setDefaultAgentProfile(_:)), object: name)
+      item.state = name == defaultName ? .on : .off
+      menu.addItem(item)
     }
     menu.addItem(.separator())
-    menu.addItem(actionItem("Add Profile...", action: #selector(addClaudeProfile(_:))))
+    menu.addItem(actionItem("Add Profile...", action: #selector(addAgentProfile(_:))))
     return menu
+  }
+
+  private func agentProfileEntries(_ profiles: AgentProfilesState?) -> [(String, AgentProfileState)] {
+    var entries = profiles?.profiles ?? [:]
+    if entries["claude"] == nil {
+      entries["claude"] = AgentProfileState(name: "claude", command: "claude")
+    }
+    if entries["codex"] == nil {
+      entries["codex"] = AgentProfileState(name: "codex", command: "codex")
+    }
+    return entries.sorted { agentProfileSortKey($0.key) < agentProfileSortKey($1.key) }
+  }
+
+  private func agentProfileSortKey(_ name: String) -> String {
+    if name == "claude" { return "0" }
+    if name == "codex" { return "1" }
+    return "2-\(name)"
   }
 
   private func terminalMenu(current: String) -> NSMenu {
@@ -779,12 +802,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
     return menu
   }
 
-  @objc private func startCodex(_ sender: NSMenuItem) {
-    startAgent(sender, agent: "codex")
-  }
-
-  @objc private func startClaude(_ sender: NSMenuItem) {
-    startAgent(sender, agent: "claude")
+  @objc private func startAgentProfile(_ sender: NSMenuItem) {
+    guard let workspace = sender.representedObject as? [String: String],
+      let agent = workspace["agent"] else { return }
+    startAgent(sender, agent: agent)
   }
 
   private func startAgent(_ sender: NSMenuItem, agent: String) {
@@ -836,13 +857,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
     if !form.base.isEmpty {
       args.append(contentsOf: ["--base", form.base])
     }
-    if form.agent != "none" {
+    if form.agent != "None" {
       args.append(contentsOf: ["--agent", form.agent, "--terminal", currentTerminalArgument()])
     }
 
     do {
       let output = try service.run(args)
-      if form.agent != "none" {
+      if form.agent != "None" {
         copyPreparedSessionCommand(output: output)
       }
       refresh(silent: true)
@@ -943,35 +964,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
     runSettings(["terminal", terminal], title: "Unable to update terminal app")
   }
 
-  @objc private func addClaudeProfile(_ sender: Any?) {
-    guard let form = claudeProfileForm() else { return }
+  @objc private func addAgentProfile(_ sender: Any?) {
+    guard let form = agentProfileForm() else { return }
     do {
-      try service.run(["claude-profile", "add", form.name, form.command])
+      try service.run(["agent-profile", "add", form.name, form.command])
       refresh(silent: true)
     } catch {
-      showError(title: "Unable to add Claude profile", message: error.localizedDescription)
+      showError(title: "Unable to add agent profile", message: error.localizedDescription)
     }
   }
 
-  @objc private func setDefaultClaudeProfile(_ sender: NSMenuItem) {
+  @objc private func setDefaultAgentProfile(_ sender: NSMenuItem) {
     guard let name = sender.representedObject as? String else { return }
     do {
-      try service.run(["claude-profile", "default", name])
+      try service.run(["agent-profile", "default", name])
       refresh(silent: true)
     } catch {
-      showError(title: "Unable to set default Claude profile", message: error.localizedDescription)
+      showError(title: "Unable to set default agent profile", message: error.localizedDescription)
     }
   }
 
-  @objc private func setProjectClaudeProfile(_ sender: NSMenuItem) {
+  @objc private func setProjectAgentProfile(_ sender: NSMenuItem) {
     guard let project = sender.representedObject as? [String: String],
       let name = project["name"] else { return }
-    guard let profile = chooseClaudeProfile(projectName: name, current: project["claudeProfile"] ?? "") else { return }
+    let current = project["agentProfile"] ?? project["claudeProfile"] ?? ""
+    guard let profile = chooseAgentProfile(projectName: name, current: current) else { return }
     do {
-      try service.run(["project", "set-claude-profile", name, profile])
+      try service.run(["project", "set-agent-profile", name, profile])
       refresh(silent: true)
     } catch {
-      showError(title: "Unable to set project Claude profile", message: error.localizedDescription)
+      showError(title: "Unable to set project agent profile", message: error.localizedDescription)
     }
   }
 
@@ -1065,8 +1087,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
     if !form.worktreesDir.isEmpty {
       args.append(contentsOf: ["--worktrees-dir", form.worktreesDir])
     }
-    if !form.claudeProfile.isEmpty && form.claudeProfile != "default" {
-      args.append(contentsOf: ["--claude-profile", form.claudeProfile])
+    if !form.agentProfile.isEmpty && form.agentProfile != "default" {
+      args.append(contentsOf: ["--agent-profile", form.agentProfile])
     }
 
     do {
@@ -1102,6 +1124,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
     ]
   }
 
+  private func workspaceObject(_ workspace: Workspace, agentProfile: String) -> [String: String] {
+    [
+      "project": workspace.project,
+      "name": workspace.name,
+      "path": workspace.path,
+      "agent": agentProfile,
+    ]
+  }
+
   private func sessionObject(_ session: Session) -> [String: String] {
     [
       "id": session.id,
@@ -1119,6 +1150,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
       "mainBranch": project.mainBranch ?? "origin/main",
       "worktreesDir": project.worktreesDir ?? "",
       "githubUser": project.githubUser ?? "",
+      "agentProfile": project.agentProfile ?? "",
       "claudeProfile": project.claudeProfile ?? "",
     ]
   }
@@ -1134,7 +1166,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
       base: "origin/main",
       githubUser: "",
       worktreesDir: "\(home)/.conductor-cli/worktrees/\(projectName)",
-      claudeProfile: ""
+      agentProfile: ""
     )
   }
 
@@ -1142,7 +1174,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
     let nameField = NSTextField(string: "")
     let baseField = NSTextField(string: base)
     let agentPopup = NSPopUpButton(frame: .zero, pullsDown: false)
-    agentPopup.addItems(withTitles: ["None", "Codex", "Claude"])
+    agentPopup.addItems(withTitles: ["None"] + agentProfileNames())
     let branchPreview = NSTextField(labelWithString: defaultBranchPreview(projectName: projectName, workspaceName: ""))
     branchPreview.textColor = .secondaryLabelColor
     nameField.delegate = self
@@ -1181,7 +1213,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
     return WorkspaceCreationForm(
       name: name,
       base: baseField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines),
-      agent: (agentPopup.titleOfSelectedItem ?? "None").lowercased()
+      agent: agentPopup.titleOfSelectedItem ?? "None"
     )
   }
 
@@ -1228,7 +1260,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
     return collapsed.isEmpty ? "workspace" : collapsed
   }
 
-  private func claudeProfileForm() -> ClaudeProfileForm? {
+  private func agentProfileForm() -> AgentProfileForm? {
     let nameField = NSTextField(string: "")
     let commandField = NSTextField(string: "claude")
 
@@ -1240,7 +1272,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
     stack.frame = NSRect(x: 0, y: 0, width: 360, height: 96)
 
     let alert = NSAlert()
-    alert.messageText = "Add Claude Profile"
+    alert.messageText = "Add Agent Profile"
     alert.informativeText = "Profiles are stored by conductor-cli and can be assigned to projects."
     alert.accessoryView = stack
     alert.addButton(withTitle: "Add")
@@ -1250,16 +1282,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
     let name = nameField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
     let command = commandField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !name.isEmpty, !command.isEmpty else {
-      showError(title: "Profile name and command required", message: "Enter both a profile name and Claude command.")
+      showError(title: "Profile name and command required", message: "Enter both a profile name and command.")
       return nil
     }
-    return ClaudeProfileForm(name: name, command: command)
+    return AgentProfileForm(name: name, command: command)
   }
 
-  private func chooseClaudeProfile(projectName: String, current: String) -> String? {
+  private func chooseAgentProfile(projectName: String, current: String) -> String? {
     let popup = NSPopUpButton(frame: .zero, pullsDown: false)
     popup.addItem(withTitle: "Default")
-    for profile in claudeProfileNames() {
+    for profile in agentProfileNames() {
       popup.addItem(withTitle: profile)
     }
     if !current.isEmpty, let item = popup.item(withTitle: current) {
@@ -1271,11 +1303,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
     let stack = NSStackView()
     stack.orientation = .vertical
     stack.spacing = 8
-    stack.addArrangedSubview(labeledControl("Claude profile", popup))
+    stack.addArrangedSubview(labeledControl("Agent profile", popup))
     stack.frame = NSRect(x: 0, y: 0, width: 360, height: 64)
 
     let alert = NSAlert()
-    alert.messageText = "Set Claude Profile"
+    alert.messageText = "Set Agent Profile"
     alert.informativeText = "Project: \(projectName)"
     alert.accessoryView = stack
     alert.addButton(withTitle: "Set")
@@ -1290,7 +1322,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
     let nameField = NSTextField(string: defaults.name)
     let baseField = NSTextField(string: defaults.base)
     let githubUserField = NSTextField(string: defaults.githubUser)
-    let claudeProfileField = NSTextField(string: defaults.claudeProfile)
+    let agentProfilePopup = NSPopUpButton(frame: .zero, pullsDown: false)
+    agentProfilePopup.addItem(withTitle: "Default")
+    for profile in agentProfileNames() {
+      agentProfilePopup.addItem(withTitle: profile)
+    }
+    if !defaults.agentProfile.isEmpty, let item = agentProfilePopup.item(withTitle: defaults.agentProfile) {
+      agentProfilePopup.select(item)
+    }
     let worktreesField = NSTextField(string: defaults.worktreesDir)
 
     let stack = NSStackView()
@@ -1299,7 +1338,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
     stack.addArrangedSubview(labeledField("Project name", nameField))
     stack.addArrangedSubview(labeledField("Base ref", baseField))
     stack.addArrangedSubview(labeledField("GitHub user", githubUserField))
-    stack.addArrangedSubview(labeledField("Claude profile", claudeProfileField))
+    stack.addArrangedSubview(labeledControl("Agent profile", agentProfilePopup))
     stack.addArrangedSubview(labeledField("Worktrees dir", worktreesField))
     stack.frame = NSRect(x: 0, y: 0, width: 360, height: 192)
 
@@ -1322,7 +1361,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
       base: baseField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines),
       githubUser: githubUserField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines),
       worktreesDir: worktreesField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines),
-      claudeProfile: claudeProfileField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+      agentProfile: agentProfilePopup.titleOfSelectedItem == "Default"
+        ? "default"
+        : (agentProfilePopup.titleOfSelectedItem ?? "default")
     )
   }
 

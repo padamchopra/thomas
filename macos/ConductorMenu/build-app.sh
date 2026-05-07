@@ -12,9 +12,12 @@ export CLANG_MODULE_CACHE_PATH="$SCRIPT_DIR/.build/module-cache"
 swift build -c release
 
 rm -rf "$APP_PATH"
-mkdir -p "$APP_PATH/Contents/MacOS" "$APP_PATH/Contents/Resources"
+mkdir -p "$APP_PATH/Contents/MacOS" "$APP_PATH/Contents/Resources/bin"
 
 cp "$BINARY_PATH" "$APP_PATH/Contents/MacOS/ConductorMenu"
+cp "$REPO_ROOT/bin/conductor-cli.js" "$APP_PATH/Contents/Resources/bin/conductor-cli.js"
+cp "$REPO_ROOT/package.json" "$APP_PATH/Contents/Resources/package.json"
+chmod +x "$APP_PATH/Contents/Resources/bin/conductor-cli.js"
 printf "%s\n" "$REPO_ROOT/bin/conductor-cli.js" \
   > "$APP_PATH/Contents/Resources/conductor-cli-path.txt"
 
