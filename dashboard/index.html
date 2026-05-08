@@ -1,0 +1,394 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>conductor-cli dashboard</title>
+<style>
+:root {
+  color-scheme: light;
+  --bg:#f7f6f3;
+  --panel:#fffefa;
+  --panel-soft:#fbfaf7;
+  --text:#1f1f1d;
+  --muted:#77736b;
+  --faint:#a8a29a;
+  --line:#e2ded6;
+  --line-strong:#d3cec4;
+  --button:#242421;
+  --button-text:#fffefa;
+  --danger:#9f1d21;
+  --danger-bg:#fff3f1;
+  --ok:#287044;
+  --shadow:0 18px 45px rgba(38, 35, 30, .06);
+}
+* { box-sizing:border-box; }
+html { background:var(--bg); }
+body {
+  margin:0;
+  color:var(--text);
+  background:
+    radial-gradient(circle at 50% -20%, rgba(255,255,255,.9), rgba(255,255,255,0) 34rem),
+    var(--bg);
+  font:14px/1.5 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  letter-spacing:0;
+}
+header {
+  position:sticky;
+  top:0;
+  z-index:2;
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:24px;
+  padding:22px clamp(18px, 4vw, 54px);
+  border-bottom:1px solid rgba(226,222,214,.72);
+  background:rgba(247,246,243,.86);
+  backdrop-filter:blur(18px);
+}
+h1 {
+  margin:0;
+  font-size:22px;
+  font-weight:580;
+  letter-spacing:0;
+}
+h2 {
+  margin:0;
+  font-size:16px;
+  font-weight:570;
+}
+main {
+  display:grid;
+  grid-template-columns:minmax(300px, 380px) minmax(0, 1fr);
+  gap:22px;
+  width:min(1480px, 100%);
+  margin:0 auto;
+  padding:32px clamp(18px, 4vw, 54px) 54px;
+}
+section, .card {
+  background:var(--panel);
+  border:1px solid var(--line);
+  border-radius:18px;
+  box-shadow:var(--shadow);
+}
+section {
+  padding:20px;
+}
+form {
+  display:grid;
+  gap:13px;
+  margin-top:16px;
+}
+label {
+  display:grid;
+  gap:7px;
+  color:var(--muted);
+  font-size:12px;
+  font-weight:520;
+}
+input, select, textarea, button {
+  width:100%;
+  border:1px solid var(--line);
+  border-radius:12px;
+  background:var(--panel-soft);
+  color:var(--text);
+  padding:10px 12px;
+  font:inherit;
+}
+input, select, textarea {
+  min-height:42px;
+}
+textarea {
+  min-height:88px;
+  resize:vertical;
+}
+input:focus, select:focus, textarea:focus {
+  outline:2px solid rgba(36,36,33,.12);
+  border-color:var(--line-strong);
+  background:#fff;
+}
+button {
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  width:auto;
+  min-height:38px;
+  cursor:pointer;
+  color:var(--button-text);
+  background:var(--button);
+  border-color:var(--button);
+  font-weight:540;
+  white-space:nowrap;
+}
+button:hover {
+  background:#000;
+  border-color:#000;
+}
+form > button {
+  width:100%;
+}
+button.danger {
+  color:var(--danger);
+  background:var(--danger-bg);
+  border-color:#f0cbc6;
+}
+button.danger:hover {
+  color:#7b1115;
+  background:#ffe9e6;
+  border-color:#e8bbb5;
+}
+aside {
+  align-self:start;
+}
+.stack {
+  display:grid;
+  gap:18px;
+}
+.content-stack {
+  display:grid;
+  gap:22px;
+}
+.section-head {
+  display:flex;
+  align-items:flex-end;
+  justify-content:space-between;
+  gap:14px;
+  margin-bottom:16px;
+}
+.eyebrow {
+  color:var(--faint);
+  font-size:11px;
+  font-weight:620;
+  letter-spacing:.08em;
+  text-transform:uppercase;
+}
+.row {
+  display:flex;
+  gap:9px;
+  flex-wrap:wrap;
+  align-items:center;
+}
+.row select {
+  width:auto;
+  min-width:150px;
+}
+form + .row, form + .stack {
+  margin-top:16px;
+}
+.grid {
+  display:grid;
+  grid-template-columns:repeat(auto-fit, minmax(280px, 1fr));
+  gap:14px;
+}
+.muted {
+  color:var(--muted);
+}
+.pill {
+  display:inline-flex;
+  align-items:center;
+  min-height:32px;
+  padding:5px 10px;
+  border:1px solid var(--line);
+  border-radius:999px;
+  color:var(--muted);
+  background:rgba(255,254,250,.72);
+  font-size:12px;
+}
+.item {
+  display:grid;
+  gap:10px;
+  min-width:0;
+  padding:15px;
+  border:1px solid var(--line);
+  border-radius:16px;
+  background:linear-gradient(180deg, #fffefa, #fbfaf7);
+}
+.item strong {
+  min-width:0;
+  overflow-wrap:anywhere;
+  font-size:15px;
+  font-weight:620;
+}
+.item .meta {
+  display:grid;
+  gap:5px;
+  min-width:0;
+  overflow-wrap:anywhere;
+}
+.item pre, pre {
+  white-space:pre-wrap;
+  word-break:break-word;
+  overflow:auto;
+  max-height:380px;
+  margin:0;
+  padding:14px;
+  color:#2b2a27;
+  background:#f1efe9;
+  border:1px solid var(--line);
+  border-radius:14px;
+  font:12px/1.55 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+}
+#output {
+  min-height:180px;
+}
+.ok {
+  color:var(--ok);
+  font-weight:560;
+}
+.dangerText {
+  color:var(--danger);
+}
+.check-label {
+  display:flex;
+  grid-template-columns:none;
+  align-items:center;
+  gap:9px;
+  color:var(--text);
+  font-size:14px;
+  font-weight:450;
+}
+.check-label input {
+  width:16px;
+  min-height:16px;
+  height:16px;
+  accent-color:var(--button);
+}
+.empty {
+  margin:0;
+  padding:18px;
+  color:var(--muted);
+  border:1px dashed var(--line-strong);
+  border-radius:16px;
+  background:var(--panel-soft);
+}
+@media (max-width: 980px) {
+  main { grid-template-columns:1fr; }
+  header { align-items:flex-start; flex-direction:column; }
+}
+@media (max-width: 620px) {
+  header, main { padding-left:16px; padding-right:16px; }
+  main { padding-top:20px; }
+  section { padding:17px; }
+  .row, button, .row select { width:100%; }
+}
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <div class="eyebrow">Local control plane</div>
+    <h1>conductor-cli dashboard</h1>
+    <div class="muted" id="subtitle">Loading...</div>
+  </div>
+  <div class="row">
+    <span class="pill" id="counts"></span>
+    <button onclick="loadState()">Refresh</button>
+  </div>
+</header>
+<main>
+  <aside class="stack">
+    <section>
+      <h2>Create workspace</h2>
+      <form data-action="workspace/create">
+        <label>Project<select name="project" data-projects></select></label>
+        <label>Name<input name="name" required placeholder="auth-flow" /></label>
+        <label>Base ref<input name="base" placeholder="origin/main" /></label>
+        <label>Agent<select name="agent" data-agents-optional></select></label>
+        <label>Launch<select name="launchMode"><option value="terminal">New terminal tab</option><option value="detach">Background log</option><option value="none">No session</option></select></label>
+        <label>Custom command<textarea name="command" placeholder="optional shell command"></textarea></label>
+        <button>Create</button>
+      </form>
+    </section>
+
+    <section>
+      <h2>Register project</h2>
+      <form data-action="project/add">
+        <label>Name<input name="name" required /></label>
+        <label>Repo path<input name="repoPath" required placeholder="~/src/app" /></label>
+        <label>Base ref<input name="base" placeholder="origin/main" /></label>
+        <label>Worktrees dir<input name="worktreesDir" /></label>
+        <label>GitHub user<input name="githubUser" /></label>
+        <label>Agent profile<select name="agentProfile" data-agents-default></select></label>
+        <button>Register</button>
+      </form>
+    </section>
+
+    <section>
+      <h2>Agent profiles</h2>
+      <form data-action="agent-profile/add">
+        <label>Name<input name="name" /></label>
+        <label>Command<input name="command" placeholder="claude-work" /></label>
+        <button>Add profile</button>
+      </form>
+      <div id="profiles" class="stack"></div>
+    </section>
+
+    <section>
+      <h2>Settings</h2>
+      <form data-action="settings/update">
+        <label>Terminal<select name="terminalApp"><option>auto</option><option>terminal</option><option>iterm</option><option>warp</option><option>warppreview</option></select></label>
+        <label>Sound<input name="soundName" /></label>
+        <label class="check-label"><input type="checkbox" name="notificationsEnabled" /> Notifications</label>
+        <label class="check-label"><input type="checkbox" name="macosNotification" /> macOS banner</label>
+        <button>Save settings</button>
+      </form>
+      <div class="row">
+        <button onclick="post('settings/hooks/install',{target:'all'})">Install hooks</button>
+        <button onclick="post('settings/test',{})">Test notification</button>
+      </div>
+    </section>
+  </aside>
+  <div class="content-stack">
+    <section>
+      <div class="section-head">
+        <h2>Projects</h2>
+        <span class="muted">Registered repos</span>
+      </div>
+      <div id="projects" class="grid"></div>
+    </section>
+    <section>
+      <div class="section-head">
+        <h2>Workspaces</h2>
+        <span class="muted">Active worktrees</span>
+      </div>
+      <div id="workspaces" class="grid"></div>
+    </section>
+    <section>
+      <div class="section-head">
+        <h2>Sessions</h2>
+        <span class="muted">Agent processes</span>
+      </div>
+      <div id="sessions" class="grid"></div>
+    </section>
+    <section>
+      <div class="section-head">
+        <h2>Output</h2>
+        <span class="muted">Checks, logs, and command results</span>
+      </div>
+      <pre id="output">Ready.</pre>
+    </section>
+  </div>
+</main>
+<script>
+let state = null;
+const $ = (s, r=document) => r.querySelector(s);
+const $$ = (s, r=document) => [...r.querySelectorAll(s)];
+const esc = (s='') => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+function formData(form){ const data={}; new FormData(form).forEach((v,k)=>data[k]=v); $$('input[type=checkbox]', form).forEach(i=>data[i.name]=i.checked); return data; }
+async function api(path, options={}){ const r=await fetch('/api/'+path, {headers:{'content-type':'application/json'}, ...options}); const j=await r.json(); if(!j.ok) throw new Error(j.error || 'Request failed'); return j; }
+async function post(action, body){ try { const j=await api(action,{method:'POST',body:JSON.stringify(body)}); if(j.output) $('#output').textContent=j.output; state=j.state; render(); } catch(e){ $('#output').textContent=e.message; } }
+async function loadState(){ try { const j=await api('state'); state=j.state; render(); } catch(e){ $('#output').textContent=e.message; } }
+function render(){ if(!state) return; $('#subtitle').textContent = `${state.configPath} - ${state.generatedAt}`; $('#counts').textContent = `${state.projects.length} projects - ${state.workspaces.length} workspaces - ${state.sessions.length} sessions`; fillSelects(); renderProjects(); renderWorkspaces(); renderSessions(); renderProfiles(); renderSettings(); }
+function fillSelects(){ const ps=state.projects.map(p=>`<option value="${esc(p.name)}">${esc(p.name)}</option>`).join(''); $$('[data-projects]').forEach(s=>s.innerHTML=ps); const profiles=Object.values(state.settings.agentProfiles.profiles).sort((a,b)=>a.name.localeCompare(b.name)); $$('[data-agents-optional]').forEach(s=>s.innerHTML='<option value="">Default</option><option value="none">No session</option>'+profiles.map(p=>`<option>${esc(p.name)}</option>`).join('')); $$('[data-agents-default]').forEach(s=>s.innerHTML='<option value="">Default</option>'+profiles.map(p=>`<option>${esc(p.name)}</option>`).join('')); }
+function renderProjects(){ $('#projects').innerHTML = state.projects.map(p=>`<div class="item"><strong>${esc(p.name)}</strong><div class="meta"><div class="muted">${esc(p.repoPath)}</div><div>Base: ${esc(p.mainBranch||'')}</div><div>Agent: ${esc(p.agentProfile||'default')}</div><div>Worktrees: ${esc(p.worktreesDir||'')}</div></div><div class="row"><select onchange="post('project/set-agent-profile',{name:'${esc(p.name)}',agentProfile:this.value})"><option value="">default</option>${Object.values(state.settings.agentProfiles.profiles).map(ap=>`<option ${p.agentProfile===ap.name?'selected':''}>${esc(ap.name)}</option>`).join('')}</select><button class="danger" onclick="post('project/remove',{name:'${esc(p.name)}',force:true})">Remove</button></div></div>`).join('') || '<p class="empty">No projects.</p>'; }
+function renderWorkspaces(){ $('#workspaces').innerHTML = state.workspaces.map(w=>`<div class="item"><strong>${esc(w.project)}/${esc(w.name)}</strong><div class="meta"><div class="${w.status==='active'?'ok':'muted'}">${esc(w.status)}</div><div>${esc(w.branch||'')}</div><div class="muted">${esc(w.path||'')}</div></div><div class="row"><button onclick="checks('${esc(w.project)}','${esc(w.name)}')">Checks</button><button onclick="post('session/start',{project:'${esc(w.project)}',workspace:'${esc(w.name)}',launchMode:'terminal'})">Start session</button><button onclick="post('workspace/archive',{project:'${esc(w.project)}',workspace:'${esc(w.name)}'})">Archive</button><button class="danger" onclick="post('workspace/remove',{project:'${esc(w.project)}',workspace:'${esc(w.name)}',force:true})">Remove</button></div></div>`).join('') || '<p class="empty">No workspaces.</p>'; }
+function renderSessions(){ $('#sessions').innerHTML = state.sessions.map(s=>`<div class="item"><strong>${esc(s.id)}</strong><div class="meta"><div>${esc(s.project)}/${esc(s.workspace)} - ${esc(s.agent||'')}</div><div>Status: ${esc(s.status)} ${s.pid?'pid '+esc(s.pid):''}</div><div class="muted">${esc(s.commandText||'')}</div></div>${s.runCommand?`<pre>${esc(s.runCommand)}</pre>`:''}<div class="row"><button onclick="logs('${esc(s.id)}')">Logs</button>${s.resumeCommand?`<button onclick="post('session/resume',{id:'${esc(s.id)}'})">Resume</button>`:''}<button class="danger" onclick="post('session/stop',{id:'${esc(s.id)}'})">Stop</button></div></div>`).join('') || '<p class="empty">No sessions.</p>'; }
+function renderProfiles(){ const d=state.settings.agentProfiles.default; $('#profiles').innerHTML = Object.values(state.settings.agentProfiles.profiles).map(p=>`<div class="item"><strong>${esc(p.name)} ${p.name===d?'(default)':''}</strong><div class="muted">${esc(p.command)}</div><div class="row"><button onclick="post('agent-profile/default',{name:'${esc(p.name)}'})">Make default</button>${['claude','codex'].includes(p.name)?'':`<button class="danger" onclick="post('agent-profile/remove',{name:'${esc(p.name)}'})">Remove</button>`}</div></div>`).join(''); }
+function renderSettings(){ const s=state.settings; $('[name=terminalApp]').value=s.terminalApp||'auto'; $('[name=soundName]').value=s.notifications.soundName||'none'; $('[name=notificationsEnabled]').checked=s.notifications.enabled!==false; $('[name=macosNotification]').checked=!!s.notifications.macosNotification; }
+async function checks(project, workspace){ try { const j=await api(`checks?project=${encodeURIComponent(project)}&workspace=${encodeURIComponent(workspace)}`); $('#output').textContent=j.output||'(no output)'; } catch(e){ $('#output').textContent=e.message; } }
+async function logs(id){ try { const j=await api(`session/logs?id=${encodeURIComponent(id)}`); $('#output').textContent=j.output||'(no logs)'; } catch(e){ $('#output').textContent=e.message; } }
+document.addEventListener('submit', e => { const form=e.target.closest('form[data-action]'); if(!form) return; e.preventDefault(); const data=formData(form); if(data.agent==='none') delete data.agent; if(data.launchMode==='none') { delete data.agent; delete data.command; } post(form.dataset.action, data); });
+loadState(); setInterval(loadState, 15000);
+</script>
+</body>
+</html>

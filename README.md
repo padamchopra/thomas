@@ -50,25 +50,29 @@ printed command inside it so the agent gets a real interactive terminal.
 
 ## Recommended Flow
 
-Start with the interactive menu:
+Start the local web dashboard:
 
 ```sh
-conductor-cli
+conductor-cli dashboard
 ```
 
-Use arrow keys or `j`/`k` to move, then press Enter. Number keys still work.
+It serves a localhost dashboard for the same day-to-day actions as the CLI:
 
-From there you can:
+- register and remove projects
+- create, archive, and remove workspaces
+- start, resume, stop, and inspect sessions
+- check git and GitHub PR status
+- manage agent profiles and settings
+- install/test completion hooks
 
-- register a project
-- create a workspace
-- prepare a Codex, Claude, or custom session
-- list and delete workspaces
-- check PR status
-- run merged-PR cleanup
-- manage settings, including completion sounds
+By default the dashboard binds to `127.0.0.1:4587` and opens your browser when run from an interactive terminal. You can override that:
 
-You can also open the menu explicitly:
+```sh
+conductor-cli dashboard --port 0 --no-open
+conductor-cli dashboard --host 127.0.0.1 --port 8080
+```
+
+You can still use the terminal menu when you want a keyboard-driven flow:
 
 ```sh
 conductor-cli menu
@@ -164,8 +168,8 @@ Terminal sessions auto-detect your terminal on macOS:
 - Warp opens a new tab at the workspace
 
 The agent does not auto-run in the new terminal. Run the printed
-`conductor-cli session run <id>` command there; the menu app copies it for you.
-Use `--detach` only when you explicitly want background log mode.
+`conductor-cli session run <id>` command there; the dashboard shows it on the
+session card. Use `--detach` only when you explicitly want background log mode.
 
 ## Defaults
 
@@ -193,22 +197,14 @@ conductor-cli help workspace
 conductor-cli help session
 conductor-cli help pr
 conductor-cli help settings
+conductor-cli help dashboard
 ```
 
-## macOS Menu App
+## Web Dashboard
 
-There is an early native menu bar app in `macos/ConductorMenu`.
-It uses `conductor-cli state` for JSON state and calls the CLI for actions, so
-the CLI config stays the single source of truth.
+`conductor-cli dashboard` replaces the old native macOS menu app. It serves the
+UI and JSON API from the CLI process itself, so `~/.conductor-cli/config.json`
+remains the single source of truth and there is nothing platform-specific to
+install.
 
-Build, install, and launch it with:
-
-```sh
-./install-mac-app.sh
-```
-
-Use `./install-mac-app.sh --no-open` if you only want to install it.
-
-GitHub Actions builds `Conductor.dmg` for release tags and attaches it to the
-GitHub release. The app is ad-hoc signed but not notarized, so macOS may still
-show a first-run Gatekeeper warning.
+The dashboard is localhost-only by default. Stop it with Ctrl-C.

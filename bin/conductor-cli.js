@@ -7,6 +7,8 @@ const path = require("path");
 const readlineCore = require("readline");
 const readline = require("readline/promises");
 const { spawn, spawnSync } = require("child_process");
+const http = require("http");
+const { URL } = require("url");
 
 const SCRIPT_PATH = fs.realpathSync(__filename);
 const ROOT_DIR = path.resolve(path.dirname(SCRIPT_PATH), "..");
@@ -64,6 +66,10 @@ async function main(argv) {
       break;
     case "help":
       printHelp(rest[0]);
+      break;
+    case "dashboard":
+    case "dash":
+      await commandDashboard(rest);
       break;
     case "doctor":
       commandDoctor();
@@ -255,11 +261,25 @@ Notes:
     return;
   }
 
+  if (topic === "dashboard" || topic === "dash") {
+    console.log(`Dashboard command
+
+Usage:
+  conductor-cli dashboard [--host <host>] [--port <port>] [--no-open]
+
+Behavior:
+  Starts a local web dashboard for managing projects, workspaces, sessions,
+  agent profiles, settings, and workspace checks. Binds to localhost by default.
+`);
+    return;
+  }
+
   if (topic === "state") {
     console.log(`State command
 
 Usage:
   conductor-cli state
+  conductor-cli dashboard [--host <host>] [--port <port>] [--no-open]
 
 Notes:
   Prints the normalized conductor-cli state as JSON for GUI and automation
@@ -288,6 +308,7 @@ Commands:
                Configure named agent command profiles
   settings    Configure agent completion hooks and sounds
   state       Print JSON state for app integrations
+  dashboard   Serve the local web dashboard
   doctor      Check local tool availability
 
 Common flow:
@@ -329,6 +350,260 @@ function commandState(args) {
   refreshSessionStates(config);
   saveConfig(config);
   console.log(JSON.stringify(buildAppState(config), null, 2));
+}
+
+async function commandDashboard(args) {
+  const parsed = parseOptions(args, {
+    boolean: ["open", "no-open"],
+    string: ["host", "port"],
+  });
+  if (parsed._.length > 0) {
+    throw new CliError("Usage: conductor-cli dashboard [--host <host>] [--port <port>] [--no-open]");
+  }
+
+  const host = parsed.host || "127.0.0.1";
+  const requestedPort = Number.parseInt(parsed.port || process.env.CONDUCTOR_DASHBOARD_PORT || "4587", 10);
+  const port = Number.isFinite(requestedPort) && requestedPort >= 0 ? requestedPort : 4587;
+  const server = http.createServer((req, res) => {
+    handleDashboardRequest(req, res).catch((error) => {
+      sendJson(res, error instanceof CliError ? error.exitCode === 404 ? 404 : 400 : 500, {
+        ok: false,
+        error: formatError(error),
+      });
+    });
+  });
+
+  await new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(port, host, () => {
+      server.off("error", reject);
+      resolve();
+    });
+  });
+
+  const address = server.address();
+  const actualPort = typeof address === "object" && address ? address.port : port;
+  const url = `http://${host}:${actualPort}/`;
+  console.log(`conductor-cli dashboard: ${url}`);
+  console.log("Press Ctrl-C to stop.");
+
+  const shouldOpen = parsed.open || (!parsed["no-open"] && process.stdout.isTTY);
+  if (shouldOpen) openBrowser(url);
+}
+
+async function handleDashboardRequest(req, res) {
+  const requestUrl = new URL(req.url || "/", "http://localhost");
+  if (req.method === "GET" && requestUrl.pathname === "/") {
+    sendHtml(res, dashboardHtml());
+    return;
+  }
+  if (req.method === "GET" && requestUrl.pathname === "/api/state") {
+    sendJson(res, 200, { ok: true, state: dashboardState() });
+    return;
+  }
+  if (req.method === "GET" && requestUrl.pathname === "/api/checks") {
+    const project = requestUrl.searchParams.get("project");
+    const workspace = requestUrl.searchParams.get("workspace");
+    if (!project || !workspace) throw new CliError("Missing project or workspace");
+    sendJson(res, 200, { ok: true, output: captureOutput(() => commandChecks([project, workspace])) });
+    return;
+  }
+  if (req.method === "GET" && requestUrl.pathname === "/api/session/logs") {
+    const id = requestUrl.searchParams.get("id");
+    if (!id) throw new CliError("Missing session id");
+    sendJson(res, 200, { ok: true, output: captureOutput(() => sessionLogs([id, "--tail", "200"])) });
+    return;
+  }
+  if (req.method === "POST" && requestUrl.pathname.startsWith("/api/")) {
+    const body = await readRequestJson(req);
+    const result = handleDashboardAction(requestUrl.pathname.slice("/api/".length), body || {});
+    sendJson(res, 200, { ok: true, ...result, state: dashboardState() });
+    return;
+  }
+  sendJson(res, 404, { ok: false, error: "Not found" });
+}
+
+function dashboardState() {
+  const config = loadConfig();
+  refreshSessionStates(config);
+  saveConfig(config);
+  return buildAppState(config);
+}
+
+function handleDashboardAction(action, body) {
+  switch (action) {
+    case "project/add":
+      return withCapturedOutput(() => projectAdd(compactArgs([
+        body.name,
+        body.repoPath,
+        "--worktrees-dir", body.worktreesDir,
+        "--base", body.base,
+        "--gh-user", body.githubUser,
+        "--agent-profile", body.agentProfile,
+      ])));
+    case "project/remove":
+      return withCapturedOutput(() => projectRemove(compactArgs([body.name, body.force ? "--force" : null])));
+    case "project/set-agent-profile":
+      return withCapturedOutput(() => projectSetAgentProfile([body.name, body.agentProfile || "default"]));
+    case "workspace/create": {
+      const args = compactArgs([
+        body.project,
+        body.name,
+        "--base", body.base,
+        "--path", body.path,
+        "--agent", body.agent,
+        "--session", body.sessionName,
+        "--port", body.port,
+      ]);
+      if (body.launchMode === "detach") args.push("--detach");
+      if (body.launchMode === "terminal") args.push("--terminal", body.terminal || "auto");
+      if ((body.launchMode === "detach" || body.launchMode === "terminal") && !body.agent && !body.command) {
+        args.push("--agent", loadConfig().settings.agentProfiles.default || "claude");
+      }
+      if (body.command) args.push("--", "sh", "-lc", body.command);
+      return withCapturedOutput(() => workspaceCreate(args));
+    }
+    case "workspace/archive":
+      return withCapturedOutput(() => workspaceArchive([body.project, body.workspace]));
+    case "workspace/remove":
+      return withCapturedOutput(() => workspaceRemove(compactArgs([
+        body.project,
+        body.workspace,
+        body.force ? "--force" : null,
+        body.deleteBranch ? "--delete-branch" : null,
+      ])));
+    case "session/start": {
+      const args = compactArgs([
+        body.project,
+        body.workspace,
+        "--agent", body.agent,
+        "--name", body.name,
+        "--port", body.port,
+      ]);
+      if (body.launchMode === "terminal") args.push("--terminal", body.terminal || "auto");
+      else args.push("--detach");
+      if (!body.agent && !body.command) {
+        args.push("--agent", loadConfig().settings.agentProfiles.default || "claude");
+      }
+      if (body.command) args.push("--", "sh", "-lc", body.command);
+      return withCapturedOutput(() => sessionStart(args));
+    }
+    case "session/stop":
+      return withCapturedOutput(() => sessionStop([body.id]));
+    case "session/resume":
+      return withCapturedOutput(() => sessionResume([body.id]));
+    case "agent-profile/add":
+      return withCapturedOutput(() => commandAgentProfile(["add", body.name, body.command]));
+    case "agent-profile/default":
+      return withCapturedOutput(() => commandAgentProfile(["default", body.name]));
+    case "agent-profile/remove":
+      return withCapturedOutput(() => commandAgentProfile(["remove", body.name]));
+    case "settings/update": {
+      const config = loadConfig();
+      if (body.terminalApp) config.settings.terminalApp = normalizeTerminalApp(body.terminalApp);
+      if (body.notificationsEnabled !== undefined) config.settings.notifications.enabled = Boolean(body.notificationsEnabled);
+      if (body.soundName !== undefined) config.settings.notifications.soundName = body.soundName || "none";
+      if (body.macosNotification !== undefined) config.settings.notifications.macosNotification = Boolean(body.macosNotification);
+      saveConfig(config);
+      return { output: "Settings updated." };
+    }
+    case "settings/hooks/install":
+      return withCapturedOutput(() => {
+        const config = loadConfig();
+        commandSettingsHooks(config, ["install", body.target || "all"]);
+      });
+    case "settings/hooks/remove":
+      return withCapturedOutput(() => {
+        const config = loadConfig();
+        commandSettingsHooks(config, ["remove", body.target || "all"]);
+      });
+    case "settings/test":
+      return withCapturedOutput(() => commandSettings(["test"]));
+    default:
+      throw new CliError(`Unknown dashboard action: ${action}`);
+  }
+}
+
+function compactArgs(values) {
+  const args = [];
+  for (let i = 0; i < values.length; i += 1) {
+    const value = values[i];
+    if (value === null || value === undefined || value === "") {
+      if (String(values[i - 1] || "").startsWith("--")) args.pop();
+      continue;
+    }
+    args.push(String(value));
+  }
+  return args;
+}
+
+function withCapturedOutput(fn) {
+  return { output: captureOutput(fn) };
+}
+
+function captureOutput(fn) {
+  const logs = [];
+  const originalLog = console.log;
+  const originalError = console.error;
+  console.log = (...parts) => logs.push(parts.join(" "));
+  console.error = (...parts) => logs.push(parts.join(" "));
+  try {
+    fn();
+  } finally {
+    console.log = originalLog;
+    console.error = originalError;
+  }
+  return logs.join("\n");
+}
+
+function readRequestJson(req) {
+  return new Promise((resolve, reject) => {
+    let data = "";
+    req.on("data", (chunk) => {
+      data += chunk;
+      if (data.length > 1024 * 1024) {
+        reject(new CliError("Request body too large"));
+        req.destroy();
+      }
+    });
+    req.on("end", () => {
+      if (!data.trim()) return resolve({});
+      try {
+        resolve(JSON.parse(data));
+      } catch (error) {
+        reject(new CliError("Invalid JSON request body"));
+      }
+    });
+    req.on("error", reject);
+  });
+}
+
+function sendJson(res, status, payload) {
+  const body = `${JSON.stringify(payload, null, 2)}\n`;
+  res.writeHead(status, {
+    "content-type": "application/json; charset=utf-8",
+    "cache-control": "no-store",
+  });
+  res.end(body);
+}
+
+function sendHtml(res, html) {
+  res.writeHead(200, {
+    "content-type": "text/html; charset=utf-8",
+    "cache-control": "no-store",
+  });
+  res.end(html);
+}
+
+function openBrowser(url) {
+  const opener = process.platform === "darwin" ? "open" : process.platform === "win32" ? "cmd" : "xdg-open";
+  const args = process.platform === "win32" ? ["/c", "start", "", url] : [url];
+  const child = spawn(opener, args, { detached: true, stdio: "ignore" });
+  child.unref();
+}
+
+function dashboardHtml() {
+  return fs.readFileSync(path.join(ROOT_DIR, "dashboard", "index.html"), "utf8");
 }
 
 function buildAppState(config) {
@@ -3065,7 +3340,7 @@ function terminalChoices() {
     {
       label: "Auto",
       value: "auto",
-      description: "detect current terminal; menu app prefers installed Warp/iTerm",
+      description: "detect current terminal; prefers installed Warp/iTerm on macOS",
     },
     { label: "Terminal", value: "terminal" },
     { label: "iTerm", value: "iterm" },
