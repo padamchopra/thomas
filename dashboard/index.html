@@ -4,6 +4,13 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Thomas</title>
+<script>
+(() => {
+  const stored = localStorage.getItem("thomas-theme");
+  const preferredDark = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches;
+  document.documentElement.dataset.theme = stored || (preferredDark ? "dark" : "light");
+})();
+</script>
 <style>
 @font-face {
   font-family: "Inter";
@@ -15,18 +22,65 @@
 
 :root {
   color-scheme: light;
-  --bg:#f7f7f5;
-  --surface:#ffffff;
-  --surface-soft:#f3f3f0;
-  --text:#20201d;
-  --muted:#73736c;
-  --faint:#a09f98;
-  --line:#e1e1dc;
-  --line-strong:#cfcfc7;
-  --button:#242421;
-  --button-text:#fff;
-  --danger:#a12b2f;
-  --shadow:0 0.875rem 2.25rem rgba(36,36,33,.08);
+  --background:#f8f8f7;
+  --foreground:#181817;
+  --card:#ffffff;
+  --card-foreground:#181817;
+  --popover:#ffffff;
+  --popover-foreground:#181817;
+  --primary:#181817;
+  --primary-foreground:#fafafa;
+  --secondary:#f1f1ef;
+  --secondary-foreground:#242421;
+  --muted-bg:#f3f3f1;
+  --muted-foreground:#73736d;
+  --subtle-foreground:#9a9991;
+  --accent:#ededeb;
+  --accent-foreground:#181817;
+  --destructive:#b4232a;
+  --destructive-bg:#fff4f2;
+  --border:#e3e3df;
+  --input:#deded8;
+  --ring:#8b8b82;
+  --radius:0.625rem;
+  --shadow:0 1rem 2.5rem rgba(24,24,23,.08);
+  --shadow-sm:0 0.0625rem 0.125rem rgba(24,24,23,.05);
+  --bg:var(--background);
+  --surface:var(--card);
+  --surface-soft:var(--muted-bg);
+  --text:var(--foreground);
+  --muted:var(--muted-foreground);
+  --faint:var(--subtle-foreground);
+  --line:var(--border);
+  --line-strong:var(--input);
+  --button:var(--primary);
+  --button-text:var(--primary-foreground);
+  --danger:var(--destructive);
+}
+[data-theme="dark"] {
+  color-scheme: dark;
+  --background:#080808;
+  --foreground:#f4f4f2;
+  --card:#111110;
+  --card-foreground:#f4f4f2;
+  --popover:#151514;
+  --popover-foreground:#f4f4f2;
+  --primary:#f4f4f2;
+  --primary-foreground:#111110;
+  --secondary:#1a1a19;
+  --secondary-foreground:#e7e7e4;
+  --muted-bg:#141413;
+  --muted-foreground:#a0a09a;
+  --subtle-foreground:#74746d;
+  --accent:#20201e;
+  --accent-foreground:#f4f4f2;
+  --destructive:#ff6b72;
+  --destructive-bg:#2a1314;
+  --border:#272724;
+  --input:#34342f;
+  --ring:#c9c9c2;
+  --shadow:0 1rem 2.5rem rgba(0,0,0,.35);
+  --shadow-sm:0 0.0625rem 0.125rem rgba(0,0,0,.4);
 }
 * { box-sizing:border-box; }
 html, body { min-height:100%; background:var(--bg); }
@@ -34,6 +88,7 @@ body {
   margin:0;
   color:var(--text);
   font:0.875rem/1.45 "Inter", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  letter-spacing:0;
 }
 h1, h2, h3, p { margin:0; }
 h1 { font-size:1.25rem; font-weight:620; }
@@ -50,8 +105,14 @@ header {
   gap:1rem;
   padding:0.625rem clamp(0.75rem, 1.5vw, 1.25rem);
   border-bottom:0.0625rem solid var(--line);
-  background:rgba(247,247,245,.92);
+  background:color-mix(in srgb, var(--background) 92%, transparent);
   backdrop-filter:blur(1rem);
+}
+.brand-block {
+  display:flex;
+  align-items:center;
+  gap:0.625rem;
+  min-width:0;
 }
 .app-title {
   display:flex;
@@ -59,14 +120,30 @@ header {
   gap:0.5rem;
 }
 .app-mark {
-  width:0.875rem;
-  height:0.875rem;
-  border:0.125rem solid var(--line-strong);
+  width:1.75rem;
+  height:1.75rem;
+  border:0.0625rem solid var(--line);
+  border-radius:0.5rem;
+  background:linear-gradient(180deg, var(--card), var(--secondary));
+  box-shadow:var(--shadow-sm);
+}
+.app-mark::after {
+  content:"";
+  display:block;
+  width:0.5rem;
+  height:0.5rem;
+  margin:0.5625rem;
   border-radius:999rem;
+  background:var(--foreground);
 }
 .sync-status {
   color:var(--faint);
   font-size:0.75rem;
+}
+.top-actions {
+  display:flex;
+  align-items:center;
+  gap:0.5rem;
 }
 main {
   display:grid;
@@ -74,17 +151,21 @@ main {
 }
 .app-shell {
   display:grid;
-  grid-template-columns:7.75rem minmax(0, 1fr);
-  gap:0.75rem;
-  padding:0.75rem clamp(0.5rem, 1vw, 0.875rem) 1.25rem;
+  grid-template-columns:9rem minmax(0, 1fr);
+  gap:0.875rem;
+  padding:0.875rem clamp(0.625rem, 1vw, 1rem) 1.25rem;
 }
 .sidebar {
   position:sticky;
-  top:4.75rem;
+  top:4.25rem;
   align-self:start;
   display:grid;
   gap:1rem;
-  padding-top:0.125rem;
+  padding:0.375rem;
+  border:0.0625rem solid var(--line);
+  border-radius:calc(var(--radius) + 0.25rem);
+  background:color-mix(in srgb, var(--card) 78%, transparent);
+  box-shadow:var(--shadow-sm);
 }
 .side-section {
   display:grid;
@@ -112,7 +193,7 @@ main {
 .nav-btn:hover,
 .nav-btn.active {
   color:var(--text);
-  background:rgba(255,255,255,.62);
+  background:var(--accent);
   border-color:transparent;
 }
 .content {
@@ -126,13 +207,14 @@ main {
   gap:0.875rem;
 }
 button, input, select, textarea {
-  border:0.0625rem solid var(--line);
-  border-radius:0.5rem;
+  border:0.0625rem solid var(--input);
+  border-radius:var(--radius);
   min-height:2.375rem;
   padding:0.5rem 0.625rem;
   color:var(--text);
   background:var(--surface);
   font:inherit;
+  box-shadow:var(--shadow-sm);
 }
 button {
   display:inline-flex;
@@ -144,10 +226,13 @@ button {
   color:var(--button-text);
   background:var(--button);
   border-color:var(--button);
-  font-weight:570;
+  font-weight:560;
   white-space:nowrap;
 }
-button:hover { background:#000; border-color:#000; }
+button:hover {
+  background:color-mix(in srgb, var(--button) 88%, var(--background));
+  border-color:color-mix(in srgb, var(--button) 88%, var(--background));
+}
 button.icon {
   width:1.875rem;
   min-height:1.875rem;
@@ -161,16 +246,92 @@ button.icon svg,
   height:0.9375rem;
   stroke:currentColor;
 }
+.theme-toggle {
+  min-height:1.875rem;
+  padding:0.25rem 0.625rem;
+  border-radius:999rem;
+  color:var(--muted);
+  gap:0.4375rem;
+  line-height:1;
+}
+#themeIcon {
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  width:0.9375rem;
+  height:0.9375rem;
+}
+.theme-toggle svg {
+  width:0.875rem;
+  height:0.875rem;
+  stroke:currentColor;
+}
+#themeLabel {
+  display:inline-flex;
+  align-items:center;
+}
+.settings-list {
+  display:grid;
+  gap:0.75rem;
+}
+.settings-row {
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:1rem;
+  padding:0.75rem;
+  border:0.0625rem solid var(--line);
+  border-radius:var(--radius);
+  background:var(--muted-bg);
+}
+.settings-row > div {
+  display:grid;
+  gap:0.125rem;
+}
+.settings-row strong {
+  font-weight:610;
+}
+.settings-row span {
+  color:var(--muted);
+  font-size:0.75rem;
+}
+.settings-row select {
+  width:auto;
+  min-width:7.5rem;
+}
+.checkbox-control {
+  display:flex;
+  align-items:center;
+  gap:0.5rem;
+  color:var(--text);
+  font-size:0.875rem;
+}
+.checkbox-control input {
+  width:1rem;
+  min-height:1rem;
+  padding:0;
+  box-shadow:none;
+}
+.settings-footer {
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:0.75rem;
+  padding-top:0.75rem;
+  border-top:0.0625rem solid var(--line);
+  color:var(--faint);
+  font-size:0.75rem;
+}
 button.secondary, .chip {
   color:var(--text);
   background:var(--surface);
   border-color:var(--line);
 }
-button.secondary:hover { background:var(--surface-soft); border-color:var(--line-strong); }
+button.secondary:hover { background:var(--accent); border-color:var(--line-strong); }
 button.danger {
   color:var(--danger);
-  background:#fff5f3;
-  border-color:#efceca;
+  background:var(--destructive-bg);
+  border-color:color-mix(in srgb, var(--destructive) 25%, var(--border));
 }
 label {
   display:grid;
@@ -182,7 +343,7 @@ label {
 input, select, textarea { width:100%; }
 textarea { min-height:5.25rem; resize:vertical; }
 input:focus, select:focus, textarea:focus {
-  outline:0.125rem solid rgba(36,36,33,.12);
+  outline:0.125rem solid color-mix(in srgb, var(--ring) 20%, transparent);
   border-color:var(--line-strong);
 }
 .row {
@@ -196,6 +357,11 @@ input:focus, select:focus, textarea:focus {
   align-items:center;
   justify-content:space-between;
   gap:0.75rem;
+  padding:0.5rem;
+  border:0.0625rem solid var(--line);
+  border-radius:calc(var(--radius) + 0.25rem);
+  background:var(--card);
+  box-shadow:var(--shadow-sm);
 }
 .toolbar select, .toolbar input { width:auto; min-width:9.375rem; }
 .muted { color:var(--muted); }
@@ -214,6 +380,7 @@ input:focus, select:focus, textarea:focus {
   border-radius:999rem;
   color:var(--muted);
   font-size:0.75rem;
+  box-shadow:none;
 }
 .board {
   display:grid;
@@ -228,10 +395,11 @@ input:focus, select:focus, textarea:focus {
   gap:0.625rem;
   min-width:14.5rem;
   align-content:start;
-  padding:0.625rem;
+  padding:0.5rem;
   border:0.0625rem solid var(--line);
-  border-radius:0.5rem;
-  background:var(--surface-soft);
+  border-radius:calc(var(--radius) + 0.25rem);
+  background:color-mix(in srgb, var(--muted-bg) 72%, transparent);
+  box-shadow:var(--shadow-sm);
 }
 .column-head {
   display:flex;
@@ -239,6 +407,7 @@ input:focus, select:focus, textarea:focus {
   justify-content:space-between;
   gap:0.5rem;
   min-height:1.875rem;
+  padding:0.125rem 0.125rem 0.25rem;
 }
 .column-title {
   display:flex;
@@ -249,19 +418,23 @@ input:focus, select:focus, textarea:focus {
 .count {
   color:var(--muted);
   font-weight:520;
+  font-size:0.75rem;
 }
 .ticket {
   display:grid;
   gap:0.5rem;
   padding:0.75rem;
   border:0.0625rem solid var(--line);
-  border-radius:0.5rem;
+  border-radius:var(--radius);
   background:var(--surface);
-  box-shadow:0 0.125rem 0.5rem rgba(36,36,33,.03);
+  box-shadow:var(--shadow-sm);
   cursor:pointer;
   text-align:left;
 }
-.ticket:hover { border-color:var(--line-strong); }
+.ticket:hover {
+  border-color:var(--line-strong);
+  background:color-mix(in srgb, var(--card) 92%, var(--accent));
+}
 .ticket-id {
   color:var(--muted);
   font-size:0.75rem;
@@ -282,6 +455,35 @@ input:focus, select:focus, textarea:focus {
   color:var(--muted);
   font-size:0.75rem;
 }
+.assignee-pill {
+  display:inline-flex;
+  align-items:center;
+  gap:0.375rem;
+  max-width:8.5rem;
+  min-height:1.5rem;
+  padding:0.1875rem 0.5rem;
+  border:0.0625rem solid var(--line);
+  border-radius:999rem;
+  color:var(--muted);
+  background:var(--secondary);
+  font-size:0.75rem;
+  white-space:nowrap;
+}
+.assignee-dot {
+  width:0.375rem;
+  height:0.375rem;
+  flex:0 0 auto;
+  border-radius:999rem;
+  background:var(--ring);
+}
+.assignee-pill span:last-child {
+  overflow:hidden;
+  text-overflow:ellipsis;
+}
+.agent-state {
+  color:var(--muted);
+  font-size:0.75rem;
+}
 .ticket-next {
   display:flex;
   align-items:center;
@@ -296,7 +498,7 @@ input:focus, select:focus, textarea:focus {
   padding:0.75rem;
   color:var(--muted);
   border:0.0625rem dashed var(--line);
-  border-radius:0.375rem;
+  border-radius:var(--radius);
   background:transparent;
 }
 .list {
@@ -322,13 +524,14 @@ input:focus, select:focus, textarea:focus {
 .projects-shell {
   display:grid;
   gap:0.75rem;
+  width:100%;
 }
 .projects-header {
   display:flex;
   align-items:center;
   justify-content:space-between;
   min-height:2.75rem;
-  padding:0 0.25rem;
+  padding:0 0.25rem 0.375rem;
   border-bottom:0.0625rem solid var(--line);
 }
 .projects-toolbar {
@@ -337,18 +540,140 @@ input:focus, select:focus, textarea:focus {
   justify-content:space-between;
   gap:0.75rem;
 }
+.header-actions {
+  display:flex;
+  align-items:center;
+  gap:0.5rem;
+}
+.default-agent-control {
+  display:flex;
+  grid-template-columns:none;
+  align-items:center;
+  gap:0.375rem;
+  min-height:1.875rem;
+  padding:0.25rem 0.625rem;
+  border:0.0625rem solid var(--line);
+  border-radius:999rem;
+  color:var(--muted);
+  background:var(--card);
+  box-shadow:var(--shadow-sm);
+  font-size:0.75rem;
+}
+.default-agent-control select {
+  width:auto;
+  min-width:5.25rem;
+  min-height:1.25rem;
+  padding:0 1rem 0 0;
+  border:0;
+  border-radius:0;
+  color:var(--text);
+  background:transparent;
+  box-shadow:none;
+}
 .project-filter-pill {
   min-height:2rem;
   padding:0.375rem 0.75rem;
   border-radius:999rem;
   color:var(--text);
-  background:var(--surface);
+  background:var(--secondary);
   border-color:var(--line);
 }
 .projects-table {
   display:grid;
-  gap:0.25rem;
+  gap:0.375rem;
   min-width:0;
+}
+.project-card,
+.agent-card {
+  overflow:hidden;
+  border:0;
+  border-radius:0;
+  background:transparent;
+  box-shadow:none;
+}
+.project-card-head,
+.agent-card-head {
+  display:grid;
+  grid-template-columns:auto auto minmax(12rem, 1fr) minmax(18rem, auto) auto;
+  gap:0.75rem;
+  align-items:center;
+  min-height:2.125rem;
+  padding:0.25rem 0.5rem;
+  border-radius:0.5rem;
+  color:var(--muted);
+  background:var(--card);
+}
+.agent-card-head {
+  grid-template-columns:auto minmax(12rem, 1fr) minmax(14rem, auto) auto;
+}
+.project-card-head.no-workspaces {
+  grid-template-columns:auto minmax(12rem, 1fr) minmax(18rem, auto) auto;
+}
+.project-card-head {
+  cursor:pointer;
+}
+.project-card-head:hover,
+.agent-card-head:hover {
+  background:color-mix(in srgb, var(--card) 92%, var(--accent));
+}
+.ghost-chevron {
+  width:1.375rem;
+  min-height:1.375rem;
+  padding:0;
+  border:0;
+  border-radius:0.375rem;
+  color:var(--faint);
+  background:transparent;
+  box-shadow:none;
+}
+.ghost-chevron:hover {
+  color:var(--text);
+  background:var(--accent);
+  border-color:transparent;
+}
+.ghost-chevron:disabled {
+  cursor:default;
+  opacity:.35;
+}
+.project-card-title,
+.agent-card-title {
+  display:grid;
+  gap:0.0625rem;
+  align-content:center;
+  min-width:0;
+  line-height:1.2;
+}
+.project-card-title strong,
+.agent-card-title strong {
+  overflow:hidden;
+  color:var(--text);
+  font-weight:620;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+}
+.project-card-title span,
+.agent-card-title span {
+  overflow:hidden;
+  color:var(--faint);
+  font-size:0.75rem;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+}
+.project-card-meta,
+.agent-card-meta {
+  display:flex;
+  justify-content:flex-end;
+  gap:0.5rem;
+  align-items:center;
+  color:var(--muted);
+  font-size:0.75rem;
+  white-space:nowrap;
+}
+.project-card-meta span,
+.agent-card-meta span:not(.chip) {
+  display:inline-flex;
+  align-items:center;
+  min-height:1.625rem;
 }
 .projects-table-head,
 .project-table-row {
@@ -360,7 +685,7 @@ input:focus, select:focus, textarea:focus {
 .agent-table-head,
 .agent-table-row {
   display:grid;
-  grid-template-columns:minmax(14rem, 1fr) minmax(7rem, .35fr) minmax(7rem, .35fr) 9rem;
+  grid-template-columns:minmax(14rem, 1fr) minmax(7rem, .35fr) minmax(10rem, .55fr) minmax(6rem, .3fr) 9rem;
   gap:0.75rem;
   align-items:center;
 }
@@ -381,25 +706,30 @@ input:focus, select:focus, textarea:focus {
   min-height:3.25rem;
   padding:0.5rem 0.625rem;
   border:0.0625rem solid transparent;
-  border-radius:0.5rem;
+  border-radius:var(--radius);
   color:var(--muted);
-  background:rgba(255,255,255,.56);
+  background:var(--card);
   text-align:left;
   cursor:pointer;
+  box-shadow:var(--shadow-sm);
 }
 .agent-table-row {
   min-height:3.25rem;
   padding:0.5rem 0.625rem;
   border:0.0625rem solid transparent;
-  border-radius:0.5rem;
+  border-radius:var(--radius);
   color:var(--muted);
-  background:rgba(255,255,255,.56);
+  background:var(--card);
+  box-shadow:var(--shadow-sm);
 }
 .agent-table-row:hover {
-  background:var(--surface);
+  background:color-mix(in srgb, var(--card) 92%, var(--accent));
   border-color:var(--line);
 }
 .agent-name {
+  display:flex;
+  align-items:center;
+  gap:0.5rem;
   color:var(--text);
   font-weight:610;
 }
@@ -413,9 +743,53 @@ input:focus, select:focus, textarea:focus {
 .agent-table-row > :last-child {
   justify-content:flex-end;
 }
+.agent-expanded {
+  display:none;
+  padding:0.125rem 0 0.75rem 2rem;
+}
+.agent-expanded.open {
+  display:grid;
+  gap:0.625rem;
+}
+.agent-ticket-group {
+  display:grid;
+  gap:0.25rem;
+}
+.agent-ticket-status {
+  color:var(--faint);
+  font-size:0.6875rem;
+  font-weight:650;
+  text-transform:uppercase;
+}
+.agent-ticket-row {
+  display:grid;
+  grid-template-columns:5.5rem minmax(0, 1fr);
+  justify-content:stretch;
+  width:100%;
+  min-height:2.25rem;
+  padding:0.375rem 0.625rem;
+  color:var(--muted);
+  background:transparent;
+  border-color:transparent;
+  box-shadow:none;
+  text-align:left;
+}
+.agent-ticket-row:hover {
+  color:var(--text);
+  background:var(--accent);
+  border-color:var(--line);
+}
+.agent-ticket-row strong {
+  min-width:0;
+  overflow:hidden;
+  color:var(--text);
+  font-weight:560;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+}
 .project-table-row:hover {
   color:var(--text);
-  background:var(--surface);
+  background:color-mix(in srgb, var(--card) 92%, var(--accent));
   border-color:var(--line);
 }
 .project-name-cell {
@@ -430,10 +804,10 @@ input:focus, select:focus, textarea:focus {
   font-size:0.75rem;
 }
 .project-dot {
-  width:0.75rem;
-  height:0.75rem;
+  width:0.625rem;
+  height:0.625rem;
   flex:0 0 auto;
-  border:0.125rem solid var(--line-strong);
+  border:0.1125rem solid var(--ring);
   border-radius:999rem;
 }
 .project-name-text {
@@ -450,7 +824,7 @@ input:focus, select:focus, textarea:focus {
 }
 .project-expanded {
   display:none;
-  padding:0.125rem 0 0.75rem 2rem;
+  padding:0 0.75rem 0.75rem 3.25rem;
 }
 .project-expanded.open {
   display:grid;
@@ -458,16 +832,33 @@ input:focus, select:focus, textarea:focus {
 }
 .project-workspace-row {
   display:grid;
-  grid-template-columns:minmax(18rem, 1fr) minmax(12rem, .8fr) minmax(6rem, auto) auto;
+  grid-template-columns:minmax(9rem, .35fr) minmax(12rem, 1fr) auto;
   gap:0.75rem;
   align-items:center;
-  min-height:2.75rem;
+  justify-content:stretch;
+  width:100%;
+  min-height:2rem;
   padding:0.375rem 0.625rem;
   color:var(--muted);
+  background:transparent;
+  border-color:transparent;
+  box-shadow:none;
+  text-align:left;
+}
+.project-workspace-row:hover {
+  color:var(--text);
+  background:var(--accent);
+  border-color:var(--line);
 }
 .project-workspace-row strong {
   color:var(--text);
-  font-weight:580;
+  font-weight:620;
+}
+.project-workspace-row span {
+  min-width:0;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  white-space:nowrap;
 }
 .workspace-group {
   display:grid;
@@ -500,10 +891,12 @@ input:focus, select:focus, textarea:focus {
   inset:0;
   z-index:20;
   display:none;
-  align-items:center;
+  align-items:flex-start;
   justify-content:center;
+  overflow-y:auto;
   padding:1.25rem;
-  background:rgba(20,20,18,.28);
+  background:color-mix(in srgb, var(--background) 36%, rgba(0,0,0,.42));
+  backdrop-filter:blur(0.375rem);
 }
 .modal-backdrop.open { display:flex; }
 .modal {
@@ -514,40 +907,13 @@ input:focus, select:focus, textarea:focus {
   gap:1rem;
   padding:1.125rem;
   border:0.0625rem solid var(--line);
-  border-radius:0.625rem;
-  background:var(--surface);
+  border-radius:calc(var(--radius) + 0.375rem);
+  background:var(--popover);
   box-shadow:var(--shadow);
 }
-.composer-modal {
-  width:min(58rem, 100%);
-  min-height:22rem;
-  gap:0;
-  padding:0;
-  overflow:visible;
-}
-.composer-body {
-  display:grid;
-  gap:1rem;
-  padding:1.5rem;
-}
-.composer-top,
-.composer-footer {
-  display:flex;
-  align-items:center;
-  justify-content:space-between;
-  gap:0.75rem;
-}
-.composer-footer {
-  padding:1rem 1.5rem;
-  border-top:0.0625rem solid var(--line);
-}
-.composer-fields {
-  display:grid;
-  gap:0.5rem;
-  min-height:11rem;
-}
 .issue-title,
-.issue-description {
+.issue-description,
+.modal-title-input {
   width:100%;
   min-height:0;
   padding:0;
@@ -561,8 +927,16 @@ input:focus, select:focus, textarea:focus {
   font-weight:650;
   line-height:1.18;
 }
+.modal-title-input {
+  margin-top:0.25rem;
+  color:var(--text);
+  font-size:1.25rem;
+  font-weight:650;
+  line-height:1.2;
+}
 .issue-title::placeholder,
-.issue-description::placeholder {
+.issue-description::placeholder,
+.modal-title-input::placeholder {
   color:var(--faint);
 }
 .issue-description {
@@ -572,15 +946,32 @@ input:focus, select:focus, textarea:focus {
   resize:vertical;
 }
 .issue-title:focus,
-.issue-description:focus {
+.issue-description:focus,
+.modal-title-input:focus {
   outline:0;
   border-color:transparent;
 }
-.composer-pills {
-  display:flex;
+.inline-select {
+  display:inline-flex;
+  grid-template-columns:none;
   align-items:center;
-  gap:0.5rem;
-  flex-wrap:wrap;
+  gap:0.375rem;
+  min-height:1.75rem;
+  padding:0.25rem 0.5625rem;
+  border:0.0625rem solid var(--line);
+  border-radius:999rem;
+  color:var(--muted);
+  background:var(--secondary);
+  font-size:0.75rem;
+  box-shadow:var(--shadow-sm);
+}
+.inline-select select {
+  width:auto;
+  min-width:5rem;
+  min-height:1.25rem;
+  padding:0;
+  border:0;
+  background:transparent;
 }
 .pill-control {
   position:relative;
@@ -590,17 +981,36 @@ input:focus, select:focus, textarea:focus {
   padding:0.375rem 0.6875rem;
   border-radius:999rem;
   color:var(--muted);
-  background:var(--surface-soft);
+  background:var(--secondary);
+}
+.pill-inline-button {
+  min-height:1.5rem;
+  padding:0;
+  border:0;
+  border-radius:0;
+  color:var(--muted);
+  background:transparent;
+  box-shadow:none;
+}
+.pill-inline-button:hover {
+  color:var(--text);
+  background:transparent;
+  border-color:transparent;
 }
 .pill-button strong {
   color:var(--text);
   font-weight:580;
 }
 .ticket-modal {
-  width:min(56rem, 100%);
+  width:min(52rem, 100%);
+  max-height:none;
   gap:0;
   padding:0;
-  overflow:hidden;
+  overflow:visible;
+  -webkit-overflow-scrolling:touch;
+}
+.create-ticket-modal {
+  overflow:visible;
 }
 .modal-head {
   display:flex;
@@ -608,8 +1018,12 @@ input:focus, select:focus, textarea:focus {
   justify-content:space-between;
   gap:0.75rem;
 }
+.modal-head > div:first-child {
+  flex:1;
+  min-width:0;
+}
 .ticket-modal .modal-head {
-  padding:1.25rem 1.25rem 0;
+  padding:1.125rem 1.25rem 0;
 }
 .ticket-modal .modal-head h2 {
   margin-top:0.25rem;
@@ -620,19 +1034,30 @@ input:focus, select:focus, textarea:focus {
   display:flex;
   gap:0.5rem;
   flex-wrap:wrap;
-  padding:0.875rem 1.25rem;
+  align-items:center;
+  padding:0.75rem 1.25rem 1rem;
+}
+.ticket-summary-spacer {
+  flex:1 1 auto;
 }
 .summary-pill {
   display:inline-flex;
   align-items:center;
+  gap:0.375rem;
   min-height:1.75rem;
   max-width:100%;
   padding:0.25rem 0.5625rem;
   border:0.0625rem solid var(--line);
   border-radius:999rem;
   color:var(--muted);
-  background:var(--surface-soft);
+  background:var(--secondary);
   font-size:0.75rem;
+}
+.summary-pill svg {
+  width:0.875rem;
+  height:0.875rem;
+  flex:0 0 auto;
+  stroke:currentColor;
 }
 .summary-pill select {
   width:auto;
@@ -673,36 +1098,135 @@ input:focus, select:focus, textarea:focus {
 }
 .ticket-panel {
   display:grid;
-  padding:1rem 1.25rem;
+  gap:0.75rem;
+  min-height:0;
+  overflow:visible;
+  padding:1rem 1.25rem 1.125rem;
   border-top:0.0625rem solid var(--line);
-  background:var(--surface);
+  background:color-mix(in srgb, var(--muted-bg) 58%, var(--card));
+}
+.ticket-agent-panel {
+  display:grid;
+  gap:0.625rem;
+}
+.ticket-activity {
+  display:grid;
+  gap:0.5rem;
+  padding:0.625rem;
+  border:0.0625rem solid var(--line);
+  border-radius:var(--radius);
+  background:var(--card);
+}
+.ticket-activity[hidden] {
+  display:none;
+}
+.ticket-activity-head {
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:0.75rem;
+  color:var(--muted);
+  font-size:0.75rem;
+}
+.ticket-activity-head strong {
+  color:var(--text);
+  font-weight:610;
+}
+.ticket-activity-meta {
+  display:flex;
+  align-items:center;
+  gap:0.5rem;
+  flex-wrap:wrap;
+  justify-content:flex-end;
+}
+.ticket-log {
+  max-height:13rem;
+  overflow:auto;
+  margin:0;
+  padding:0.625rem;
+  border:0.0625rem solid var(--line);
+  border-radius:calc(var(--radius) - 0.125rem);
+  color:var(--muted);
+  background:var(--muted-bg);
+  font:0.75rem/1.45 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  white-space:pre-wrap;
+}
+.agent-control-row {
+  display:grid;
+  grid-template-columns:minmax(10rem, 1fr) auto;
+  gap:0.5rem;
+  align-items:center;
+}
+.comment-thread {
+  display:grid;
+  gap:0.5rem;
+}
+.comment {
+  display:grid;
+  gap:0.25rem;
+  padding:0.625rem 0;
+  border-top:0.0625rem solid var(--line);
+}
+.comment-meta {
+  color:var(--faint);
+  font-size:0.6875rem;
+  font-weight:620;
+  text-transform:uppercase;
+}
+.comment-body {
+  color:var(--text);
+  white-space:pre-wrap;
+}
+.reply-form {
+  display:flex;
+  align-items:flex-end;
+  gap:0.5rem;
+  padding:0.5rem;
+  border:0.0625rem solid var(--line);
+  border-radius:calc(var(--radius) + 0.125rem);
+  background:var(--card);
+  box-shadow:var(--shadow-sm);
+}
+.reply-form textarea {
+  min-height:2.75rem;
+  max-height:8rem;
+  padding:0.5rem;
+  border:0;
+  background:transparent;
+  box-shadow:none;
+}
+.reply-form button {
+  flex:0 0 auto;
+  min-height:2rem;
+  padding:0.375rem 0.75rem;
 }
 .ticket-description {
   display:grid;
   gap:0.5rem;
-  padding:0 1.25rem 1.25rem;
+  padding:0 1.25rem 1rem;
 }
 .ticket-description textarea {
-  min-height:8rem;
+  min-height:5.75rem;
 }
 .description-text {
   min-height:2.75rem;
   padding:0.625rem;
   border:0.0625rem solid var(--line);
-  border-radius:0.5rem;
+  border-radius:var(--radius);
   color:var(--muted);
-  background:var(--surface);
+  background:var(--muted-bg);
   white-space:pre-wrap;
 }
 .ticket-actions {
   display:flex;
   align-items:center;
-  justify-content:flex-end;
+  justify-content:space-between;
   gap:0.75rem;
   flex-wrap:wrap;
+  padding-top:0.25rem;
 }
 .ticket-actions button {
-  min-height:2.375rem;
+  min-height:2.125rem;
 }
 .ticket-footer-actions {
   display:flex;
@@ -710,34 +1234,43 @@ input:focus, select:focus, textarea:focus {
   gap:0.5rem;
   margin-left:auto;
 }
+.ticket-footer-actions button,
+.ticket-actions .danger {
+  padding:0.4375rem 0.8125rem;
+}
 .ticket-save-hint {
   color:var(--faint);
   font-size:0.75rem;
 }
 .ticket-preview {
-  display:grid;
-  grid-template-columns:repeat(4, minmax(0, 1fr));
+  display:flex;
+  align-items:center;
   gap:0.5rem;
+  flex-wrap:wrap;
   padding:0.75rem;
   border:0.0625rem solid var(--line);
-  border-radius:0.5rem;
-  background:rgba(255,255,255,.58);
+  border-radius:var(--radius);
+  background:var(--card);
 }
-.preview-item {
-  min-width:0;
-}
-.preview-label {
-  display:block;
-  color:var(--faint);
-  font-size:0.6875rem;
-  font-weight:620;
-  text-transform:uppercase;
-}
-.preview-value {
-  display:block;
-  overflow:hidden;
+.preview-chip {
+  display:inline-flex;
+  align-items:center;
+  gap:0.375rem;
+  min-height:1.625rem;
+  max-width:100%;
+  padding:0.25rem 0.5rem;
+  border:0.0625rem solid var(--line);
+  border-radius:999rem;
   color:var(--muted);
+  background:var(--secondary);
   font-size:0.75rem;
+}
+.preview-chip strong {
+  color:var(--text);
+  font-weight:580;
+}
+.preview-chip span {
+  overflow:hidden;
   text-overflow:ellipsis;
   white-space:nowrap;
 }
@@ -790,8 +1323,8 @@ input:focus, select:focus, textarea:focus {
   overflow:auto;
   padding:0.5rem;
   border:0.0625rem solid var(--line-strong);
-  border-radius:0.625rem;
-  background:var(--surface);
+  border-radius:calc(var(--radius) + 0.25rem);
+  background:var(--popover);
   box-shadow:var(--shadow);
 }
 .project-popover.open {
@@ -807,13 +1340,14 @@ input:focus, select:focus, textarea:focus {
   min-height:2.75rem;
   padding:0.625rem 0.75rem;
   color:var(--text);
-  background:var(--surface);
+  background:transparent;
   border:0;
-  border-radius:0.5rem;
+  border-radius:var(--radius);
   text-align:left;
+  box-shadow:none;
 }
 .project-row:hover {
-  background:var(--surface-soft);
+  background:var(--accent);
 }
 .project-row strong {
   display:block;
@@ -846,9 +1380,9 @@ input:focus, select:focus, textarea:focus {
   max-width:min(32.5rem, calc(100vw - 2.5rem));
   padding:0.75rem 0.875rem;
   border:0.0625rem solid var(--line);
-  border-radius:0.5rem;
+  border-radius:var(--radius);
   color:var(--text);
-  background:var(--surface);
+  background:var(--popover);
   box-shadow:var(--shadow);
   white-space:pre-wrap;
 }
@@ -880,9 +1414,12 @@ input:focus, select:focus, textarea:focus {
   .project-expanded { padding-left:0.75rem; }
   .project-workspace-row { grid-template-columns:1fr; }
   .two { grid-template-columns:1fr; }
-  .composer-modal { min-height:auto; }
-  .composer-body, .composer-footer { padding:1rem; }
-  .composer-top, .composer-footer, .ticket-actions { align-items:stretch; flex-direction:column; }
+  .ticket-modal .modal-head,
+  .ticket-summary,
+  .ticket-description,
+  .ticket-panel { padding-left:1rem; padding-right:1rem; }
+  .ticket-actions, .reply-form { align-items:stretch; flex-direction:column; }
+  .reply-form button { width:100%; }
   .ticket-preview { grid-template-columns:1fr; }
   .issue-title { font-size:1.5rem; }
 }
@@ -890,13 +1427,17 @@ input:focus, select:focus, textarea:focus {
 </head>
 <body>
 <header>
-  <div>
-    <div class="eyebrow">Local workspace control</div>
-    <h1>Thomas</h1>
+  <div class="brand-block">
+    <div class="app-mark" aria-hidden="true"></div>
+    <div>
+      <div class="eyebrow">Agent workspace control</div>
+      <h1>Thomas</h1>
+    </div>
   </div>
-  <div class="row">
+  <div class="top-actions">
     <span class="chip" id="counts">Loading</span>
-    <button class="secondary" onclick="loadState()">Refresh</button>
+    <button class="secondary icon" title="Refresh" onclick="loadState()"><svg viewBox="0 0 24 24" fill="none" stroke-width="2"><path d="M21 12a9 9 0 0 1-15 6.7"></path><path d="M3 12a9 9 0 0 1 15-6.7"></path><path d="M18 3v4h-4"></path><path d="M6 21v-4h4"></path></svg></button>
+    <button class="secondary icon" type="button" title="Settings" onclick="openSettingsModal()"><svg viewBox="0 0 24 24" fill="none" stroke-width="2"><path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z"></path><path d="M19.4 15a1.8 1.8 0 0 0 .36 1.98l.05.05a2.1 2.1 0 0 1-2.97 2.97l-.05-.05a1.8 1.8 0 0 0-1.98-.36 1.8 1.8 0 0 0-1.09 1.65V21.3a2.1 2.1 0 0 1-4.2 0v-.06a1.8 1.8 0 0 0-1.09-1.65 1.8 1.8 0 0 0-1.98.36l-.05.05a2.1 2.1 0 0 1-2.97-2.97l.05-.05A1.8 1.8 0 0 0 3.6 15a1.8 1.8 0 0 0-1.65-1.09H1.9a2.1 2.1 0 0 1 0-4.2h.05A1.8 1.8 0 0 0 3.6 8.62a1.8 1.8 0 0 0-.36-1.98l-.05-.05a2.1 2.1 0 0 1 2.97-2.97l.05.05a1.8 1.8 0 0 0 1.98.36A1.8 1.8 0 0 0 9.28 2.4V2.1a2.1 2.1 0 0 1 4.2 0v.3a1.8 1.8 0 0 0 1.09 1.65 1.8 1.8 0 0 0 1.98-.36l.05-.05a2.1 2.1 0 0 1 2.97 2.97l-.05.05a1.8 1.8 0 0 0-.36 1.98 1.8 1.8 0 0 0 1.65 1.09h.3a2.1 2.1 0 0 1 0 4.2h-.3A1.8 1.8 0 0 0 19.4 15Z"></path></svg></button>
   </div>
 </header>
 
@@ -926,9 +1467,6 @@ input:focus, select:focus, textarea:focus {
           <h2>Projects</h2>
           <button class="secondary icon" title="New project" onclick="openProjectModal()">+</button>
         </div>
-        <div class="projects-toolbar">
-          <button class="secondary project-filter-pill">All projects</button>
-        </div>
         <div id="projectsList" class="projects-table"></div>
       </div>
     </section>
@@ -936,11 +1474,10 @@ input:focus, select:focus, textarea:focus {
       <div class="projects-shell">
         <div class="projects-header">
           <h2>Agents</h2>
-          <button class="secondary icon" title="New agent profile" onclick="openAgentModal()">+</button>
-        </div>
-        <div class="projects-toolbar">
-          <button class="secondary project-filter-pill">All agents</button>
-          <span class="muted">Default: <span id="defaultAgentLabel">claude</span></span>
+          <div class="header-actions">
+            <label class="default-agent-control">Default<select id="defaultAgentSelect" onchange="setDefaultAgent(this.value)"></select></label>
+            <button class="secondary icon" title="New agent profile" onclick="openAgentModal()">+</button>
+          </div>
         </div>
         <div id="agentsList" class="projects-table"></div>
       </div>
@@ -960,7 +1497,14 @@ input:focus, select:focus, textarea:focus {
     <div class="ticket-summary" id="ticketSummary"></div>
     <div class="ticket-description" id="ticketDescriptionBlock"></div>
     <div class="ticket-panel">
+      <div class="ticket-activity" id="ticketActivity" hidden></div>
+      <div class="comment-thread" id="ticketComments"></div>
+      <form class="reply-form" id="ticketReplyForm" onsubmit="submitTicketReply(event)">
+        <textarea name="message" placeholder="Reply to the agent..."></textarea>
+        <button>Send reply</button>
+      </form>
       <div class="ticket-actions">
+        <button class="danger" type="button" onclick="deleteTicket()">Delete ticket</button>
         <div class="ticket-footer-actions">
           <button onclick="saveTicket()">Save</button>
         </div>
@@ -970,27 +1514,35 @@ input:focus, select:focus, textarea:focus {
 </div>
 
 <div id="createTicketModal" class="modal-backdrop" onclick="closeModalOnBackdrop(event)">
-  <form class="modal composer-modal" onsubmit="submitTicket(event)">
-    <div class="composer-body">
-      <div class="composer-top">
-        <div class="composer-pills">
-          <span class="chip">To-do</span>
-          <div class="pill-control project-control">
-            <button type="button" class="secondary pill-button" id="ticketProjectButton" onclick="toggleProjectPicker()">Add to project</button>
-            <div id="projectPickerPopover" class="project-popover"></div>
-          </div>
-        </div>
-        <button type="button" class="secondary icon" onclick="closeModal('createTicketModal')">x</button>
+  <form class="modal ticket-modal create-ticket-modal" onsubmit="submitTicket(event)">
+    <div class="modal-head">
+      <div>
+        <div class="eyebrow" id="createTicketPreviewId">New ticket</div>
+        <input class="modal-title-input" name="title" required placeholder="Issue title" oninput="updateCreateTicketPreview()" />
       </div>
-      <div class="composer-fields">
-        <input class="issue-title" name="title" required placeholder="Issue title" />
-        <textarea class="issue-description" name="description" placeholder="Add description..."></textarea>
+      <button type="button" class="secondary icon" title="Close" onclick="closeModal('createTicketModal')">x</button>
+    </div>
+    <div class="ticket-summary">
+      <div class="summary-pill"><svg viewBox="0 0 24 24" fill="none" stroke-width="2"><circle cx="12" cy="12" r="8"></circle><path d="M12 8v4l2.5 2"></path></svg><span>To-do</span></div>
+      <div class="summary-pill project-control">
+        <svg viewBox="0 0 24 24" fill="none" stroke-width="2"><path d="m12 3 8 4.5v9L12 21l-8-4.5v-9L12 3Z"></path><path d="M12 12 4.5 7.8"></path><path d="M12 12l7.5-4.2"></path><path d="M12 12v8.5"></path></svg>
+        <button type="button" class="pill-inline-button" id="ticketProjectButton" onclick="toggleProjectPicker()">Add to project</button>
+        <div id="projectPickerPopover" class="project-popover"></div>
       </div>
+      <label class="summary-pill agent-summary-pill"><svg viewBox="0 0 24 24" fill="none" stroke-width="2"><path d="M12 8V4"></path><rect x="5" y="8" width="14" height="11" rx="3"></rect><path d="M9 13h.01"></path><path d="M15 13h.01"></path><path d="M9.5 17h5"></path></svg><select name="agent" id="createTicketAgent" onchange="createTicketAgentTouched=true; updateCreateTicketPreview()"></select></label>
+    </div>
+    <div class="ticket-description">
+      <label>Description<textarea name="description" placeholder="Add description..."></textarea></label>
       <input type="hidden" name="project" id="ticketProject" />
     </div>
-    <div class="composer-footer">
-      <span class="muted">Workspace and branch are created from this ticket.</span>
-      <button>Create ticket</button>
+    <div class="ticket-panel">
+      <div class="ticket-preview" id="createTicketPreview"></div>
+      <div class="ticket-actions">
+        <span class="ticket-save-hint">Workspace, branch, and assigned agent are prepared when the ticket is created.</span>
+        <div class="ticket-footer-actions">
+          <button>Create ticket</button>
+        </div>
+      </div>
     </div>
   </form>
 </div>
@@ -1006,7 +1558,7 @@ input:focus, select:focus, textarea:focus {
     </div>
     <div class="two">
       <label>Name<input name="name" required placeholder="thomas" oninput="syncIdentifier(this.value)" /></label>
-      <label>Identifier<input name="identifier" required placeholder="THOMAS" oninput="projectIdentifierTouched=true" /></label>
+      <label>Identifier<input name="identifier" required placeholder="THOMAS" oninput="sanitizeProjectIdentifierInput(this)" /></label>
     </div>
     <label>Repo path
       <div class="row">
@@ -1058,6 +1610,61 @@ input:focus, select:focus, textarea:focus {
   </form>
 </div>
 
+<div id="settingsModal" class="modal-backdrop" onclick="closeModalOnBackdrop(event)">
+  <div class="modal">
+    <div class="modal-head">
+      <div>
+        <div class="eyebrow">Preferences</div>
+        <h2>Settings</h2>
+      </div>
+      <button type="button" class="secondary icon" onclick="closeModal('settingsModal')">x</button>
+    </div>
+    <div class="settings-list">
+      <div class="settings-row">
+        <div>
+          <strong>Theme</strong>
+          <span>Choose the dashboard appearance.</span>
+        </div>
+        <select id="settingsTheme" onchange="updateThemePreference(this.value)">
+          <option value="light">Light</option>
+          <option value="dark">Dark</option>
+        </select>
+      </div>
+      <div class="settings-row">
+        <div>
+          <strong>Agent logs</strong>
+          <span>Show and stream live ticket-agent output.</span>
+        </div>
+        <label class="checkbox-control">
+          <input id="settingsShowAgentLogs" type="checkbox" onchange="updateShowAgentLogsPreference(this.checked)" />
+          Show logs
+        </label>
+      </div>
+      <div class="settings-row">
+        <div>
+          <strong>Browser notifications</strong>
+          <span id="browserNotificationStatus">Show ticket alerts while this dashboard is open.</span>
+        </div>
+        <label class="checkbox-control">
+          <input id="settingsBrowserNotifications" type="checkbox" onchange="updateBrowserNotificationsPreference(this.checked)" />
+          Show alerts
+        </label>
+      </div>
+      <div class="settings-row">
+        <div>
+          <strong>Test notification</strong>
+          <span>Send a sample browser notification.</span>
+        </div>
+        <button type="button" class="secondary" onclick="testNotification()">Send test</button>
+      </div>
+      <div class="settings-footer">
+        <span id="settingsVersion">Thomas</span>
+        <span id="settingsCacheSize">Cache: calculating</span>
+      </div>
+    </div>
+  </div>
+</div>
+
 <div id="toast"></div>
 
 <script>
@@ -1068,7 +1675,13 @@ let selectedTicketProject = "";
 let activeView = "board";
 let projectModalMode = "create";
 let agentCommandTouched = false;
+let createTicketAgentTouched = false;
+let ticketActivityTimer = null;
+let ticketActivityStream = null;
+let knownTicketStatuses = new Map();
+let stateLoadedOnce = false;
 const expandedProjects = new Set();
+const expandedAgents = new Set();
 const $ = (s, r=document) => r.querySelector(s);
 const $$ = (s, r=document) => [...r.querySelectorAll(s)];
 const esc = (s='') => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -1081,14 +1694,24 @@ async function api(path, options={}) {
 }
 async function post(action, body) {
   const json = await api(action, { method:'POST', body:JSON.stringify(body) });
-  state = json.state;
-  render();
+  applyState(json.state);
   if (json.output) showToast(json.output);
+  return json;
+}
+function applyState(nextState) {
+  handleStateNotifications(nextState);
+  state = nextState;
+  render();
+}
+async function updateSettingsSilently(body) {
+  const json = await api('settings/update', { method:'POST', body:JSON.stringify(body) });
+  applyState(json.state);
   return json;
 }
 async function loadState() {
   try {
     const json = await api('state');
+    handleStateNotifications(json.state);
     state = json.state;
     render();
   } catch (error) {
@@ -1097,14 +1720,37 @@ async function loadState() {
 }
 function render() {
   if (!state) return;
+  if (selectedTicket) {
+    selectedTicket = state.kanban.tickets.find(ticket => ticket.id === selectedTicket.id) || selectedTicket;
+  }
   $('#counts').textContent = `${state.projects.length} projects · ${state.workspaces.length} workspaces · ${state.kanban.tickets.length} tickets`;
   fillProjectFilter();
   fillModalSelects();
   renderProjectPicker();
+  renderPreferences();
   renderBoard();
   renderProjectsList();
   renderAgentsList();
   updateView();
+}
+function handleStateNotifications(nextState) {
+  const tickets = nextState?.kanban?.tickets || [];
+  const nextStatuses = new Map(tickets.map(ticket => [ticket.id, ticket.status]));
+  if (!stateLoadedOnce) {
+    knownTicketStatuses = nextStatuses;
+    stateLoadedOnce = true;
+    return;
+  }
+  const browserNotifications = nextState?.settings?.preferences?.browserNotifications === true;
+  if (browserNotifications) {
+    for (const ticket of tickets) {
+      const previous = knownTicketStatuses.get(ticket.id);
+      if (previous && previous !== "Human Review" && ticket.status === "Human Review") {
+        sendBrowserNotification(`Human review: ${ticket.id}`, ticket.title || "Ticket is ready.");
+      }
+    }
+  }
+  knownTicketStatuses = nextStatuses;
 }
 function fillProjectFilter() {
   const current = $('#projectFilter').value || 'all';
@@ -1115,9 +1761,14 @@ function fillModalSelects() {
   if (selectedTicketProject && !state.projects.some(project => project.name === selectedTicketProject)) {
     selectedTicketProject = "";
   }
+  const profiles = Object.values(state.settings.agentProfiles.profiles)
+    .sort((a,b)=>a.name.localeCompare(b.name));
   $('#projectAgentProfile').innerHTML = '<option value="">Default</option>' + Object.values(state.settings.agentProfiles.profiles)
     .sort((a,b)=>a.name.localeCompare(b.name))
     .map(profile => `<option value="${esc(profile.name)}">${esc(profile.name)} · ${esc(agentTypeLabel(profile.type))}</option>`)
+    .join('');
+  $('#createTicketAgent').innerHTML = profiles
+    .map(profile => `<option value="${esc(profile.name)}">${esc(displayName(profile.name))}</option>`)
     .join('');
   syncSelectedTicketProject();
 }
@@ -1137,6 +1788,51 @@ function syncSelectedTicketProject() {
   $('#ticketProjectButton').textContent = project
     ? `${project.name} (${project.identifier || ''})`
     : "Add to project";
+  if (!createTicketAgentTouched) {
+    const select = $('#createTicketAgent');
+    if (select) select.value = defaultAgentForProject(project);
+  }
+  updateCreateTicketPreview();
+}
+function defaultAgentForProject(project) {
+  const preferred = project?.agentProfile || state.settings.agentProfiles.default || "claude";
+  return state.settings.agentProfiles.profiles?.[preferred] ? preferred : "claude";
+}
+function displayTicketId(ticketOrId) {
+  return String(typeof ticketOrId === "object" ? ticketOrId?.id : ticketOrId || "").toUpperCase();
+}
+function ticketNumber(ticket) {
+  const parsed = Number(ticket?.number || String(ticket?.id || "").match(/-(\d+)$/)?.[1] || 0);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+function nextTicketNumber(project) {
+  const configured = Number.parseInt(project?.kanbanNextNumber || "1", 10) || 1;
+  const existing = (state.kanban.tickets || [])
+    .filter(ticket => ticket.project === project?.name)
+    .reduce((max, ticket) => Math.max(max, ticketNumber(ticket)), 0);
+  return Math.max(configured, existing + 1, 1);
+}
+function previewTicketForProject(project) {
+  if (!project) return { id:"NEW TICKET", workspace:"", branch:"" };
+  const identifier = String(project.identifier || defaultIdentifier(project.name)).toUpperCase();
+  const id = `${identifier}-${nextTicketNumber(project)}`;
+  const workspace = id.toLowerCase();
+  const user = project.githubUser || state.defaultGithubUser || "gh-user";
+  return { id, workspace, branch:`${user}/${workspace}` };
+}
+function updateCreateTicketPreview() {
+  if (!state || !$('#createTicketPreview')) return;
+  const project = state.projects.find(item => item.name === selectedTicketProject);
+  const preview = previewTicketForProject(project);
+  $('#createTicketPreviewId').textContent = preview.id;
+  const agent = $('#createTicketAgent')?.value || defaultAgentForProject(project);
+  $('#createTicketPreview').innerHTML = [
+    `<div class="preview-chip"><strong>${esc(preview.id)}</strong></div>`,
+    project ? `<div class="preview-chip"><span>Project</span><strong>${esc(project.name)}</strong></div>` : '',
+    preview.workspace ? `<div class="preview-chip"><span>Workspace</span><strong>${esc(preview.workspace)}</strong></div>` : '',
+    preview.branch ? `<div class="preview-chip"><span>Branch</span><strong>${esc(preview.branch)}</strong></div>` : '',
+    agent ? `<div class="preview-chip"><span>Agent</span><strong>${esc(displayName(agent))}</strong></div>` : '',
+  ].filter(Boolean).join('');
 }
 function filteredTickets() {
   const project = $('#projectFilter').value || 'all';
@@ -1170,7 +1866,15 @@ function renderBoard() {
   `).join('');
 }
 function renderTicket(ticket) {
-  return `<article class="ticket" onclick="openTicket('${esc(ticket.id)}')"><div class="ticket-id">${esc(ticket.id)}</div><div class="ticket-title">${esc(ticket.title)}</div><div class="ticket-meta"><span>${esc(ticket.project)}</span><span>${esc(ticket.workspaceStatus)}</span></div></article>`;
+  const assignee = ticket.assignedAgentProfile || state.settings.agentProfiles.default || "claude";
+  const runState = ticket.agentRun?.status && ticket.agentRun.status !== "done"
+    ? `<span class="agent-state">${esc(ticket.agentRun.status === "running" ? formatElapsed(ticket.agentRun.startedAt, ticket.agentRun.endedAt) : ticket.agentRun.status)}</span>`
+    : "";
+  return `<article class="ticket" onclick="openTicket('${esc(ticket.id)}')">
+    <div class="ticket-id">${esc(displayTicketId(ticket))}</div>
+    <div class="ticket-title">${esc(ticket.title)}</div>
+    <div class="ticket-meta"><div class="assignee-pill"><span class="assignee-dot"></span><span>${esc(displayName(assignee))}</span></div>${runState}</div>
+  </article>`;
 }
 function switchView(view) {
   activeView = view;
@@ -1191,56 +1895,95 @@ function workspacesForProject(projectName) {
 function renderProjectsList() {
   const rows = state.projects.map(project => {
     const workspaces = workspacesForProject(project.name);
-    const expanded = expandedProjects.has(project.name);
-    return `<div>
-      <div class="project-table-row" role="button" tabindex="0" onclick="openProjectModal('${esc(project.name)}')">
-        <span class="project-name-cell">
-          <span class="project-chevron" onclick="toggleProjectWorkspaces(event,'${esc(project.name)}')">${expanded ? '▾' : '▸'}</span>
-          <span class="project-dot"></span>
-          <span class="project-name-text">${esc(project.name)}</span>
-          <span class="project-count">${workspaces.length}</span>
-        </span>
-        <span>${esc(project.identifier || '')}</span>
-        <span>${esc(project.mainBranch || '')}</span>
-        <span>${workspaces.length}</span>
-        <span>${esc(project.agentProfile || 'default')}</span>
-        <span>
-          <button type="button" class="secondary icon" title="Create workspace" onclick="openWorkspaceModal(event,'${esc(project.name)}')">+</button>
-        </span>
+    const workspaceCount = workspaces.length;
+    const expanded = workspaceCount > 0 && expandedProjects.has(project.name);
+    return `<div class="project-card">
+      <div class="project-card-head ${workspaceCount ? '' : 'no-workspaces'}" role="button" tabindex="0" onclick="openProjectModal('${esc(project.name)}')">
+        ${workspaceCount ? `<button type="button" class="ghost-chevron" title="Show workspaces" onclick="toggleProjectWorkspaces(event,'${esc(project.name)}')">${expanded ? '▾' : '▸'}</button>` : ''}
+        <span class="project-dot"></span>
+        <div class="project-card-title">
+          <strong>${esc(project.name)}</strong>
+        </div>
+        <div class="project-card-meta">
+          <span class="chip">${esc(String(project.identifier || defaultIdentifier(project.name)).toUpperCase())}</span>
+          <span>${workspaceCount} workspace${workspaceCount === 1 ? '' : 's'}</span>
+        </div>
+        <button type="button" class="secondary icon" title="Create workspace" onclick="openWorkspaceModal(event,'${esc(project.name)}')">+</button>
       </div>
-      <div class="project-expanded ${expanded ? 'open' : ''}">
+      ${workspaceCount ? `<div class="project-expanded ${expanded ? 'open' : ''}">
         ${renderWorkspaceRows(workspaces)}
-      </div>
+      </div>` : ''}
     </div>`;
   }).join('');
   $('#projectsList').innerHTML = state.projects.length
-    ? `<div class="projects-table-head"><span>Name ↓</span><span>Identifier</span><span>Base</span><span>Workspaces</span><span>Agent</span><span></span></div>${rows}`
+    ? rows
     : '<div class="empty">No projects.</div>';
 }
 function renderWorkspaceRows(workspaces) {
-  return workspaces.map(workspace => `<div class="project-workspace-row"><strong>${esc(workspace.name)}</strong><span>${esc(workspace.branch || '')}</span><span class="chip">${esc(workspace.status)}</span><span></span></div>`).join('') || '<div class="empty">No workspaces.</div>';
+  return workspaces.map(workspace => {
+    const ticket = ticketForWorkspace(workspace);
+    const label = ticket ? displayTicketId(ticket) : workspace.name.toUpperCase();
+    return `<button type="button" class="project-workspace-row" onclick="${ticket ? `openTicket('${esc(ticket.id)}')` : ''}"><strong>${esc(label)}</strong><span>${esc(workspace.branch || '')}</span><span class="chip">${esc(workspace.status)}</span></button>`;
+  }).join('') || '<div class="empty">No workspaces.</div>';
+}
+function ticketForWorkspace(workspace) {
+  return (state.kanban.tickets || []).find(ticket => ticket.project === workspace.project && ticket.workspace === workspace.name);
 }
 function renderAgentsList() {
   const profiles = Object.values(state.settings.agentProfiles.profiles || {})
     .sort((a, b) => agentSortKey(a.name).localeCompare(agentSortKey(b.name)));
   const defaultName = state.settings.agentProfiles.default || "claude";
-  $('#defaultAgentLabel').textContent = defaultName;
+  const defaultSelect = $('#defaultAgentSelect');
+  if (defaultSelect) {
+    defaultSelect.innerHTML = profiles
+      .map(profile => `<option value="${esc(profile.name)}">${esc(displayName(profile.name))}</option>`)
+      .join('');
+    defaultSelect.value = defaultName;
+  }
   const rows = profiles.map(profile => {
     const builtin = profile.name === "claude" || profile.name === "codex";
-    return `<div class="agent-table-row">
-      <span class="agent-name">${esc(displayName(profile.name))}</span>
-      <span class="chip">${esc(agentTypeValue(profile.type))}</span>
-      <span>${esc(profile.command || defaultAgentCommand(profile.type))}</span>
-      <span>${profile.name === defaultName ? 'Default' : ''}</span>
-      <span class="row">
-        ${profile.name === defaultName ? '' : `<button type="button" class="secondary" onclick="setDefaultAgent('${esc(profile.name)}')">Set default</button>`}
+    const tickets = activeTicketsForAgent(profile.name);
+    const expanded = expandedAgents.has(profile.name);
+    return `<div class="agent-card">
+    <div class="agent-card-head">
+      <button type="button" class="ghost-chevron" ${tickets.length ? `onclick="toggleAgentTickets(event,'${esc(profile.name)}')"` : 'disabled'}>${tickets.length ? (expanded ? '▾' : '▸') : ''}</button>
+      <div class="agent-card-title">
+        <strong>${esc(displayName(profile.name))}</strong>
+        <span>${esc(profile.command || defaultAgentCommand(profile.type))}</span>
+      </div>
+      <div class="agent-card-meta">
+        <span class="chip">${esc(agentTypeValue(profile.type))}</span>
+        <span>${tickets.length} active</span>
+      </div>
+      <div class="row">
         ${builtin ? '' : `<button type="button" class="secondary icon" title="Remove agent profile" onclick="removeAgent('${esc(profile.name)}')">x</button>`}
-      </span>
+      </div>
+    </div>
+    <div class="agent-expanded ${expanded ? 'open' : ''}">
+      ${renderAgentTicketGroups(tickets)}
+    </div>
     </div>`;
   }).join('');
   $('#agentsList').innerHTML = profiles.length
-    ? `<div class="agent-table-head"><span>Name</span><span>Type</span><span>Launch command</span><span>Default</span><span></span></div>${rows}`
+    ? rows
     : '<div class="empty">No agent profiles.</div>';
+}
+function activeTicketsForAgent(agentName) {
+  return (state.kanban.tickets || [])
+    .filter(ticket => ticket.status !== "Done" && (ticket.assignedAgentProfile || state.settings.agentProfiles.default || "claude") === agentName)
+    .sort((a, b) => a.id.localeCompare(b.id, undefined, { numeric:true }));
+}
+function renderAgentTicketGroups(tickets) {
+  if (tickets.length === 0) return '';
+  const statuses = state.kanban.statuses.filter(status => status !== "Done");
+  return statuses
+    .map(status => {
+      const items = tickets.filter(ticket => ticket.status === status);
+      if (items.length === 0) return "";
+      return `<div class="agent-ticket-group"><div class="agent-ticket-status">${esc(status)} ${items.length}</div>${items.map(ticket => `<button type="button" class="agent-ticket-row" onclick="openTicket('${esc(ticket.id)}')"><span>${esc(displayTicketId(ticket))}</span><strong>${esc(ticket.title)}</strong></button>`).join('')}</div>`;
+    })
+    .filter(Boolean)
+    .join('');
 }
 function agentSortKey(name) {
   if (name === "claude") return "0-claude";
@@ -1268,20 +2011,45 @@ function toggleProjectWorkspaces(event, projectName) {
   else expandedProjects.add(projectName);
   renderProjectsList();
 }
+function toggleAgentTickets(event, agentName) {
+  event.stopPropagation();
+  if (expandedAgents.has(agentName)) expandedAgents.delete(agentName);
+  else expandedAgents.add(agentName);
+  renderAgentsList();
+}
 function openTicket(id) {
+  stopTicketActivityRefresh();
   selectedTicket = state.kanban.tickets.find(ticket => ticket.id === id);
   if (!selectedTicket) return;
-  $('#ticketId').textContent = selectedTicket.id;
+  renderSelectedTicketModal();
+  openModal('ticketModal');
+}
+function renderSelectedTicketModal() {
+  if (!selectedTicket) return;
+  $('#ticketId').textContent = displayTicketId(selectedTicket);
   $('#ticketTitle').textContent = selectedTicket.title;
   $('#ticketSummary').innerHTML = [
-    `<div class="summary-pill"><select id="ticketStatus">${state.kanban.statuses.map(status => `<option${status === selectedTicket.status ? ' selected' : ''}>${esc(status)}</option>`).join('')}</select></div>`,
-    `<div class="summary-pill"><span>${esc(selectedTicket.project)}</span></div>`,
+    `<div class="summary-pill">${statusIcon()}<span>${esc(selectedTicket.status)}</span></div>`,
+    `<div class="summary-pill">${projectIcon()}<span>${esc(selectedTicket.project)}</span></div>`,
+    renderTicketAgentPill(),
     selectedTicket.branch ? `<button class="secondary icon-action" title="Copy branch" onclick="copyBranch(event)">${branchIcon()}</button>` : '',
     selectedTicket.prUrl ? `<button class="secondary icon-action" title="Open PR" onclick="openTicketPr(event)">${prIcon()}</button>` : '',
     `<button class="secondary icon-action" title="Checks" onclick="checkTicket(event)">${checksIcon()}</button>`,
+    '<span class="ticket-summary-spacer"></span>',
+    `<button class="secondary icon-action" title="Reveal session folder in Finder" onclick="revealTicketWorkspace(event)">${folderIcon()}</button>`,
   ].join('');
   renderTicketDescription();
-  openModal('ticketModal');
+  renderTicketAgentPanel();
+  renderTicketActivity();
+  renderTicketComments();
+  renderTicketReplyForm();
+}
+function renderTicketAgentPill() {
+  const profiles = Object.values(state.settings.agentProfiles.profiles || {})
+    .sort((a, b) => agentSortKey(a.name).localeCompare(agentSortKey(b.name)));
+  const current = selectedTicket.assignedAgentProfile || state.settings.agentProfiles.default || "claude";
+  const disabled = selectedTicket.status !== "To-do" ? " disabled" : "";
+  return `<div class="summary-pill agent-summary-pill">${agentIcon()}<select id="ticketAgentProfile" onchange="assignTicketAgent()"${disabled}>${profiles.map(profile => `<option value="${esc(profile.name)}"${profile.name === current ? ' selected' : ''}>${esc(displayName(profile.name))}</option>`).join('')}</select></div>`;
 }
 function renderTicketDescription() {
   const description = selectedTicket?.description || "";
@@ -1289,6 +2057,138 @@ function renderTicketDescription() {
   $('#ticketDescriptionBlock').innerHTML = canEdit
     ? `<label>Description<textarea id="ticketDescription" placeholder="Add description...">${esc(description)}</textarea></label>`
     : `<div class="description-text">${esc(description || "No description.")}</div>`;
+}
+function renderTicketAgentPanel() {
+  if (!selectedTicket) return;
+  const pill = $('#ticketAgentProfile')?.closest('.agent-summary-pill');
+  if (pill) pill.outerHTML = renderTicketAgentPill();
+}
+function renderTicketComments() {
+  const comments = selectedTicket?.comments || [];
+  const container = $('#ticketComments');
+  container.innerHTML = comments.map(comment => `<div class="comment"><div class="comment-meta">${esc(comment.author)} · ${esc(comment.kind)}</div><div class="comment-body">${esc(comment.body)}</div></div>`).join('');
+  container.hidden = comments.length === 0;
+}
+function renderTicketReplyForm() {
+  const form = $('#ticketReplyForm');
+  if (!form || !selectedTicket) return;
+  const canReply = selectedTicket.status === "Human Review";
+  form.hidden = !canReply;
+  if (form.elements.message) {
+    form.elements.message.disabled = !canReply;
+    form.elements.message.placeholder = canReply ? "Reply to the agent..." : "Replies are available in Human Review.";
+  }
+  const button = form.querySelector('button');
+  if (button) button.disabled = !canReply;
+}
+function renderTicketActivity() {
+  const container = $('#ticketActivity');
+  const run = selectedTicket?.agentRun;
+  const showLogs = state?.settings?.preferences?.showAgentLogs !== false;
+  if (!container || !run?.sessionId || !showLogs) {
+    if (container) container.hidden = true;
+    stopTicketActivityRefresh();
+    return;
+  }
+  const session = state.sessions.find(item => item.id === run.sessionId);
+  const status = run.status || session?.status || "unknown";
+  const agent = run.profile || session?.agent || selectedTicket.assignedAgentProfile || state.settings.agentProfiles.default || "agent";
+  container.hidden = false;
+  container.innerHTML = `
+    <div class="ticket-activity-head">
+      <strong>${esc(displayName(agent))} activity</strong>
+      <div class="ticket-activity-meta">
+        <span>${esc(status)}</span>
+        <span id="ticketActivityElapsed">${esc(formatElapsed(run.startedAt, run.endedAt))}</span>
+      </div>
+    </div>
+    <pre class="ticket-log" id="ticketActivityLog">Loading existing logs...</pre>
+  `;
+  stopTicketActivityRefresh();
+  streamTicketActivityLog(run.sessionId);
+  ticketActivityTimer = setInterval(() => {
+    if (!selectedTicket || selectedTicket.agentRun?.sessionId !== run.sessionId || !$('#ticketModal').classList.contains('open')) {
+      stopTicketActivityRefresh();
+      return;
+    }
+    const elapsed = $('#ticketActivityElapsed');
+    if (elapsed) elapsed.textContent = formatElapsed(selectedTicket.agentRun.startedAt, selectedTicket.agentRun.endedAt);
+  }, 5000);
+}
+function streamTicketActivityLog(sessionId) {
+  closeTicketActivityStream();
+  const log = $('#ticketActivityLog');
+  if (!log) return;
+  if (!window.EventSource) {
+    refreshTicketActivityLog(sessionId);
+    return;
+  }
+  ticketActivityStream = new EventSource(`/api/session/logs/stream?id=${encodeURIComponent(sessionId)}`);
+  ticketActivityStream.addEventListener('log', event => {
+    const payload = JSON.parse(event.data || '{}');
+    const output = String(payload.output || '').trim();
+    log.textContent = output || "No log output yet.";
+  });
+  ticketActivityStream.onerror = () => {
+    if (log.textContent === "Loading existing logs...") {
+      log.textContent = "Waiting for log stream...";
+    }
+  };
+}
+async function refreshTicketActivityLog(sessionId) {
+  const log = $('#ticketActivityLog');
+  if (!log) return;
+  try {
+    const json = await api(`session/logs?id=${encodeURIComponent(sessionId)}`);
+    const output = String(json.output || "").trim();
+    log.textContent = output || "No log output yet.";
+  } catch (error) {
+    log.textContent = error.message;
+  }
+}
+function stopTicketActivityRefresh() {
+  closeTicketActivityStream();
+  if (ticketActivityTimer) clearInterval(ticketActivityTimer);
+  ticketActivityTimer = null;
+}
+function closeTicketActivityStream() {
+  if (!ticketActivityStream) return;
+  ticketActivityStream.close();
+  ticketActivityStream = null;
+}
+function formatElapsed(start, end = null) {
+  if (!start) return "elapsed unknown";
+  const startMs = Date.parse(start);
+  const endMs = end ? Date.parse(end) : Date.now();
+  if (!Number.isFinite(startMs) || !Number.isFinite(endMs)) return "elapsed unknown";
+  const seconds = Math.max(0, Math.floor((endMs - startMs) / 1000));
+  if (seconds < 60) return `${seconds}s elapsed`;
+  const minutes = Math.floor(seconds / 60);
+  const hours = Math.floor(minutes / 60);
+  if (hours < 1) return `${minutes}m elapsed`;
+  return `${hours}h ${minutes % 60}m elapsed`;
+}
+function formatBytes(bytes) {
+  const value = Number(bytes || 0);
+  if (!Number.isFinite(value) || value <= 0) return "0 B";
+  const units = ["B", "KB", "MB", "GB"];
+  let size = value;
+  let unitIndex = 0;
+  while (size >= 1024 && unitIndex < units.length - 1) {
+    size /= 1024;
+    unitIndex += 1;
+  }
+  const digits = unitIndex === 0 || size >= 10 ? 0 : 1;
+  return `${size.toFixed(digits)} ${units[unitIndex]}`;
+}
+function statusIcon() {
+  return '<svg viewBox="0 0 24 24" fill="none" stroke-width="2"><circle cx="12" cy="12" r="8"></circle><path d="M12 8v4l2.5 2"></path></svg>';
+}
+function projectIcon() {
+  return '<svg viewBox="0 0 24 24" fill="none" stroke-width="2"><path d="m12 3 8 4.5v9L12 21l-8-4.5v-9L12 3Z"></path><path d="M12 12 4.5 7.8"></path><path d="M12 12l7.5-4.2"></path><path d="M12 12v8.5"></path></svg>';
+}
+function agentIcon() {
+  return '<svg viewBox="0 0 24 24" fill="none" stroke-width="2"><path d="M12 8V4"></path><rect x="5" y="8" width="14" height="11" rx="3"></rect><path d="M9 13h.01"></path><path d="M15 13h.01"></path><path d="M9.5 17h5"></path></svg>';
 }
 function branchIcon() {
   return '<svg viewBox="0 0 24 24" fill="none" stroke-width="2"><circle cx="6" cy="6" r="3"></circle><circle cx="18" cy="18" r="3"></circle><path d="M6 9v3a6 6 0 0 0 6 6h3"></path></svg>';
@@ -1298,6 +2198,132 @@ function prIcon() {
 }
 function checksIcon() {
   return '<svg viewBox="0 0 24 24" fill="none" stroke-width="2"><path d="m4 12 5 5L20 6"></path></svg>';
+}
+function folderIcon() {
+  return '<svg viewBox="0 0 24 24" fill="none" stroke-width="2"><path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"></path></svg>';
+}
+function sunIcon() {
+  return '<svg viewBox="0 0 24 24" fill="none" stroke-width="2"><circle cx="12" cy="12" r="4"></circle><path d="M12 2v2"></path><path d="M12 20v2"></path><path d="m4.93 4.93 1.41 1.41"></path><path d="m17.66 17.66 1.41 1.41"></path><path d="M2 12h2"></path><path d="M20 12h2"></path><path d="m6.34 17.66-1.41 1.41"></path><path d="m19.07 4.93-1.41 1.41"></path></svg>';
+}
+function moonIcon() {
+  return '<svg viewBox="0 0 24 24" fill="none" stroke-width="2"><path d="M20.5 14.5A8.5 8.5 0 0 1 9.5 3.5 7 7 0 1 0 20.5 14.5Z"></path></svg>';
+}
+function applyTheme(theme) {
+  const next = theme === "dark" ? "dark" : "light";
+  document.documentElement.dataset.theme = next;
+  localStorage.setItem("thomas-theme", next);
+  const icon = $('#themeIcon');
+  const label = $('#themeLabel');
+  if (icon) icon.innerHTML = next === "dark" ? moonIcon() : sunIcon();
+  if (label) label.textContent = next === "dark" ? "Dark" : "Light";
+}
+function toggleTheme() {
+  applyTheme(document.documentElement.dataset.theme === "dark" ? "light" : "dark");
+}
+function renderPreferences() {
+  const preferences = state?.settings?.preferences || {};
+  const theme = preferences.theme || localStorage.getItem("thomas-theme") || "light";
+  applyTheme(theme);
+  const themeSelect = $('#settingsTheme');
+  if (themeSelect) themeSelect.value = theme;
+  const logsCheckbox = $('#settingsShowAgentLogs');
+  if (logsCheckbox) logsCheckbox.checked = preferences.showAgentLogs !== false;
+  const notificationsCheckbox = $('#settingsBrowserNotifications');
+  if (notificationsCheckbox) notificationsCheckbox.checked = preferences.browserNotifications === true;
+  renderBrowserNotificationStatus();
+  const version = $('#settingsVersion');
+  if (version) version.textContent = `Thomas ${state?.cliVersion || ""}`.trim();
+  const cache = $('#settingsCacheSize');
+  if (cache) cache.textContent = `Cache: ${formatBytes(state?.cacheSizeBytes)} · excludes worktrees`;
+}
+function renderBrowserNotificationStatus(extra = "") {
+  const status = $('#browserNotificationStatus');
+  if (!status) return;
+  if (!("Notification" in window)) {
+    status.textContent = "This browser does not support notifications.";
+    return;
+  }
+  const permission = Notification.permission;
+  status.textContent = extra || `Browser permission: ${permission}. Alerts only show while this dashboard is open.`;
+}
+function openSettingsModal() {
+  renderPreferences();
+  openModal('settingsModal');
+}
+async function updateThemePreference(theme) {
+  applyTheme(theme);
+  try {
+    await post('settings/update', { theme });
+  } catch (error) {
+    showToast(error.message);
+  }
+}
+async function updateShowAgentLogsPreference(showAgentLogs) {
+  try {
+    await post('settings/update', { showAgentLogs });
+    if (selectedTicket) renderSelectedTicketModal();
+  } catch (error) {
+    showToast(error.message);
+  }
+}
+async function updateBrowserNotificationsPreference(browserNotifications) {
+  try {
+    if (browserNotifications) {
+      const granted = await requestBrowserNotificationPermission();
+      if (!granted) {
+        $('#settingsBrowserNotifications').checked = false;
+        showToast("Browser notifications are not allowed for this dashboard.");
+        return;
+      }
+    }
+    await updateSettingsSilently({ browserNotifications });
+  } catch (error) {
+    showToast(error.message);
+  }
+}
+async function testNotification() {
+  try {
+    const granted = await requestBrowserNotificationPermission();
+    renderBrowserNotificationStatus();
+    if (!granted) {
+      showToast("Browser notifications are not allowed for this dashboard.");
+      return;
+    }
+    const sent = sendBrowserNotification("Thomas notification test", "Browser notifications are working.");
+    if (sent) {
+      renderBrowserNotificationStatus("Browser accepted the notification. If no banner appeared, check browser/macOS notification settings or Focus mode.");
+    }
+    await updateSettingsSilently({ browserNotifications: true });
+  } catch (error) {
+    showToast(error.message);
+  }
+}
+async function requestBrowserNotificationPermission() {
+  if (!("Notification" in window)) return false;
+  if (Notification.permission === "granted") return true;
+  if (Notification.permission === "denied") return false;
+  return (await Notification.requestPermission()) === "granted";
+}
+function sendBrowserNotification(title, body) {
+  if (!("Notification" in window)) {
+    showToast("This browser does not support notifications.");
+    return false;
+  }
+  if (Notification.permission !== "granted") {
+    showToast(`Browser notification permission is ${Notification.permission}.`);
+    return false;
+  }
+  try {
+    new Notification(title, {
+      body,
+      tag: `thomas-${title}`,
+    });
+    return true;
+  } catch (error) {
+    showToast(error.message);
+    renderBrowserNotificationStatus(error.message);
+    return false;
+  }
 }
 async function copyBranch(event) {
   event.stopPropagation();
@@ -1316,7 +2342,6 @@ function openTicketPr(event) {
 async function saveTicket() {
   if (!selectedTicket) return;
   const ticketId = selectedTicket.id;
-  const nextStatus = $('#ticketStatus').value;
   const canEditDescription = selectedTicket.status === "To-do";
   try {
     if (canEditDescription) {
@@ -1327,15 +2352,54 @@ async function saveTicket() {
       }
     }
     selectedTicket = state.kanban.tickets.find(ticket => ticket.id === ticketId) || selectedTicket;
-    if (nextStatus !== selectedTicket.status) {
-      await post('kanban/status', { ticketId, status: nextStatus });
-    }
-    selectedTicket = state.kanban.tickets.find(ticket => ticket.id === ticketId) || selectedTicket;
     if (selectedTicket) {
-      $('#ticketStatus').value = selectedTicket.status;
-      renderTicketDescription();
+      renderSelectedTicketModal();
     }
     showToast(`${ticketId} saved.`);
+  } catch (error) {
+    showToast(error.message);
+  }
+}
+async function assignTicketAgent() {
+  if (!selectedTicket) return;
+  const agentProfile = $('#ticketAgentProfile').value;
+  try {
+    await post('ticket/assign', { ticketId: selectedTicket.id, agentProfile });
+    selectedTicket = state.kanban.tickets.find(ticket => ticket.id === selectedTicket.id) || selectedTicket;
+    renderSelectedTicketModal();
+  } catch (error) {
+    showToast(error.message);
+  }
+}
+async function submitTicketReply(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  if (!selectedTicket) return;
+  if (selectedTicket.status !== "Human Review") {
+    renderTicketReplyForm();
+    showToast("Replies are only available in Human Review.");
+    return;
+  }
+  const message = form.elements.message.value.trim();
+  if (!message) return;
+  try {
+    await post('ticket/reply', { ticketId: selectedTicket.id, message });
+    form.reset();
+    selectedTicket = state.kanban.tickets.find(ticket => ticket.id === selectedTicket.id) || selectedTicket;
+    renderSelectedTicketModal();
+  } catch (error) {
+    showToast(error.message);
+  }
+}
+async function deleteTicket() {
+  if (!selectedTicket) return;
+  const ticketId = selectedTicket.id;
+  const confirmed = window.confirm(`Delete ${ticketId}? This will stop associated agents and remove its workspace.`);
+  if (!confirmed) return;
+  try {
+    await post('ticket/delete', { ticketId, force:true });
+    selectedTicket = null;
+    closeModal('ticketModal');
   } catch (error) {
     showToast(error.message);
   }
@@ -1350,9 +2414,19 @@ async function checkTicket(event) {
     showToast(error.message);
   }
 }
+async function revealTicketWorkspace(event) {
+  event?.stopPropagation();
+  if (!selectedTicket) return;
+  try {
+    await post('ticket/reveal', { ticketId: selectedTicket.id });
+  } catch (error) {
+    showToast(error.message);
+  }
+}
 function openCreateTicket() {
   const form = $('#createTicketModal form');
   form.reset();
+  createTicketAgentTouched = false;
   selectedTicketProject = state.projects[0]?.name || "";
   syncSelectedTicketProject();
   closeProjectPicker();
@@ -1417,6 +2491,10 @@ function syncIdentifier(name) {
   if (projectIdentifierTouched) return;
   const form = $('#projectModal form');
   form.elements.identifier.value = defaultIdentifier(name);
+}
+function sanitizeProjectIdentifierInput(input) {
+  projectIdentifierTouched = true;
+  input.value = String(input.value || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
 }
 function defaultIdentifier(name) {
   const parts = String(name || '').split(/[^A-Za-z0-9]+/).filter(Boolean);
@@ -1515,9 +2593,14 @@ async function removeAgent(name) {
   }
 }
 function openModal(id) { $('#'+id).classList.add('open'); }
-function closeModal(id) { $('#'+id).classList.remove('open'); }
+function closeModal(id) {
+  $('#'+id).classList.remove('open');
+  if (id === 'ticketModal') stopTicketActivityRefresh();
+}
 function closeModalOnBackdrop(event) {
-  if (event.target.classList.contains('modal-backdrop')) event.target.classList.remove('open');
+  if (!event.target.classList.contains('modal-backdrop')) return;
+  if (event.target.id === 'ticketModal') stopTicketActivityRefresh();
+  event.target.classList.remove('open');
 }
 function showToast(message) {
   const toast = $('#toast');
@@ -1529,12 +2612,14 @@ function showToast(message) {
 document.addEventListener('keydown', event => {
   if (event.key === 'Escape') {
     closeProjectPicker();
+    if ($('#ticketModal')?.classList.contains('open')) stopTicketActivityRefresh();
     $$('.modal-backdrop.open').forEach(modal => modal.classList.remove('open'));
   }
 });
 document.addEventListener('click', event => {
   if (!event.target.closest('.project-control')) closeProjectPicker();
 });
+applyTheme(document.documentElement.dataset.theme || "light");
 loadState();
 setInterval(loadState, 15000);
 </script>

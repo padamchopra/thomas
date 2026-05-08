@@ -21,6 +21,7 @@ const CONFIG_DIR =
 const CONFIG_PATH = path.join(CONFIG_DIR, "config.json");
 const STATE_DB_PATH = path.join(CONFIG_DIR, "thomas.db");
 const LOG_DIR = path.join(CONFIG_DIR, "logs");
+const NOTIFICATION_LOG_PATH = path.join(LOG_DIR, "notifications.log");
 const HOOKS_DIR = path.join(CONFIG_DIR, "hooks");
 const HOOK_SCRIPT_PATH = path.join(HOOKS_DIR, "agent-notify.js");
 const NOTIFIER_SOURCE_PATH = path.join(HOOKS_DIR, "ThomasNotifier.swift");
@@ -103,6 +104,10 @@ async function main(argv) {
     case "kanban":
       commandKanban(rest);
       break;
+    case "ticket":
+    case "tickets":
+      commandTicket(rest);
+      break;
     case "session":
     case "sessions":
       commandSession(rest);
@@ -179,26 +184,53 @@ Notes:
     console.log(`Kanban commands
 
 Usage:
-  thomas kanban --create <project> [title] [--status <status>] [--agent <profile>] [--terminal <auto|terminal|iterm|warp>] [--attach|--detach]
-  thomas kanban create <project> [title] [--status <status>] [--agent <profile>] [--terminal <auto|terminal|iterm|warp>] [--attach|--detach]
+  thomas kanban --create <project> [title] [--description <text>] [--agent <profile>] [--no-run]
+  thomas kanban create <project> [title] [--description <text>] [--agent <profile>] [--no-run]
   thomas kanban list [project] [--all]
-  thomas kanban status <ticket-id> <status>
   thomas kanban description <ticket-id> <description>
   thomas kanban project-id <project> <identifier>
 
 Examples:
   thomas kanban --create thomas "Add board dashboard"
-  thomas kanban status THOMAS-1 "PR Review"
+  thomas ticket comments THOMAS-1
+  thomas ticket reply THOMAS-1 "Use the existing helper and continue"
   thomas kanban project-id jupiter-mobile JMOBILE
 
 Behavior:
   Kanban is optional. Tickets are workspaces with extra board metadata.
   Ticket IDs use the project identifier and project-local number, such as
   THOMAS-1. Creating THOMAS-1 creates workspace thomas-1 and branch
-  <github-user>/thomas-1.
+  <github-user>/thomas-1. To-do tickets start their assigned agent
+  automatically unless --no-run is provided.
 
 Statuses:
   ${KANBAN_STATUSES.join(", ")}
+  Status is derived from agent, PR, and merge state.
+`);
+    return;
+  }
+
+  if (topic === "ticket" || topic === "tickets") {
+    console.log(`Ticket agent commands
+
+Usage:
+  thomas ticket assign <ticket-id> <agent-profile>
+  thomas ticket run <ticket-id> [--agent <profile>]
+  thomas ticket reply <ticket-id> <message>
+  thomas ticket comments <ticket-id>
+  thomas ticket reveal <ticket-id>
+  thomas ticket delete <ticket-id> [--force]
+
+Behavior:
+  Ticket agents run non-interactively in the ticket workspace. A ticket uses
+  its assigned agent profile, then the project agent profile, then the global
+  default. Agent runs move tickets to In Progress while running and Human
+  Review when the agent stops or blocks. Open PRs move tickets to PR Review;
+  merged PRs move tickets to Done and clean up the worktree while keeping the
+  ticket metadata and comment thread.
+
+  Deleting a ticket stops associated sessions and removes the associated
+  workspace/worktree.
 `);
     return;
   }
@@ -289,6 +321,8 @@ Usage:
   thomas settings notifications on|off
   thomas settings sound <sound-name|none>
   thomas settings terminal <auto|terminal|iterm|warp|warppreview>
+  thomas settings theme <light|dark>
+  thomas settings agent-logs on|off
   thomas settings macos-notification on|off
   thomas settings hooks status
   thomas settings hooks install <claude|codex|all>
@@ -300,6 +334,7 @@ Notes:
   Codex uses its notify command from ~/.codex/config.toml.
   Hook notifications default to thomas-launched sessions only.
   Terminal controls which app thomas uses for new agent tabs.
+  Agent logs controls whether ticket agents use streaming/log-friendly flags.
 `);
     return;
   }
@@ -345,6 +380,7 @@ Commands:
   register    Alias for project add
   workspace   Create, inspect, archive, and remove git worktree workspaces
   kanban      Optional ticket board built on top of workspaces
+  ticket      Assign, run, reply to, and inspect kanban ticket agents
   session     Start, list, stop, and inspect agent sessions
   checks      Show git and GitHub PR readiness for a workspace
   pr          Watch PR state and clean up merged workspaces
@@ -365,9 +401,10 @@ Common flow:
 
 Optional kanban flow:
   thomas kanban --create app "Auth flow"
-  thomas kanban status APP-1 "In Progress"
+  thomas ticket reply APP-1 "Use the existing API helper and continue"
 
-Agent sessions prepare a terminal tab by default.
+Kanban tickets start their assigned agent automatically. Agent sessions
+outside kanban prepare a terminal tab by default.
 
 Run thomas help <command> for command details.
 `);
@@ -401,6 +438,7 @@ function commandState(args) {
 
   const config = loadConfig();
   refreshSessionStates(config);
+  refreshKanbanAgentRuns(config);
   saveConfig(config);
   console.log(JSON.stringify(buildAppState(config), null, 2));
 }
@@ -467,6 +505,12 @@ async function handleDashboardRequest(req, res) {
     sendJson(res, 200, { ok: true, output: captureOutput(() => sessionLogs([id, "--tail", "200"])) });
     return;
   }
+  if (req.method === "GET" && requestUrl.pathname === "/api/session/logs/stream") {
+    const id = requestUrl.searchParams.get("id");
+    if (!id) throw new CliError("Missing session id");
+    streamSessionLogs(req, res, id);
+    return;
+  }
   if (req.method === "POST" && requestUrl.pathname.startsWith("/api/")) {
     const body = await readRequestJson(req);
     const result = handleDashboardAction(requestUrl.pathname.slice("/api/".length), body || {});
@@ -479,6 +523,7 @@ async function handleDashboardRequest(req, res) {
 function dashboardState() {
   const config = loadConfig();
   refreshSessionStates(config);
+  refreshKanbanAgentRuns(config);
   saveConfig(config);
   return buildAppState(config);
 }
@@ -523,6 +568,16 @@ function handleDashboardAction(action, body) {
       return withCapturedOutput(() => kanbanStatus([body.ticketId, body.status]));
     case "kanban/description":
       return withCapturedOutput(() => kanbanDescription([body.ticketId, body.description || ""]));
+    case "ticket/assign":
+      return withCapturedOutput(() => ticketAssign([body.ticketId, body.agentProfile]));
+    case "ticket/run":
+      return withCapturedOutput(() => ticketRun(compactArgs([body.ticketId, "--agent", body.agentProfile])));
+    case "ticket/reply":
+      return withCapturedOutput(() => ticketReply([body.ticketId, body.message || ""]));
+    case "ticket/delete":
+      return withCapturedOutput(() => ticketDelete(compactArgs([body.ticketId, body.force ? "--force" : null])));
+    case "ticket/reveal":
+      return withCapturedOutput(() => ticketReveal([body.ticketId]));
     case "workspace/create": {
       const args = compactArgs([
         body.project,
@@ -582,6 +637,9 @@ function handleDashboardAction(action, body) {
       if (body.notificationsEnabled !== undefined) config.settings.notifications.enabled = Boolean(body.notificationsEnabled);
       if (body.soundName !== undefined) config.settings.notifications.soundName = body.soundName || "none";
       if (body.macosNotification !== undefined) config.settings.notifications.macosNotification = Boolean(body.macosNotification);
+      if (body.theme !== undefined) config.settings.preferences.theme = normalizeTheme(body.theme);
+      if (body.showAgentLogs !== undefined) config.settings.preferences.showAgentLogs = Boolean(body.showAgentLogs);
+      if (body.browserNotifications !== undefined) config.settings.preferences.browserNotifications = Boolean(body.browserNotifications);
       saveConfig(config);
       return { output: "Settings updated." };
     }
@@ -673,6 +731,37 @@ function sendHtml(res, html) {
   res.end(html);
 }
 
+function streamSessionLogs(req, res, id) {
+  const config = loadConfig();
+  const session = config.sessions[id];
+  if (!session) throw new CliError(`Unknown session: ${id}`);
+
+  res.writeHead(200, {
+    "content-type": "text/event-stream; charset=utf-8",
+    "cache-control": "no-store, no-transform",
+    connection: "keep-alive",
+    "x-accel-buffering": "no",
+  });
+  res.write(": connected\n\n");
+
+  let lastOutput = null;
+  const send = () => {
+    const output = readSessionActivityLog(session, 200);
+    if (output === lastOutput) return;
+    lastOutput = output;
+    res.write(`event: log\ndata: ${JSON.stringify({ output })}\n\n`);
+  };
+  send();
+  const interval = setInterval(send, 1000);
+  req.on("close", () => clearInterval(interval));
+}
+
+function readSessionActivityLog(session, lines) {
+  return session.logPath && fs.existsSync(session.logPath)
+    ? tailFile(session.logPath, lines)
+    : "";
+}
+
 function openBrowser(url) {
   const opener = process.platform === "darwin" ? "open" : process.platform === "win32" ? "cmd" : "xdg-open";
   const args = process.platform === "win32" ? ["/c", "start", "", url] : [url];
@@ -682,6 +771,30 @@ function openBrowser(url) {
 
 function dashboardHtml(fileName = "index.html") {
   return fs.readFileSync(path.join(ROOT_DIR, "dashboard", fileName), "utf8");
+}
+
+function thomasCacheSizeBytes() {
+  return [
+    CONFIG_PATH,
+    STATE_DB_PATH,
+    path.join(CONFIG_DIR, "thomas.db-wal"),
+    path.join(CONFIG_DIR, "thomas.db-shm"),
+    LOG_DIR,
+    HOOKS_DIR,
+  ].reduce((total, itemPath) => total + pathSizeBytes(itemPath), 0);
+}
+
+function pathSizeBytes(itemPath) {
+  try {
+    const stat = fs.lstatSync(itemPath);
+    if (stat.isSymbolicLink()) return stat.size;
+    if (!stat.isDirectory()) return stat.size;
+    return fs.readdirSync(itemPath).reduce((total, entry) => (
+      total + pathSizeBytes(path.join(itemPath, entry))
+    ), stat.size);
+  } catch (error) {
+    return 0;
+  }
 }
 
 function buildAppState(config) {
@@ -696,6 +809,7 @@ function buildAppState(config) {
     generatedAt: new Date().toISOString(),
     configPath: STATE_DB_PATH,
     statePath: STATE_DB_PATH,
+    cacheSizeBytes: thomasCacheSizeBytes(),
     defaultGithubUser: detectDefaultGithubUsername(),
     projects: Object.values(config.projects).sort((a, b) =>
       a.name.localeCompare(b.name),
@@ -723,7 +837,7 @@ function kanbanTicketState(config, workspace) {
   const number = Number(ticket.number || 0);
   const identifier = project.identifier || defaultProjectIdentifier(workspace.project);
   const ticketId = formatTicketId(identifier, number);
-  const status = normalizeKanbanStatus(ticket.status || "To-do");
+  const status = normalizeKanbanStatus(derivedTicketStatus(workspace));
   return {
     id: ticketId,
     sortKey: `${workspace.project}/${String(number).padStart(8, "0")}`,
@@ -733,6 +847,9 @@ function kanbanTicketState(config, workspace) {
     title: ticket.title || ticketId,
     description: ticket.description || "",
     status,
+    assignedAgentProfile: ticket.assignedAgentProfile || resolveAgentProfile(config, workspace.project).name,
+    agentRun: ticket.agentRun || null,
+    comments: Array.isArray(ticket.comments) ? ticket.comments : [],
     workspace: workspace.name,
     workspaceStatus: workspace.status,
     branch: workspace.branch,
@@ -1871,6 +1988,44 @@ function commandKanban(args) {
   }
 }
 
+function commandTicket(args) {
+  const sub = args[0] || "comments";
+
+  if (sub === "--help" || sub === "-h" || sub === "help") {
+    printHelp("ticket");
+    return;
+  }
+
+  switch (sub) {
+    case "assign":
+      ticketAssign(args.slice(1));
+      break;
+    case "run":
+    case "start":
+      ticketRun(args.slice(1));
+      break;
+    case "reply":
+      ticketReply(args.slice(1));
+      break;
+    case "comments":
+    case "comment":
+      ticketComments(args.slice(1));
+      break;
+    case "reveal":
+    case "finder":
+    case "open":
+      ticketReveal(args.slice(1));
+      break;
+    case "delete":
+    case "remove":
+    case "rm":
+      ticketDelete(args.slice(1));
+      break;
+    default:
+      throw new CliError(`Unknown ticket command: ${sub}`);
+  }
+}
+
 function normalizeKanbanArgs(args) {
   if (args[0] === "--create") return ["create", ...args.slice(1)];
   if (args[0] === "--list") return ["list", ...args.slice(1)];
@@ -1883,7 +2038,7 @@ function normalizeKanbanArgs(args) {
 
 function kanbanCreate(args) {
   const parsed = parseOptions(args, {
-    boolean: ["attach", "detach"],
+    boolean: ["attach", "detach", "no-run"],
     string: ["status", "description", "agent", "session", "port", "terminal", "base"],
   });
   const [projectName, ...titleParts] = parsed._;
@@ -1903,13 +2058,6 @@ function kanbanCreate(args) {
 
   const createArgs = [projectName, workspaceName];
   if (parsed.base) createArgs.push("--base", parsed.base);
-  if (parsed.agent) createArgs.push("--agent", parsed.agent);
-  if (parsed.session) createArgs.push("--session", parsed.session);
-  if (parsed.port) createArgs.push("--port", parsed.port);
-  if (parsed.terminal) createArgs.push("--terminal", parsed.terminal);
-  if (parsed.attach) createArgs.push("--attach");
-  if (parsed.detach) createArgs.push("--detach");
-  if (parsed["--"].length > 0) createArgs.push("--", ...parsed["--"]);
 
   workspaceCreate(createArgs);
 
@@ -1920,11 +2068,39 @@ function kanbanCreate(args) {
     title,
     description,
     status,
+    assignedAgentProfile: resolveAgentProfile(updatedConfig, projectName, parsed.agent).name,
+    comments: [],
     createdAt: workspace.createdAt || new Date().toISOString(),
   };
   const updatedProject = requireProject(updatedConfig, projectName);
   updatedProject.identifier = identifier;
   updatedProject.kanbanNextNumber = Math.max(number + 1, nextKanbanNumber(updatedConfig, projectName));
+  if (!parsed["no-run"] && status === "To-do") {
+    try {
+      launchTicketAgent(updatedConfig, workspace, {
+        agentProfile: parsed.agent,
+        resume: false,
+      });
+    } catch (error) {
+      workspace.kanban.agentRun = {
+        sessionId: null,
+        profile: workspace.kanban.assignedAgentProfile,
+        status: "blocked",
+        startedAt: null,
+        endedAt: new Date().toISOString(),
+        lastExitCode: null,
+        lastSummary: formatError(error),
+        resumeCommand: ticketAgentResumeCommand(workspace.kanban.assignedAgentProfile, ticketId),
+        finalizedSessionId: null,
+      };
+      addTicketComment(workspace, {
+        author: "system",
+        kind: "blocked",
+        body: `Could not start agent: ${formatError(error)}`,
+      });
+    }
+  }
+  workspace.kanban.status = derivedTicketStatus(workspace);
   saveConfig(updatedConfig);
 
   console.log(`ticket: ${ticketId}`);
@@ -1983,9 +2159,11 @@ function kanbanDescription(args) {
     throw new CliError("Usage: thomas kanban description <ticket-id> <description>");
   }
   const config = loadConfig();
+  refreshSessionStates(config);
+  refreshKanbanAgentRuns(config);
   const workspace = findKanbanWorkspace(config, ticketInput);
   workspace.kanban = workspace.kanban || {};
-  const status = normalizeKanbanStatus(workspace.kanban.status || "To-do");
+  const status = derivedTicketStatus(workspace);
   if (status !== "To-do") {
     throw new CliError("Ticket description can only be edited while status is To-do.");
   }
@@ -1993,6 +2171,144 @@ function kanbanDescription(args) {
   workspace.kanban.updatedAt = new Date().toISOString();
   saveConfig(config);
   console.log(`${kanbanTicketState(config, workspace).id} description updated.`);
+}
+
+function ticketAssign(args) {
+  const [ticketInput, agentProfile, ...extra] = args;
+  if (!ticketInput || !agentProfile || extra.length > 0) {
+    throw new CliError("Usage: thomas ticket assign <ticket-id> <agent-profile>");
+  }
+  const config = loadConfig();
+  refreshSessionStates(config);
+  refreshKanbanAgentRuns(config);
+  const workspace = findKanbanWorkspace(config, ticketInput);
+  if (derivedTicketStatus(workspace) !== "To-do") {
+    throw new CliError("Ticket assignee can only be changed while status is To-do.");
+  }
+  const profile = resolveAgentProfile(config, workspace.project, agentProfile);
+  workspace.kanban.assignedAgentProfile = profile.name;
+  workspace.kanban.updatedAt = new Date().toISOString();
+  saveConfig(config);
+  console.log(`${kanbanTicketState(config, workspace).id} assigned to ${profile.name}.`);
+}
+
+function ticketRun(args) {
+  const parsed = parseOptions(args, { string: ["agent"] });
+  const [ticketInput] = parsed._;
+  if (!ticketInput) throw new CliError("Usage: thomas ticket run <ticket-id> [--agent <profile>]");
+
+  const config = loadConfig();
+  refreshSessionStates(config);
+  refreshKanbanAgentRuns(config);
+  const workspace = findKanbanWorkspace(config, ticketInput);
+  const session = launchTicketAgent(config, workspace, {
+    agentProfile: parsed.agent,
+    resume: false,
+  });
+  saveConfig(config);
+  console.log(`${kanbanTicketState(config, workspace).id} running ${session.agent}`);
+  console.log(`session: ${session.id}`);
+  console.log(`log: ${session.logPath}`);
+}
+
+function ticketReply(args) {
+  const [ticketInput, ...messageParts] = args;
+  const message = messageParts.join(" ").trim();
+  if (!ticketInput || !message) {
+    throw new CliError("Usage: thomas ticket reply <ticket-id> <message>");
+  }
+
+  const config = loadConfig();
+  refreshSessionStates(config);
+  refreshKanbanAgentRuns(config);
+  const workspace = findKanbanWorkspace(config, ticketInput);
+  const status = derivedTicketStatus(workspace);
+  if (status !== "Human Review") {
+    throw new CliError(`Ticket replies are only available in Human Review. Current status: ${status}.`);
+  }
+  addTicketComment(workspace, {
+    author: "human",
+    kind: "reply",
+    body: message,
+  });
+  const session = launchTicketAgent(config, workspace, {
+    resume: true,
+    message,
+  });
+  saveConfig(config);
+  console.log(`${kanbanTicketState(config, workspace).id} resumed ${session.agent}`);
+  console.log(`session: ${session.id}`);
+  console.log(`log: ${session.logPath}`);
+}
+
+function ticketComments(args) {
+  const [ticketInput] = args;
+  if (!ticketInput) throw new CliError("Usage: thomas ticket comments <ticket-id>");
+  const config = loadConfig();
+  refreshSessionStates(config);
+  refreshKanbanAgentRuns(config);
+  saveConfig(config);
+  const workspace = findKanbanWorkspace(config, ticketInput);
+  const comments = workspace.kanban.comments || [];
+  if (comments.length === 0) {
+    console.log("No comments.");
+    return;
+  }
+  for (const comment of comments) {
+    console.log(`[${comment.createdAt}] ${comment.author}/${comment.kind}`);
+    console.log(comment.body);
+    console.log("");
+  }
+}
+
+function ticketDelete(args) {
+  const parsed = parseOptions(args, { boolean: ["force", "delete-branch"] });
+  const [ticketInput] = parsed._;
+  if (!ticketInput) throw new CliError("Usage: thomas ticket delete <ticket-id> [--force]");
+  const config = loadConfig();
+  refreshSessionStates(config);
+  refreshKanbanAgentRuns(config);
+  const workspace = findKanbanWorkspace(config, ticketInput);
+  const ticketId = kanbanTicketState(config, workspace).id;
+  cleanupTicketRuntime(config, workspace, {
+    stopSessions: true,
+    deleteArtifacts: true,
+    removeSessions: true,
+    stripConversation: true,
+  });
+  removeWorkspace(config, workspace.project, workspace.name, {
+    force: parsed.force || true,
+    deleteBranch: parsed["delete-branch"],
+    archiveOnly: false,
+    stopSessions: true,
+    status: "removed",
+  });
+  delete config.workspaces[workspace.project][workspace.name];
+  saveConfig(config);
+  console.log(`Deleted ticket ${ticketId}.`);
+}
+
+function ticketReveal(args) {
+  const [ticketInput] = args;
+  if (!ticketInput) throw new CliError("Usage: thomas ticket reveal <ticket-id>");
+  const config = loadConfig();
+  refreshSessionStates(config);
+  refreshKanbanAgentRuns(config);
+  saveConfig(config);
+  const workspace = findKanbanWorkspace(config, ticketInput);
+  const target = ticketSessionFolder(config, workspace) || workspace.path;
+  revealPathInFinder(target);
+  console.log(`Opened ${target}`);
+}
+
+function ticketSessionFolder(config, workspace) {
+  const sessionId = workspace.kanban?.agentRun?.sessionId;
+  const session = sessionId ? config.sessions[sessionId] : null;
+  const promptDir = session?.promptPath ? path.dirname(session.promptPath) : null;
+  if (promptDir && fs.existsSync(promptDir)) return promptDir;
+  const contextDir = workspace.path ? path.join(workspace.path, ".context") : null;
+  if (contextDir && fs.existsSync(contextDir)) return contextDir;
+  return null;
 }
 
 function commandWorkspace(args) {
@@ -2378,6 +2694,22 @@ function commandSettings(args) {
       saveConfig(config);
       console.log(`Terminal app set to ${terminalLabel(config.settings.terminalApp)}.`);
       break;
+    case "theme":
+      if (!args[1]) {
+        throw new CliError("Usage: thomas settings theme <light|dark>");
+      }
+      config.settings.preferences.theme = normalizeTheme(args[1]);
+      saveConfig(config);
+      console.log(`Theme set to ${config.settings.preferences.theme}.`);
+      break;
+    case "agent-logs":
+      config.settings.preferences.showAgentLogs = requireBoolean(
+        args[1],
+        "Usage: thomas settings agent-logs on|off",
+      );
+      saveConfig(config);
+      console.log(`Agent logs ${config.settings.preferences.showAgentLogs ? "enabled" : "disabled"}.`);
+      break;
     case "macos-notification":
       config.settings.notifications.macosNotification = requireBoolean(
         args[1],
@@ -2611,6 +2943,7 @@ function sessionList(args) {
   const [projectName, workspaceName] = parsed._;
   const config = loadConfig();
   refreshSessionStates(config);
+  refreshKanbanAgentRuns(config);
   saveConfig(config);
 
   const rows = Object.values(config.sessions)
@@ -2723,6 +3056,206 @@ function sessionRunCommand(id) {
 function sessionResumeCommand(session) {
   if (!sessionResumeAgentCommand(session)) return null;
   return `${cliInvocation()} session resume ${shellQuote(session.id)}`;
+}
+
+function launchTicketAgent(config, workspace, options = {}) {
+  if (!workspace.kanban) {
+    throw new CliError(`Workspace is not a kanban ticket: ${workspace.project}/${workspace.name}`);
+  }
+  if (workspace.status !== "active") {
+    throw new CliError(`Ticket workspace is not active: ${workspace.status}`);
+  }
+  if (!fs.existsSync(workspace.path)) {
+    throw new CliError(`Workspace path does not exist: ${workspace.path}`);
+  }
+
+  const currentRun = workspace.kanban.agentRun;
+  if (currentRun?.sessionId) {
+    const currentSession = config.sessions[currentRun.sessionId];
+    if (currentSession && currentSession.status === "running" && isPidRunning(currentSession.pid)) {
+      throw new CliError(`Ticket agent is already running: ${currentSession.id}`);
+    }
+  }
+
+  const requestedProfile = options.agentProfile || workspace.kanban.assignedAgentProfile || null;
+  const profile = resolveAgentProfile(config, workspace.project, requestedProfile);
+  workspace.kanban.assignedAgentProfile = profile.name;
+
+  const ticket = kanbanTicketState(config, workspace);
+  const sessionName = normalizeName(`${workspace.name}-${profile.name}-agent`, "session");
+  const id = uniqueSessionId(config, sessionName);
+  const prompt = buildTicketAgentPrompt(config, workspace, {
+    resume: Boolean(options.resume),
+    message: options.message || "",
+  });
+  const promptPath = writeTicketPrompt(workspace, id, prompt);
+  fs.mkdirSync(LOG_DIR, { recursive: true });
+  const logPath = path.join(LOG_DIR, `${id}.log`);
+  const statusPath = path.join(LOG_DIR, `${id}.status`);
+  const command = ticketAgentCommand(profile, {
+    resume: Boolean(options.resume),
+    prompt,
+    showAgentLogs: config.settings.preferences?.showAgentLogs !== false,
+  });
+  if (!hasCommand(command[0])) {
+    throw new CliError(`Command not found: ${command[0]}`);
+  }
+
+  const wrapperPath = writeDetachedCommandWrapper(id, command, statusPath);
+  const out = fs.openSync(logPath, "a");
+  const env = {
+    THOMAS_CLI: "1",
+    THOMAS_SESSION_ID: id,
+    THOMAS_SESSION_NAME: sessionName,
+    THOMAS_PROJECT: workspace.project,
+    THOMAS_WORKSPACE: workspace.name,
+    THOMAS_BRANCH: workspace.branch,
+    THOMAS_TICKET_ID: ticket.id,
+    THOMAS_AGENT_PROMPT_FILE: promptPath,
+  };
+
+  const child = spawn("sh", [wrapperPath], {
+    cwd: workspace.path,
+    detached: true,
+    stdio: ["ignore", out, out],
+    env: {
+      ...process.env,
+      ...env,
+    },
+  });
+  child.unref();
+  fs.closeSync(out);
+
+  const session = {
+    id,
+    name: sessionName,
+    project: workspace.project,
+    workspace: workspace.name,
+    ticketId: ticket.id,
+    agent: profile.name,
+    command,
+    env,
+    pid: child.pid,
+    cwd: workspace.path,
+    logPath,
+    statusPath,
+    wrapperPath,
+    promptPath,
+    status: "running",
+    launchMode: "detach",
+    resumedFrom: options.resume ? currentRun?.sessionId || null : null,
+    startedAt: new Date().toISOString(),
+  };
+
+  config.sessions[id] = session;
+  workspace.kanban.agentRun = {
+    sessionId: id,
+    profile: profile.name,
+    status: "running",
+    startedAt: session.startedAt,
+    endedAt: null,
+    lastExitCode: null,
+    lastSummary: null,
+    resumeCommand: ticketAgentResumeCommand(profile.name, ticket.id),
+    finalizedSessionId: null,
+  };
+  delete workspace.kanban.humanReviewNotifiedAt;
+  workspace.kanban.status = "In Progress";
+  workspace.kanban.updatedAt = session.startedAt;
+  return session;
+}
+
+function buildTicketAgentPrompt(config, workspace, options = {}) {
+  const ticket = kanbanTicketState(config, workspace);
+  const comments = (workspace.kanban.comments || [])
+    .slice(-8)
+    .map((comment) => `${comment.author}/${comment.kind}: ${comment.body}`)
+    .join("\n\n");
+  const description = ticket.description ? ticket.description : "none";
+  return [
+    `You are working on Thomas ticket ${ticket.id}.`,
+    "",
+    "Goal:",
+    "Complete the ticket as described. Treat the title and description as the source of truth.",
+    "",
+    `Title: ${ticket.title}`,
+    "",
+    "Description:",
+    description,
+    "",
+    "Project context:",
+    `Project: ${ticket.project}`,
+    `Workspace: ${ticket.workspace}`,
+    `Branch: ${ticket.branch || ""}`,
+    "",
+    "Conversation context:",
+    comments || "none",
+    "",
+    options.message ? "Latest human reply:" : "",
+    options.message ? options.message : "",
+    options.message ? "" : "",
+    "Rules:",
+    "Work non-interactively in this worktree only.",
+    "Make only the changes needed for this ticket.",
+    "Do not switch branches or create unrelated worktrees.",
+    "Use recent thread entries as context; do not repeat old work unless asked.",
+    "Run the smallest relevant validation you can reasonably run.",
+    "",
+    "Completion:",
+    "Print SUMMARY: with only what changed during this turn and any validation run.",
+    "If blocked, print BLOCKED: with the specific missing input, failing command, or external dependency.",
+  ].filter(Boolean).join("\n");
+}
+
+function ticketAgentCommand(profile, options) {
+  const executable = profile.command || defaultAgentCommand(profile.type);
+  const type = normalizeAgentProfileType(profile.type);
+  if (type === "codex") {
+    if (options.showAgentLogs === false) {
+      return options.resume
+        ? [executable, "exec", "resume", "--last", options.prompt]
+        : [executable, "exec", options.prompt];
+    }
+    return options.resume
+      ? [executable, "exec", "resume", "--json", "--last", options.prompt]
+      : [executable, "exec", "--json", options.prompt];
+  }
+  if (options.showAgentLogs === false) {
+    return options.resume
+      ? [executable, "--continue", "-p", options.prompt]
+      : [executable, "-p", options.prompt];
+  }
+  const streamArgs = ["--output-format", "stream-json", "--verbose", "--include-partial-messages"];
+  return options.resume
+    ? [executable, ...streamArgs, "--continue", "-p", options.prompt]
+    : [executable, ...streamArgs, "-p", options.prompt];
+}
+
+function ticketAgentResumeCommand(agentProfile, ticketId) {
+  return `${cliInvocation()} ticket reply ${shellQuote(ticketId)} <message>`;
+}
+
+function writeTicketPrompt(workspace, sessionId, prompt) {
+  const contextDir = path.join(workspace.path, ".context");
+  fs.mkdirSync(contextDir, { recursive: true });
+  const promptPath = path.join(contextDir, `${sessionId}.prompt.md`);
+  fs.writeFileSync(promptPath, prompt);
+  return promptPath;
+}
+
+function writeDetachedCommandWrapper(sessionId, command, statusPath) {
+  const wrapperPath = path.join(LOG_DIR, `${sessionId}.sh`);
+  const script = [
+    "#!/bin/sh",
+    "set +e",
+    shellJoin(command),
+    "code=$?",
+    `printf '%s\\n' "$code" > ${shellQuote(statusPath)}`,
+    "exit \"$code\"",
+    "",
+  ].join("\n");
+  fs.writeFileSync(wrapperPath, script, { mode: 0o700 });
+  return wrapperPath;
 }
 
 function cliInvocation() {
@@ -3227,6 +3760,52 @@ function stopSession(session) {
   return true;
 }
 
+function cleanupTicketRuntime(config, workspace, options = {}) {
+  const sessionIds = new Set();
+  if (workspace.kanban?.agentRun?.sessionId) {
+    sessionIds.add(workspace.kanban.agentRun.sessionId);
+  }
+  for (const session of Object.values(config.sessions)) {
+    if (session.project === workspace.project && session.workspace === workspace.name) {
+      sessionIds.add(session.id);
+    }
+  }
+
+  for (const id of sessionIds) {
+    const session = config.sessions[id];
+    if (!session) continue;
+    if (options.stopSessions) stopSession(session);
+    if (options.deleteArtifacts) deleteSessionArtifacts(session);
+    if (options.removeSessions) delete config.sessions[id];
+  }
+
+  if (options.stripConversation && workspace.kanban) {
+    workspace.kanban.comments = [];
+    workspace.kanban.agentRun = null;
+    delete workspace.kanban.assignedAgentProfile;
+  }
+}
+
+function deleteSessionArtifacts(session) {
+  for (const filePath of [
+    session.logPath,
+    session.statusPath,
+    session.wrapperPath,
+    session.promptPath,
+  ]) {
+    safeUnlink(filePath);
+  }
+}
+
+function safeUnlink(filePath) {
+  if (!filePath) return;
+  try {
+    fs.unlinkSync(filePath);
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+  }
+}
+
 function trySignal(pid, signal) {
   try {
     process.kill(pid, signal);
@@ -3246,8 +3825,226 @@ function refreshSessionStates(config) {
     if (!isPidRunning(session.pid)) {
       session.status = "exited";
       session.exitedAt = new Date().toISOString();
+      const exitCode = readSessionExitCode(session);
+      if (exitCode !== null) session.exitCode = exitCode;
     }
   }
+}
+
+function refreshKanbanAgentRuns(config) {
+  for (const project of Object.values(config.projects)) {
+    for (const workspace of Object.values(config.workspaces[project.name] || {})) {
+      if (!workspace.kanban) continue;
+      normalizeTicketMetadata(config, workspace);
+      refreshTicketPrState(config, project, workspace);
+      refreshTicketAgentRun(config, workspace);
+      const nextStatus = derivedTicketStatus(workspace);
+      workspace.kanban.status = nextStatus;
+    }
+  }
+}
+
+function normalizeTicketMetadata(config, workspace) {
+  workspace.kanban.comments = Array.isArray(workspace.kanban.comments)
+    ? workspace.kanban.comments
+    : [];
+  if (workspace.status !== "merged" && !workspace.kanban.assignedAgentProfile) {
+    workspace.kanban.assignedAgentProfile = resolveAgentProfile(config, workspace.project).name;
+  }
+}
+
+function refreshTicketPrState(config, project, workspace) {
+  if (!hasCommand("gh")) return;
+  if (workspace.status !== "active") return;
+  if (!workspace.path || !fs.existsSync(workspace.path)) return;
+
+  const now = Date.now();
+  const lastChecked = Date.parse(workspace.prCheckedAt || "");
+  if (Number.isFinite(lastChecked) && now - lastChecked < 60 * 1000) return;
+  workspace.prCheckedAt = new Date(now).toISOString();
+
+  const pr = getPr(workspace.path);
+  if (!pr) return;
+
+  workspace.prUrl = pr.url;
+  workspace.prNumber = pr.number;
+  workspace.prState = pr.state;
+  workspace.prDraft = Boolean(pr.isDraft);
+
+  if (pr.mergedAt) {
+    workspace.mergedAt = pr.mergedAt;
+    cleanupMergedTicketWorkspace(config, project, workspace);
+  }
+}
+
+function cleanupMergedTicketWorkspace(config, project, workspace) {
+  if (workspace.status === "merged") return;
+  cleanupTicketRuntime(config, workspace, {
+    stopSessions: true,
+    deleteArtifacts: true,
+    removeSessions: true,
+    stripConversation: true,
+  });
+  if (workspace.path && fs.existsSync(workspace.path)) {
+    git(project.repoPath, ["worktree", "remove", "--force", workspace.path], {
+      allowFailure: true,
+    });
+  }
+  workspace.status = "merged";
+  workspace.cleanedUpAt = new Date().toISOString();
+}
+
+function refreshTicketAgentRun(config, workspace) {
+  const runState = workspace.kanban.agentRun;
+  if (!runState?.sessionId) return;
+
+  const session = config.sessions[runState.sessionId];
+  if (!session) {
+    runState.status = "missing";
+    return;
+  }
+
+  if (session.status === "running" && isPidRunning(session.pid)) {
+    runState.status = "running";
+    return;
+  }
+
+  if (session.status === "running") {
+    session.status = "exited";
+    session.exitedAt = new Date().toISOString();
+  }
+
+  const exitCode = readSessionExitCode(session);
+  if (exitCode !== null) session.exitCode = exitCode;
+  const code = session.exitCode ?? exitCode ?? 0;
+  const logText = session.logPath && fs.existsSync(session.logPath)
+    ? tailFile(session.logPath, 80)
+    : "";
+  const blockedReason = extractBlockedReason(logText);
+  const isBlocked = Boolean(blockedReason) || code !== 0 || session.status === "failed";
+  runState.status = isBlocked ? "blocked" : "done";
+  runState.endedAt = session.exitedAt || new Date().toISOString();
+  runState.lastExitCode = code;
+  runState.lastSummary = isBlocked
+    ? blockedReason || `Agent exited with code ${code}.`
+    : extractSummary(logText);
+
+  if (runState.finalizedSessionId !== session.id) {
+    addTicketComment(workspace, {
+      author: "agent",
+      kind: isBlocked ? "blocked" : "summary",
+      body: runState.lastSummary,
+      sessionId: session.id,
+    });
+    runState.finalizedSessionId = session.id;
+  }
+}
+
+function notifyTicketHumanReview(config, workspace) {
+  if (workspace.kanban.humanReviewNotifiedAt) return;
+  const ticket = kanbanTicketState(config, workspace);
+  sendNotification(
+    config.settings.notifications,
+    "Thomas",
+    `${ticket.id} is ready for human review`,
+    {
+      title: `Human review: ${ticket.id}`,
+      message: ticket.title,
+    },
+  );
+  workspace.kanban.humanReviewNotifiedAt = new Date().toISOString();
+}
+
+function readSessionExitCode(session) {
+  if (!session?.statusPath || !fs.existsSync(session.statusPath)) return null;
+  const raw = fs.readFileSync(session.statusPath, "utf8").trim();
+  const code = Number.parseInt(raw, 10);
+  return Number.isInteger(code) ? code : null;
+}
+
+function derivedTicketStatus(workspace) {
+  if (workspace.mergedAt || workspace.status === "merged") return "Done";
+  if (workspace.prUrl) return "PR Review";
+  const runStatus = workspace.kanban?.agentRun?.status;
+  if (runStatus === "running" || runStatus === "queued") return "In Progress";
+  if (["blocked", "done", "failed", "missing"].includes(runStatus)) return "Human Review";
+  return "To-do";
+}
+
+function extractBlockedReason(logText) {
+  const match = searchableLogText(logText).match(/BLOCKED:\s*([\s\S]*?)(?:\n\s*\n|$)/i);
+  return match ? compactSummary(match[1]) : "";
+}
+
+function extractSummary(logText) {
+  const text = searchableLogText(logText).trim();
+  const summaryMatch = text.match(/SUMMARY:\s*([\s\S]*)/i);
+  return compactSummary(summaryMatch ? summaryMatch[1] : text) || "Agent finished.";
+}
+
+function searchableLogText(logText) {
+  const raw = String(logText || "");
+  const jsonStrings = [];
+  for (const line of raw.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith("{")) continue;
+    try {
+      collectJsonStrings(JSON.parse(trimmed), jsonStrings);
+    } catch (error) {
+      // Ignore non-JSON stream lines.
+    }
+  }
+  return jsonStrings.length > 0 ? `${raw}\n${jsonStrings.join("\n")}` : raw;
+}
+
+function collectJsonStrings(value, output) {
+  if (typeof value === "string") {
+    output.push(value);
+    return;
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) collectJsonStrings(item, output);
+    return;
+  }
+  if (value && typeof value === "object") {
+    for (const item of Object.values(value)) collectJsonStrings(item, output);
+  }
+}
+
+function compactSummary(value) {
+  const lines = String(value || "")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .slice(0, 6);
+  const summary = lines.join("\n");
+  return summary.length > 800 ? `${summary.slice(0, 797)}...` : summary;
+}
+
+function addTicketComment(workspace, comment) {
+  workspace.kanban.comments = Array.isArray(workspace.kanban.comments)
+    ? workspace.kanban.comments
+    : [];
+  workspace.kanban.comments.push({
+    id: uniqueCommentId(workspace),
+    author: comment.author || "system",
+    kind: comment.kind || "note",
+    body: compactSummary(comment.body || ""),
+    sessionId: comment.sessionId || null,
+    createdAt: new Date().toISOString(),
+  });
+  workspace.kanban.updatedAt = new Date().toISOString();
+}
+
+function uniqueCommentId(workspace) {
+  const existing = new Set((workspace.kanban.comments || []).map((comment) => comment.id));
+  let id = `c${Date.now().toString(36)}`;
+  let index = 2;
+  while (existing.has(id)) {
+    id = `c${Date.now().toString(36)}-${index}`;
+    index += 1;
+  }
+  return id;
 }
 
 function isPidRunning(pid) {
@@ -3492,6 +4289,24 @@ function chooseProjectRepoPath() {
   return result.stdout.trim().replace(/\/$/, "");
 }
 
+function revealPathInFinder(targetPath) {
+  if (!targetPath || !fs.existsSync(targetPath)) {
+    throw new CliError(`Path does not exist: ${targetPath}`);
+  }
+  if (process.platform === "darwin") {
+    const result = run("open", ["-R", targetPath], { allowFailure: true });
+    if (result.status !== 0) {
+      throw new CliError((result.stderr || result.stdout || `Unable to reveal ${targetPath}`).trim());
+    }
+    return;
+  }
+  const opener = process.platform === "win32" ? "explorer.exe" : "xdg-open";
+  const result = run(opener, [targetPath], { allowFailure: true });
+  if (result.status !== 0) {
+    throw new CliError((result.stderr || result.stdout || `Unable to open ${targetPath}`).trim());
+  }
+}
+
 function readSetupScriptInput(input) {
   const normalized = String(input || "").trim();
   if (["none", "null", "clear", "off", "remove", "delete"].includes(normalized.toLowerCase())) {
@@ -3698,6 +4513,11 @@ function defaultSettings() {
       soundName: "Glass",
       macosNotification: false,
     },
+    preferences: {
+      theme: "light",
+      showAgentLogs: true,
+      browserNotifications: false,
+    },
     agentHooks: {
       claude: {},
       codex: {
@@ -3738,6 +4558,10 @@ function defaultAgentCommand(type) {
   return normalizeAgentProfileType(type) === "codex" ? "codex" : "claude";
 }
 
+function normalizeTheme(theme) {
+  return String(theme || "").trim().toLowerCase() === "dark" ? "dark" : "light";
+}
+
 function normalizeConfig(config) {
   const defaults = defaultConfig();
   const rawSettings = config.settings || {};
@@ -3774,6 +4598,13 @@ function normalizeConfig(config) {
     notifications: {
       ...defaults.settings.notifications,
       ...(rawSettings.notifications || {}),
+    },
+    preferences: {
+      ...defaults.settings.preferences,
+      ...(rawSettings.preferences || {}),
+      theme: normalizeTheme(rawSettings.preferences?.theme || defaults.settings.preferences.theme),
+      showAgentLogs: rawSettings.preferences?.showAgentLogs !== false,
+      browserNotifications: rawSettings.preferences?.browserNotifications === true,
     },
     agentHooks: {
       ...defaults.settings.agentHooks,
@@ -3827,6 +4658,8 @@ function nextKanbanNumberForProjectData(config, projectName) {
 function printSettings(config) {
   const settings = config.settings.notifications;
   console.log(`terminal: ${terminalLabel(config.settings.terminalApp)}`);
+  console.log(`theme: ${config.settings.preferences.theme}`);
+  console.log(`agent logs: ${config.settings.preferences.showAgentLogs ? "on" : "off"}`);
   console.log(`notifications: ${settings.enabled ? "on" : "off"}`);
   console.log(`sound: ${settings.soundName}`);
   console.log(`macOS banner: ${settings.macosNotification ? "on" : "off"}`);
@@ -4323,13 +5156,13 @@ function isCodexComputerUseNotify(notify) {
     notify.some((part) => String(part).includes("SkyComputerUseClient"));
 }
 
-function sendNotification(settings, agent, target) {
+function sendNotification(settings, agent, target, text = {}) {
   if (!settings.enabled) return;
   if (settings.soundName && settings.soundName !== "none") {
     playSystemSound(settings.soundName);
   }
   if (settings.macosNotification) {
-    sendMacOsNotification("Agent done", `${agent} finished in ${target}`);
+    sendMacOsNotification(text.title || "Agent done", text.message || `${agent} finished in ${target}`);
   }
 }
 
@@ -4341,15 +5174,46 @@ function playSystemSound(soundName) {
 }
 
 function sendMacOsNotification(title, message) {
+  if (process.platform === "darwin" && hasCommand("osascript")) {
+    const script = `display notification ${appleScriptString(message)} with title ${appleScriptString(title)}`;
+    const result = run("osascript", ["-e", script], { allowFailure: true });
+    logNotificationAttempt("osascript", result);
+    if (result.status === 0) return;
+  }
+
   const notifierExecutable = ensureNotifierApp();
   if (notifierExecutable) {
-    run(notifierExecutable, [title, message], { allowFailure: true });
-    return;
+    const result = run(notifierExecutable, [title, message], { allowFailure: true });
+    logNotificationAttempt(notifierExecutable, result);
+    if (result.status === 0) return;
   }
   if (hasCommand("terminal-notifier")) {
-    run("terminal-notifier", ["-title", title, "-message", message], {
+    const result = run("terminal-notifier", ["-title", title, "-message", message], {
       allowFailure: true,
     });
+    logNotificationAttempt("terminal-notifier", result);
+  }
+}
+
+function appleScriptString(value) {
+  return `"${String(value || "").replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+}
+
+function logNotificationAttempt(method, result) {
+  try {
+    fs.mkdirSync(LOG_DIR, { recursive: true });
+    fs.appendFileSync(
+      NOTIFICATION_LOG_PATH,
+      JSON.stringify({
+        at: new Date().toISOString(),
+        method,
+        status: result?.status ?? null,
+        stdout: String(result?.stdout || "").trim(),
+        stderr: String(result?.stderr || "").trim(),
+      }) + "\n",
+    );
+  } catch (error) {
+    // Notification logging should never block the notification path.
   }
 }
 

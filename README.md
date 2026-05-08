@@ -1,8 +1,13 @@
-# thomas
+# Thomas
 
-`thomas` is a small CLI for running AI coding work in isolated git worktrees.
+Thomas is a local orchestrator for AI coding work. It gives you one local
+control plane for projects, workspace-backed kanban tickets, git worktrees,
+agent profiles, agent runs, PR state, and cleanup.
 
-Use it when you want several Codex or Claude sessions working on separate branches without touching your main checkout.
+The web UI is the main human interface. The CLI is also intentionally useful to
+agents: it lets Codex, Claude, or other scripts inspect state, create tickets,
+assign agents, reply to blocked work, and keep the board in sync without
+touching the database directly.
 
 ## Install
 
@@ -16,7 +21,8 @@ Then run:
 thomas
 ```
 
-The installer links the CLI into `/usr/local/bin` when possible, otherwise `~/.local/bin`.
+The installer links the CLI into `/usr/local/bin` when possible, otherwise
+`~/.local/bin`.
 
 ## Requirements
 
@@ -24,65 +30,114 @@ The installer links the CLI into `/usr/local/bin` when possible, otherwise `~/.l
 - Git
 - SQLite (`sqlite3`)
 - GitHub CLI (`gh`) for PR checks and merged-PR cleanup
-- Optional: `codex` and `claude`
+- Optional agent CLIs: `codex` and `claude`
 
-Check your setup:
+Check your machine:
 
 ```sh
 thomas doctor
 ```
 
-## How It Works
+## Web UI
 
-A **project** is a registered git repo.
-
-A **workspace** is one task branch plus one git worktree:
-
-```text
-project: thomas
-workspace: add-pr-cleanup
-branch: padamchopra/add-pr-cleanup
-path: ~/.thomas/worktrees/thomas/add-pr-cleanup
-```
-
-Each workspace can run its own agent session.
-Codex and Claude sessions prepare a terminal tab by default, then you run the
-printed command inside it so the agent gets a real interactive terminal.
-
-## Recommended Flow
-
-Start the local web dashboard:
+Start the local dashboard:
 
 ```sh
 thomas dashboard
 ```
 
-It serves a localhost dashboard for the same day-to-day actions as the CLI:
+Thomas serves the dashboard and JSON API from the CLI process itself. The
+dashboard is localhost-only by default and uses `~/.thomas/thomas.db` as the
+single source of truth.
 
-- view the optional kanban board at `/`
-- register and remove projects
-- create, archive, and remove workspaces
-- start, resume, stop, and inspect sessions
-- check git and GitHub PR status
-- manage agent profiles and settings
-- install/test completion hooks
-
-By default the dashboard binds to `127.0.0.1:4587` and opens your browser when run from an interactive terminal. You can override that:
+By default it binds to `127.0.0.1:4587`:
 
 ```sh
 thomas dashboard --port 0 --no-open
 thomas dashboard --host 127.0.0.1 --port 8080
 ```
 
-You can still use the terminal menu when you want a keyboard-driven flow:
+The dashboard currently provides:
 
-```sh
-thomas menu
+- Board view for workspace-backed tickets
+- Projects view for registered repositories and workspaces
+- Agents view for agent profiles and active assigned tickets grouped by status
+- Ticket detail with description, assignee, agent state, comments, and replies
+- Project registration, identifiers, setup scripts, and default agent profiles
+- Light and dark themes
+
+## Core Model
+
+A **project** is a registered git repository.
+
+A **workspace** is one isolated task branch plus one git worktree:
+
+```text
+project: thomas
+workspace: thomas-1
+branch: padamchopra/thomas-1
+path: ~/.thomas/worktrees/thomas/thomas-1
 ```
 
-## Useful Commands
+A **ticket** is kanban metadata attached to a workspace. Ticket IDs use the
+project identifier and a project-local number, such as `THOMAS-1`.
 
-Register a repo:
+An **agent profile** names an agent type and launch command. `claude` and
+`codex` are built in, and projects can set their own default profile.
+
+## Agent-Controlled Kanban
+
+Creating a To-do ticket creates the workspace and starts the assigned agent
+automatically:
+
+```sh
+thomas kanban create thomas "Improve board layout"
+```
+
+Thomas assigns the ticket to:
+
+1. the agent selected when the ticket is created,
+2. otherwise the project's default agent profile,
+3. otherwise the global default agent profile.
+
+Agent output is captured in Thomas logs. When the agent stops, Thomas posts a
+short summary comment. If the agent prints `BLOCKED:` or exits with a non-zero
+code, Thomas posts the blocked reason instead.
+
+Reply to the ticket to resume the previous agent context:
+
+```sh
+thomas ticket reply THOMAS-1 "Use the existing dashboard API helper and continue."
+```
+
+Useful ticket commands:
+
+```sh
+thomas kanban list
+thomas ticket assign THOMAS-1 codex
+thomas ticket run THOMAS-1
+thomas ticket comments THOMAS-1
+thomas ticket reply THOMAS-1 "Please continue with this direction."
+thomas ticket delete THOMAS-1
+```
+
+Ticket status is derived from real state:
+
+- `To-do`: no agent has started yet.
+- `In Progress`: an agent process is currently running.
+- `Human Review`: the agent finished or blocked and left a comment.
+- `PR Review`: a PR is associated with the workspace.
+- `Done`: the PR is merged.
+
+When a PR is merged, Thomas keeps the ticket metadata and comments but cleans up
+the actual worktree so finished work does not accumulate locally.
+
+Deleting a ticket is destructive: Thomas stops associated agent sessions and
+removes the associated workspace/worktree.
+
+## Projects
+
+Register repositories:
 
 ```sh
 thomas project add app ~/src/app
@@ -90,71 +145,55 @@ thomas project add thomas ~/src/thomas --identifier THOMAS
 thomas project add app ~/src/app --setup-script ./scripts/bootstrap-worktree.sh
 ```
 
-Setup scripts are copied into Thomas state rather than linked from the original
-file path, then run automatically from each new workspace root after
-`git worktree add`:
+Set project defaults:
 
 ```sh
+thomas project set-identifier app APP
+thomas project set-agent-profile app codex
 thomas project set-setup-script app ./scripts/bootstrap-worktree.sh
 thomas project set-setup-script app none
 ```
 
-When a setup script runs, thomas exports `THOMAS_PROJECT`,
+Setup scripts are copied into Thomas state and run from each new workspace root
+after `git worktree add`. Thomas exports `THOMAS_PROJECT`,
 `THOMAS_WORKSPACE`, `THOMAS_BRANCH`, `THOMAS_WORKSPACE_PATH`, and
-`THOMAS_REPO_PATH`.
+`THOMAS_REPO_PATH` while running setup scripts.
 
-Create a workspace and prepare Codex:
+## Workspaces And Sessions
 
-```sh
-thomas workspace create app auth --agent codex
-```
-
-Prepare a session in an existing workspace:
+Kanban is the higher-level workflow, but you can still use raw workspaces and
+sessions directly:
 
 ```sh
-thomas session start app auth --agent claude
-```
-
-Resume a stored agent session:
-
-```sh
-thomas session resume <session-id>
-```
-
-List workspaces:
-
-```sh
+thomas workspace create app auth
 thomas workspace list app
-```
-
-Remove a workspace:
-
-```sh
 thomas workspace remove app auth
+
+thomas session start app auth --agent claude
+thomas session resume <session-id>
+thomas session logs <session-id>
 ```
 
-Use the optional kanban layer when you want workspace-backed tickets:
+Interactive session starts prepare a terminal tab by default. Run the printed
+`thomas session run <id>` command in that terminal. Use detached sessions only
+when you explicitly want background log mode outside the kanban runner.
+
+## Agent Profiles
 
 ```sh
-thomas kanban --create thomas "Add board dashboard"
-thomas kanban list
-thomas kanban status THOMAS-1 "PR Review"
-thomas kanban project-id thomas THOMAS
+thomas agent-profile list
+thomas agent-profile default codex
+thomas agent-profile add reviewer --type codex
+thomas agent-profile add work claude-work --type claude
 ```
 
-Kanban tickets use the project identifier and project-local number. `THOMAS-1`
-creates workspace `thomas-1` and branch `<github-user>/thomas-1`. Statuses are
-manual for now: `To-do`, `In Progress`, `PR Review`, `Human Review`, and `Done`.
+Agent profiles are shared by the web UI, CLI, and ticket runner.
 
-Clean up merged PR workspaces:
+## Notifications
 
-```sh
-thomas pr watch app --once --cleanup
-```
-
-For continuous cleanup, omit `--once`.
-
-Configure session completion sounds:
+Thomas can install completion hooks for Claude and Codex. Hook notifications
+only fire for Thomas-launched sessions, even though the hook entries are
+installed globally in the agent tools.
 
 ```sh
 thomas settings show
@@ -163,68 +202,44 @@ thomas settings sound Glass
 thomas settings hooks install all
 ```
 
-Agent profiles choose the agent type and launch command used when a session
-starts. `claude` and `codex` are built in, and `claude` is the default:
+Terminal app choices are `auto`, `terminal`, `iterm`, `warp`, and
+`warppreview`.
 
-```sh
-thomas agent-profile list
-thomas agent-profile default codex
-thomas agent-profile add work claude-work --type claude
-thomas agent-profile add code-review --type codex
-thomas project set-agent-profile app work
-```
-
-Claude uses `Stop` and `SubagentStop` hooks. Codex uses its `notify` command.
-Hook notifications only fire for thomas-launched sessions, even though the
-Claude and Codex hook entries are installed globally.
-
-Terminal sessions auto-detect your terminal on macOS:
-
-- Terminal.app opens a terminal at the workspace
-- iTerm opens a terminal at the workspace
-- Warp opens a new tab at the workspace
-
-The agent does not auto-run in the new terminal. Run the printed
-`thomas session run <id>` command there; the dashboard shows it on the
-session card. Use `--detach` only when you explicitly want background log mode.
-
-## Defaults
+## State And Defaults
 
 - State lives in `~/.thomas/thomas.db`.
 - Worktrees live in `~/.thomas/worktrees/<project>/<workspace>`.
-- New workspaces branch from `origin/main`.
-- Kanban is optional. Project identifiers default from project names and can be changed.
-- Project setup scripts, when configured, run automatically after workspace creation.
+- New workspaces branch from `origin/main` by default.
 - Branches default to `<github-user>/<workspace>`.
-- Codex and Claude sessions prepare a terminal tab and print a run command.
-- Agent profiles always include `claude` and `codex`; the default is `claude`.
-- The terminal app defaults to `auto`; set it to `terminal`, `iterm`, `warp`,
-  or `warppreview` from settings.
-- Workspaces are not deleted automatically unless you run PR cleanup.
-- Agent completion sounds are opt-in through `settings hooks install`.
-- Hook notifications only fire for thomas sessions.
+- Kanban is optional; raw workspace/session commands still work.
+- Project identifiers default from project names and can be changed.
+- Agent profiles always include `claude` and `codex`.
+- The default agent profile is `claude`.
 
-## More Help
+## For Agents
 
-Use built-in help instead of memorizing commands:
+Agents should use the CLI instead of editing Thomas state directly:
+
+```sh
+thomas state
+thomas kanban list
+thomas ticket comments THOMAS-1
+thomas ticket reply THOMAS-1 "I am unblocked; continue."
+thomas checks thomas thomas-1
+```
+
+`thomas state` returns normalized JSON for automation clients. The dashboard
+uses the same state and API, so humans and agents stay in sync.
+
+## Help
 
 ```sh
 thomas --help
-thomas --version
 thomas help project
 thomas help workspace
 thomas help kanban
+thomas help ticket
 thomas help session
-thomas help pr
 thomas help settings
 thomas help dashboard
 ```
-
-## Web Dashboard
-
-`thomas dashboard` replaces the old native macOS menu app. It serves the
-UI and JSON API from the CLI process itself, so `~/.thomas/thomas.db`
-remains the single source of truth and there is nothing platform-specific to
-install.
-
-The dashboard is localhost-only by default. Stop it with Ctrl-C.
