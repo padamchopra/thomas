@@ -22,6 +22,7 @@ The installer links the CLI into `/usr/local/bin` when possible, otherwise `~/.l
 
 - Node.js 18+
 - Git
+- SQLite (`sqlite3`)
 - GitHub CLI (`gh`) for PR checks and merged-PR cleanup
 - Optional: `codex` and `claude`
 
@@ -58,6 +59,7 @@ thomas dashboard
 
 It serves a localhost dashboard for the same day-to-day actions as the CLI:
 
+- view the optional kanban board at `/`
 - register and remove projects
 - create, archive, and remove workspaces
 - start, resume, stop, and inspect sessions
@@ -84,12 +86,13 @@ Register a repo:
 
 ```sh
 thomas project add app ~/src/app
+thomas project add thomas ~/src/thomas --identifier THOMAS
 thomas project add app ~/src/app --setup-script ./scripts/bootstrap-worktree.sh
 ```
 
-Setup scripts are copied into `~/.thomas/config.json` rather than linked
-from the original file path, then run automatically from each new workspace
-root after `git worktree add`:
+Setup scripts are copied into Thomas state rather than linked from the original
+file path, then run automatically from each new workspace root after
+`git worktree add`:
 
 ```sh
 thomas project set-setup-script app ./scripts/bootstrap-worktree.sh
@@ -130,6 +133,19 @@ Remove a workspace:
 thomas workspace remove app auth
 ```
 
+Use the optional kanban layer when you want workspace-backed tickets:
+
+```sh
+thomas kanban --create thomas "Add board dashboard"
+thomas kanban list
+thomas kanban status THOMAS-1 "PR Review"
+thomas kanban project-id thomas THOMAS
+```
+
+Kanban tickets use the project identifier and project-local number. `THOMAS-1`
+creates workspace `thomas-1` and branch `<github-user>/thomas-1`. Statuses are
+manual for now: `To-do`, `In Progress`, `PR Review`, `Human Review`, and `Done`.
+
 Clean up merged PR workspaces:
 
 ```sh
@@ -147,13 +163,14 @@ thomas settings sound Glass
 thomas settings hooks install all
 ```
 
-Agent profiles choose the command used when a session starts. `claude` and
-`codex` are built in, and `claude` is the default:
+Agent profiles choose the agent type and launch command used when a session
+starts. `claude` and `codex` are built in, and `claude` is the default:
 
 ```sh
 thomas agent-profile list
 thomas agent-profile default codex
-thomas agent-profile add work claude-work
+thomas agent-profile add work claude-work --type claude
+thomas agent-profile add code-review --type codex
 thomas project set-agent-profile app work
 ```
 
@@ -173,9 +190,10 @@ session card. Use `--detach` only when you explicitly want background log mode.
 
 ## Defaults
 
-- Config lives in `~/.thomas/config.json`.
+- State lives in `~/.thomas/thomas.db`.
 - Worktrees live in `~/.thomas/worktrees/<project>/<workspace>`.
 - New workspaces branch from `origin/main`.
+- Kanban is optional. Project identifiers default from project names and can be changed.
 - Project setup scripts, when configured, run automatically after workspace creation.
 - Branches default to `<github-user>/<workspace>`.
 - Codex and Claude sessions prepare a terminal tab and print a run command.
@@ -195,6 +213,7 @@ thomas --help
 thomas --version
 thomas help project
 thomas help workspace
+thomas help kanban
 thomas help session
 thomas help pr
 thomas help settings
@@ -204,7 +223,7 @@ thomas help dashboard
 ## Web Dashboard
 
 `thomas dashboard` replaces the old native macOS menu app. It serves the
-UI and JSON API from the CLI process itself, so `~/.thomas/config.json`
+UI and JSON API from the CLI process itself, so `~/.thomas/thomas.db`
 remains the single source of truth and there is nothing platform-specific to
 install.
 

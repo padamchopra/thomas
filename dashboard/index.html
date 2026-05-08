@@ -3,392 +3,1540 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>thomas dashboard</title>
+<title>Thomas</title>
 <style>
+@font-face {
+  font-family: "Inter";
+  src: local("Inter"), local("Inter-Regular"), local("Inter Regular");
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+
 :root {
   color-scheme: light;
-  --bg:#f7f6f3;
-  --panel:#fffefa;
-  --panel-soft:#fbfaf7;
-  --text:#1f1f1d;
-  --muted:#77736b;
-  --faint:#a8a29a;
-  --line:#e2ded6;
-  --line-strong:#d3cec4;
+  --bg:#f7f7f5;
+  --surface:#ffffff;
+  --surface-soft:#f3f3f0;
+  --text:#20201d;
+  --muted:#73736c;
+  --faint:#a09f98;
+  --line:#e1e1dc;
+  --line-strong:#cfcfc7;
   --button:#242421;
-  --button-text:#fffefa;
-  --danger:#9f1d21;
-  --danger-bg:#fff3f1;
-  --ok:#287044;
-  --shadow:0 18px 45px rgba(38, 35, 30, .06);
+  --button-text:#fff;
+  --danger:#a12b2f;
+  --shadow:0 0.875rem 2.25rem rgba(36,36,33,.08);
 }
 * { box-sizing:border-box; }
-html { background:var(--bg); }
+html, body { min-height:100%; background:var(--bg); }
 body {
   margin:0;
   color:var(--text);
-  background:
-    radial-gradient(circle at 50% -20%, rgba(255,255,255,.9), rgba(255,255,255,0) 34rem),
-    var(--bg);
-  font:14px/1.5 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  letter-spacing:0;
+  font:0.875rem/1.45 "Inter", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 }
+h1, h2, h3, p { margin:0; }
+h1 { font-size:1.25rem; font-weight:620; }
+h2 { font-size:1rem; font-weight:620; }
+h3 { font-size:0.875rem; font-weight:620; }
+a { color:inherit; text-decoration:none; }
 header {
   position:sticky;
   top:0;
-  z-index:2;
+  z-index:5;
   display:flex;
   align-items:center;
   justify-content:space-between;
-  gap:24px;
-  padding:22px clamp(18px, 4vw, 54px);
-  border-bottom:1px solid rgba(226,222,214,.72);
-  background:rgba(247,246,243,.86);
-  backdrop-filter:blur(18px);
+  gap:1rem;
+  padding:0.625rem clamp(0.75rem, 1.5vw, 1.25rem);
+  border-bottom:0.0625rem solid var(--line);
+  background:rgba(247,247,245,.92);
+  backdrop-filter:blur(1rem);
 }
-h1 {
-  margin:0;
-  font-size:22px;
-  font-weight:580;
-  letter-spacing:0;
+.app-title {
+  display:flex;
+  align-items:center;
+  gap:0.5rem;
 }
-h2 {
-  margin:0;
-  font-size:16px;
-  font-weight:570;
+.app-mark {
+  width:0.875rem;
+  height:0.875rem;
+  border:0.125rem solid var(--line-strong);
+  border-radius:999rem;
+}
+.sync-status {
+  color:var(--faint);
+  font-size:0.75rem;
 }
 main {
   display:grid;
-  grid-template-columns:minmax(300px, 380px) minmax(0, 1fr);
-  gap:22px;
-  width:min(1480px, 100%);
-  margin:0 auto;
-  padding:32px clamp(18px, 4vw, 54px) 54px;
+  min-width:0;
 }
-section, .card {
-  background:var(--panel);
-  border:1px solid var(--line);
-  border-radius:18px;
-  box-shadow:var(--shadow);
-}
-section {
-  padding:20px;
-}
-form {
+.app-shell {
   display:grid;
-  gap:13px;
-  margin-top:16px;
+  grid-template-columns:7.75rem minmax(0, 1fr);
+  gap:0.75rem;
+  padding:0.75rem clamp(0.5rem, 1vw, 0.875rem) 1.25rem;
 }
-label {
+.sidebar {
+  position:sticky;
+  top:4.75rem;
+  align-self:start;
   display:grid;
-  gap:7px;
-  color:var(--muted);
-  font-size:12px;
-  font-weight:520;
+  gap:1rem;
+  padding-top:0.125rem;
 }
-input, select, textarea, button {
+.side-section {
+  display:grid;
+  gap:0.125rem;
+}
+.side-label {
+  padding:0 0.5rem 0.3125rem;
+  color:var(--faint);
+  font-size:0.6875rem;
+  font-weight:620;
+  letter-spacing:.02em;
+}
+.nav-btn {
+  justify-content:flex-start;
   width:100%;
-  border:1px solid var(--line);
-  border-radius:12px;
-  background:var(--panel-soft);
+  min-height:1.875rem;
+  padding:0.3125rem 0.5rem;
+  color:var(--muted);
+  background:transparent;
+  border-color:transparent;
+  border-radius:0.5rem;
+  font-size:0.8125rem;
+  font-weight:560;
+}
+.nav-btn:hover,
+.nav-btn.active {
   color:var(--text);
-  padding:10px 12px;
+  background:rgba(255,255,255,.62);
+  border-color:transparent;
+}
+.content {
+  display:grid;
+  gap:0.875rem;
+  min-width:0;
+}
+.view { display:none; }
+.view.active {
+  display:grid;
+  gap:0.875rem;
+}
+button, input, select, textarea {
+  border:0.0625rem solid var(--line);
+  border-radius:0.5rem;
+  min-height:2.375rem;
+  padding:0.5rem 0.625rem;
+  color:var(--text);
+  background:var(--surface);
   font:inherit;
-}
-input, select, textarea {
-  min-height:42px;
-}
-textarea {
-  min-height:88px;
-  resize:vertical;
-}
-input:focus, select:focus, textarea:focus {
-  outline:2px solid rgba(36,36,33,.12);
-  border-color:var(--line-strong);
-  background:#fff;
 }
 button {
   display:inline-flex;
   align-items:center;
   justify-content:center;
+  gap:0.375rem;
   width:auto;
-  min-height:38px;
   cursor:pointer;
   color:var(--button-text);
   background:var(--button);
   border-color:var(--button);
-  font-weight:540;
+  font-weight:570;
   white-space:nowrap;
 }
-button:hover {
-  background:#000;
-  border-color:#000;
+button:hover { background:#000; border-color:#000; }
+button.icon {
+  width:1.875rem;
+  min-height:1.875rem;
+  padding:0;
+  border-radius:999rem;
+  line-height:1;
 }
-form > button {
-  width:100%;
+button.icon svg,
+.icon-action svg {
+  width:0.9375rem;
+  height:0.9375rem;
+  stroke:currentColor;
 }
+button.secondary, .chip {
+  color:var(--text);
+  background:var(--surface);
+  border-color:var(--line);
+}
+button.secondary:hover { background:var(--surface-soft); border-color:var(--line-strong); }
 button.danger {
   color:var(--danger);
-  background:var(--danger-bg);
-  border-color:#f0cbc6;
+  background:#fff5f3;
+  border-color:#efceca;
 }
-button.danger:hover {
-  color:#7b1115;
-  background:#ffe9e6;
-  border-color:#e8bbb5;
-}
-aside {
-  align-self:start;
-}
-.stack {
+label {
   display:grid;
-  gap:18px;
+  gap:0.375rem;
+  color:var(--muted);
+  font-size:0.75rem;
+  font-weight:540;
 }
-.content-stack {
-  display:grid;
-  gap:22px;
-}
-.section-head {
-  display:flex;
-  align-items:flex-end;
-  justify-content:space-between;
-  gap:14px;
-  margin-bottom:16px;
-}
-.eyebrow {
-  color:var(--faint);
-  font-size:11px;
-  font-weight:620;
-  letter-spacing:.08em;
-  text-transform:uppercase;
+input, select, textarea { width:100%; }
+textarea { min-height:5.25rem; resize:vertical; }
+input:focus, select:focus, textarea:focus {
+  outline:0.125rem solid rgba(36,36,33,.12);
+  border-color:var(--line-strong);
 }
 .row {
   display:flex;
-  gap:9px;
-  flex-wrap:wrap;
   align-items:center;
+  gap:0.5rem;
+  flex-wrap:wrap;
 }
-.row select {
-  width:auto;
-  min-width:150px;
+.toolbar {
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:0.75rem;
 }
-form + .row, form + .stack {
-  margin-top:16px;
+.toolbar select, .toolbar input { width:auto; min-width:9.375rem; }
+.muted { color:var(--muted); }
+.eyebrow {
+  color:var(--faint);
+  font-size:0.6875rem;
+  font-weight:650;
+  letter-spacing:.08em;
+  text-transform:uppercase;
 }
-.grid {
-  display:grid;
-  grid-template-columns:repeat(auto-fit, minmax(280px, 1fr));
-  gap:14px;
-}
-.muted {
-  color:var(--muted);
-}
-.pill {
+.chip {
   display:inline-flex;
   align-items:center;
-  min-height:32px;
-  padding:5px 10px;
-  border:1px solid var(--line);
-  border-radius:999px;
+  min-height:1.75rem;
+  padding:0.25rem 0.5625rem;
+  border-radius:999rem;
   color:var(--muted);
-  background:rgba(255,254,250,.72);
-  font-size:12px;
+  font-size:0.75rem;
 }
-.item {
+.board {
   display:grid;
-  gap:10px;
-  min-width:0;
-  padding:15px;
-  border:1px solid var(--line);
-  border-radius:16px;
-  background:linear-gradient(180deg, #fffefa, #fbfaf7);
+  grid-template-columns:repeat(5, minmax(14.5rem, 1fr));
+  gap:0.75rem;
+  align-items:start;
+  overflow-x:auto;
+  min-height:calc(100vh - 9.375rem);
 }
-.item strong {
-  min-width:0;
-  overflow-wrap:anywhere;
-  font-size:15px;
-  font-weight:620;
-}
-.item .meta {
+.column {
   display:grid;
-  gap:5px;
-  min-width:0;
-  overflow-wrap:anywhere;
+  gap:0.625rem;
+  min-width:14.5rem;
+  align-content:start;
+  padding:0.625rem;
+  border:0.0625rem solid var(--line);
+  border-radius:0.5rem;
+  background:var(--surface-soft);
 }
-.item pre, pre {
-  white-space:pre-wrap;
-  word-break:break-word;
-  overflow:auto;
-  max-height:380px;
-  margin:0;
-  padding:14px;
-  color:#2b2a27;
-  background:#f1efe9;
-  border:1px solid var(--line);
-  border-radius:14px;
-  font:12px/1.55 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
-}
-#output {
-  min-height:180px;
-}
-.ok {
-  color:var(--ok);
-  font-weight:560;
-}
-.dangerText {
-  color:var(--danger);
-}
-.check-label {
+.column-head {
   display:flex;
-  grid-template-columns:none;
   align-items:center;
-  gap:9px;
-  color:var(--text);
-  font-size:14px;
-  font-weight:450;
+  justify-content:space-between;
+  gap:0.5rem;
+  min-height:1.875rem;
 }
-.check-label input {
-  width:16px;
-  min-height:16px;
-  height:16px;
-  accent-color:var(--button);
+.column-title {
+  display:flex;
+  align-items:center;
+  gap:0.4375rem;
+  min-width:0;
+}
+.count {
+  color:var(--muted);
+  font-weight:520;
+}
+.ticket {
+  display:grid;
+  gap:0.5rem;
+  padding:0.75rem;
+  border:0.0625rem solid var(--line);
+  border-radius:0.5rem;
+  background:var(--surface);
+  box-shadow:0 0.125rem 0.5rem rgba(36,36,33,.03);
+  cursor:pointer;
+  text-align:left;
+}
+.ticket:hover { border-color:var(--line-strong); }
+.ticket-id {
+  color:var(--muted);
+  font-size:0.75rem;
+  font-weight:620;
+  letter-spacing:.02em;
+}
+.ticket-title {
+  color:var(--text);
+  font-size:0.875rem;
+  font-weight:580;
+  line-height:1.35;
+}
+.ticket-meta {
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:0.5rem;
+  color:var(--muted);
+  font-size:0.75rem;
+}
+.ticket-next {
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:0.5rem;
+  padding-top:0.25rem;
+  color:var(--muted);
+  font-size:0.75rem;
 }
 .empty {
-  margin:0;
-  padding:18px;
+  min-height:3rem;
+  padding:0.75rem;
   color:var(--muted);
-  border:1px dashed var(--line-strong);
-  border-radius:16px;
-  background:var(--panel-soft);
+  border:0.0625rem dashed var(--line);
+  border-radius:0.375rem;
+  background:transparent;
 }
-@media (max-width: 980px) {
-  main { grid-template-columns:1fr; }
-  header { align-items:flex-start; flex-direction:column; }
+.list {
+  display:grid;
+  gap:0.625rem;
 }
-@media (max-width: 620px) {
-  header, main { padding-left:16px; padding-right:16px; }
-  main { padding-top:20px; }
-  section { padding:17px; }
-  .row, button, .row select { width:100%; }
+.list-card {
+  display:grid;
+  gap:0.5rem;
+  padding:0.875rem;
+  border:0.0625rem solid var(--line);
+  border-radius:0.5rem;
+  background:var(--surface);
+  cursor:pointer;
+}
+.list-card:hover { border-color:var(--line-strong); }
+.list-card-head {
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:0.75rem;
+}
+.projects-shell {
+  display:grid;
+  gap:0.75rem;
+}
+.projects-header {
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  min-height:2.75rem;
+  padding:0 0.25rem;
+  border-bottom:0.0625rem solid var(--line);
+}
+.projects-toolbar {
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:0.75rem;
+}
+.project-filter-pill {
+  min-height:2rem;
+  padding:0.375rem 0.75rem;
+  border-radius:999rem;
+  color:var(--text);
+  background:var(--surface);
+  border-color:var(--line);
+}
+.projects-table {
+  display:grid;
+  gap:0.25rem;
+  min-width:0;
+}
+.projects-table-head,
+.project-table-row {
+  display:grid;
+  grid-template-columns:minmax(18rem, 1.4fr) minmax(7rem, .5fr) minmax(9rem, .7fr) minmax(6rem, .45fr) minmax(7rem, .5fr) auto;
+  gap:0.75rem;
+  align-items:center;
+}
+.agent-table-head,
+.agent-table-row {
+  display:grid;
+  grid-template-columns:minmax(14rem, 1fr) minmax(7rem, .35fr) minmax(7rem, .35fr) 9rem;
+  gap:0.75rem;
+  align-items:center;
+}
+.projects-table-head {
+  padding:0 1rem 0.375rem 2rem;
+  color:var(--faint);
+  font-size:0.75rem;
+  font-weight:620;
+}
+.agent-table-head {
+  padding:0 1rem 0.375rem;
+  color:var(--faint);
+  font-size:0.75rem;
+  font-weight:620;
+}
+.project-table-row {
+  width:100%;
+  min-height:3.25rem;
+  padding:0.5rem 0.625rem;
+  border:0.0625rem solid transparent;
+  border-radius:0.5rem;
+  color:var(--muted);
+  background:rgba(255,255,255,.56);
+  text-align:left;
+  cursor:pointer;
+}
+.agent-table-row {
+  min-height:3.25rem;
+  padding:0.5rem 0.625rem;
+  border:0.0625rem solid transparent;
+  border-radius:0.5rem;
+  color:var(--muted);
+  background:rgba(255,255,255,.56);
+}
+.agent-table-row:hover {
+  background:var(--surface);
+  border-color:var(--line);
+}
+.agent-name {
+  color:var(--text);
+  font-weight:610;
+}
+.agent-command {
+  display:block;
+  margin-top:0.125rem;
+  color:var(--faint);
+  font-size:0.75rem;
+  font-weight:500;
+}
+.agent-table-row > :last-child {
+  justify-content:flex-end;
+}
+.project-table-row:hover {
+  color:var(--text);
+  background:var(--surface);
+  border-color:var(--line);
+}
+.project-name-cell {
+  display:flex;
+  align-items:center;
+  gap:0.625rem;
+  min-width:0;
+}
+.project-chevron {
+  width:1rem;
+  color:var(--faint);
+  font-size:0.75rem;
+}
+.project-dot {
+  width:0.75rem;
+  height:0.75rem;
+  flex:0 0 auto;
+  border:0.125rem solid var(--line-strong);
+  border-radius:999rem;
+}
+.project-name-text {
+  min-width:0;
+  overflow:hidden;
+  color:var(--text);
+  font-weight:610;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+}
+.project-count {
+  color:var(--muted);
+  font-weight:520;
+}
+.project-expanded {
+  display:none;
+  padding:0.125rem 0 0.75rem 2rem;
+}
+.project-expanded.open {
+  display:grid;
+  gap:0.25rem;
+}
+.project-workspace-row {
+  display:grid;
+  grid-template-columns:minmax(18rem, 1fr) minmax(12rem, .8fr) minmax(6rem, auto) auto;
+  gap:0.75rem;
+  align-items:center;
+  min-height:2.75rem;
+  padding:0.375rem 0.625rem;
+  color:var(--muted);
+}
+.project-workspace-row strong {
+  color:var(--text);
+  font-weight:580;
+}
+.workspace-group {
+  display:grid;
+  gap:0.5rem;
+  padding:0.75rem;
+  border:0.0625rem solid var(--line);
+  border-radius:0.5rem;
+  background:var(--surface-soft);
+}
+.workspace-row {
+  display:grid;
+  grid-template-columns:minmax(12.5rem, 1fr) minmax(10rem, 1fr) auto;
+  gap:0.625rem;
+  align-items:center;
+  padding:0.625rem;
+  border:0.0625rem solid var(--line);
+  border-radius:0.5rem;
+  background:var(--surface);
+}
+.project-workspaces {
+  display:none;
+  gap:0.5rem;
+  margin-top:0.25rem;
+}
+.project-workspaces.open {
+  display:grid;
+}
+.modal-backdrop {
+  position:fixed;
+  inset:0;
+  z-index:20;
+  display:none;
+  align-items:center;
+  justify-content:center;
+  padding:1.25rem;
+  background:rgba(20,20,18,.28);
+}
+.modal-backdrop.open { display:flex; }
+.modal {
+  width:min(35rem, 100%);
+  max-height:min(45rem, 92vh);
+  overflow:visible;
+  display:grid;
+  gap:1rem;
+  padding:1.125rem;
+  border:0.0625rem solid var(--line);
+  border-radius:0.625rem;
+  background:var(--surface);
+  box-shadow:var(--shadow);
+}
+.composer-modal {
+  width:min(58rem, 100%);
+  min-height:22rem;
+  gap:0;
+  padding:0;
+  overflow:visible;
+}
+.composer-body {
+  display:grid;
+  gap:1rem;
+  padding:1.5rem;
+}
+.composer-top,
+.composer-footer {
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:0.75rem;
+}
+.composer-footer {
+  padding:1rem 1.5rem;
+  border-top:0.0625rem solid var(--line);
+}
+.composer-fields {
+  display:grid;
+  gap:0.5rem;
+  min-height:11rem;
+}
+.issue-title,
+.issue-description {
+  width:100%;
+  min-height:0;
+  padding:0;
+  border:0;
+  border-radius:0;
+  background:transparent;
+  outline:0;
+}
+.issue-title {
+  font-size:1.875rem;
+  font-weight:650;
+  line-height:1.18;
+}
+.issue-title::placeholder,
+.issue-description::placeholder {
+  color:var(--faint);
+}
+.issue-description {
+  min-height:7.5rem;
+  color:var(--text);
+  font-size:1rem;
+  resize:vertical;
+}
+.issue-title:focus,
+.issue-description:focus {
+  outline:0;
+  border-color:transparent;
+}
+.composer-pills {
+  display:flex;
+  align-items:center;
+  gap:0.5rem;
+  flex-wrap:wrap;
+}
+.pill-control {
+  position:relative;
+}
+.pill-button {
+  min-height:2rem;
+  padding:0.375rem 0.6875rem;
+  border-radius:999rem;
+  color:var(--muted);
+  background:var(--surface-soft);
+}
+.pill-button strong {
+  color:var(--text);
+  font-weight:580;
+}
+.ticket-modal {
+  width:min(56rem, 100%);
+  gap:0;
+  padding:0;
+  overflow:hidden;
+}
+.modal-head {
+  display:flex;
+  align-items:flex-start;
+  justify-content:space-between;
+  gap:0.75rem;
+}
+.ticket-modal .modal-head {
+  padding:1.25rem 1.25rem 0;
+}
+.ticket-modal .modal-head h2 {
+  margin-top:0.25rem;
+  font-size:1.25rem;
+  line-height:1.2;
+}
+.ticket-summary {
+  display:flex;
+  gap:0.5rem;
+  flex-wrap:wrap;
+  padding:0.875rem 1.25rem;
+}
+.summary-pill {
+  display:inline-flex;
+  align-items:center;
+  min-height:1.75rem;
+  max-width:100%;
+  padding:0.25rem 0.5625rem;
+  border:0.0625rem solid var(--line);
+  border-radius:999rem;
+  color:var(--muted);
+  background:var(--surface-soft);
+  font-size:0.75rem;
+}
+.summary-pill select {
+  width:auto;
+  min-width:8rem;
+  min-height:1.5rem;
+  padding:0 1.25rem 0 0;
+  border:0;
+  border-radius:0;
+  color:var(--muted);
+  background:transparent;
+  outline:0;
+}
+.summary-pill select:focus {
+  outline:0;
+  border-color:transparent;
+}
+.summary-pill span {
+  min-width:0;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+}
+.summary-text {
+  display:inline-flex;
+  align-items:center;
+  min-height:1.75rem;
+  color:var(--muted);
+  font-size:0.75rem;
+}
+.icon-action {
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  width:1.875rem;
+  min-height:1.875rem;
+  padding:0;
+  border-radius:999rem;
+}
+.ticket-panel {
+  display:grid;
+  padding:1rem 1.25rem;
+  border-top:0.0625rem solid var(--line);
+  background:var(--surface);
+}
+.ticket-description {
+  display:grid;
+  gap:0.5rem;
+  padding:0 1.25rem 1.25rem;
+}
+.ticket-description textarea {
+  min-height:8rem;
+}
+.description-text {
+  min-height:2.75rem;
+  padding:0.625rem;
+  border:0.0625rem solid var(--line);
+  border-radius:0.5rem;
+  color:var(--muted);
+  background:var(--surface);
+  white-space:pre-wrap;
+}
+.ticket-actions {
+  display:flex;
+  align-items:center;
+  justify-content:flex-end;
+  gap:0.75rem;
+  flex-wrap:wrap;
+}
+.ticket-actions button {
+  min-height:2.375rem;
+}
+.ticket-footer-actions {
+  display:flex;
+  align-items:center;
+  gap:0.5rem;
+  margin-left:auto;
+}
+.ticket-save-hint {
+  color:var(--faint);
+  font-size:0.75rem;
+}
+.ticket-preview {
+  display:grid;
+  grid-template-columns:repeat(4, minmax(0, 1fr));
+  gap:0.5rem;
+  padding:0.75rem;
+  border:0.0625rem solid var(--line);
+  border-radius:0.5rem;
+  background:rgba(255,255,255,.58);
+}
+.preview-item {
+  min-width:0;
+}
+.preview-label {
+  display:block;
+  color:var(--faint);
+  font-size:0.6875rem;
+  font-weight:620;
+  text-transform:uppercase;
+}
+.preview-value {
+  display:block;
+  overflow:hidden;
+  color:var(--muted);
+  font-size:0.75rem;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+}
+.form-grid {
+  display:grid;
+  gap:0.75rem;
+}
+.two {
+  display:grid;
+  grid-template-columns:1fr 1fr;
+  gap:0.75rem;
+}
+.detail-list {
+  display:grid;
+  gap:0.375rem;
+}
+.detail-row {
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:0.75rem;
+  min-width:0;
+  color:var(--muted);
+  font-size:0.75rem;
+}
+.detail-row div:last-child {
+  min-width:0;
+  overflow-wrap:anywhere;
+  text-align:right;
+  color:var(--text);
+}
+.project-control {
+  position:relative;
+}
+.project-button {
+  justify-content:flex-start;
+  width:max-content;
+  max-width:100%;
+  border-radius:999rem;
+  padding:0.5rem 0.75rem;
+}
+.project-popover {
+  position:absolute;
+  left:0;
+  top:calc(100% + 0.5rem);
+  z-index:40;
+  display:none;
+  width:min(26.25rem, calc(100vw - 2rem));
+  max-height:21.25rem;
+  overflow:auto;
+  padding:0.5rem;
+  border:0.0625rem solid var(--line-strong);
+  border-radius:0.625rem;
+  background:var(--surface);
+  box-shadow:var(--shadow);
+}
+.project-popover.open {
+  display:grid;
+  gap:0.25rem;
+}
+.project-row {
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:0.75rem;
+  width:100%;
+  min-height:2.75rem;
+  padding:0.625rem 0.75rem;
+  color:var(--text);
+  background:var(--surface);
+  border:0;
+  border-radius:0.5rem;
+  text-align:left;
+}
+.project-row:hover {
+  background:var(--surface-soft);
+}
+.project-row strong {
+  display:block;
+  font-weight:610;
+}
+.project-row .muted {
+  display:block;
+  max-width:17.5rem;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+}
+.project-divider {
+  height:0.0625rem;
+  margin:0.375rem 0.25rem;
+  background:var(--line);
+}
+.project-section-label {
+  padding:0.4375rem 0.75rem 0.1875rem;
+  color:var(--faint);
+  font-size:0.75rem;
+  font-weight:620;
+}
+#toast {
+  position:fixed;
+  right:1.25rem;
+  bottom:1.25rem;
+  z-index:30;
+  display:none;
+  max-width:min(32.5rem, calc(100vw - 2.5rem));
+  padding:0.75rem 0.875rem;
+  border:0.0625rem solid var(--line);
+  border-radius:0.5rem;
+  color:var(--text);
+  background:var(--surface);
+  box-shadow:var(--shadow);
+  white-space:pre-wrap;
+}
+#toast.open { display:block; }
+@media (max-width: 53.75rem) {
+  header, .toolbar { align-items:flex-start; flex-direction:column; }
+  .app-shell { grid-template-columns:1fr; }
+  .sidebar { position:static; grid-template-columns:1fr; }
+  .side-section { grid-template-columns:repeat(3, minmax(0, 1fr)); }
+  .side-label { display:none; }
+  .toolbar select, .toolbar input, .row, button { width:100%; }
+  .workspace-row { grid-template-columns:1fr; }
+  .projects-table-head { display:none; }
+  .agent-table-head { display:none; }
+  .project-table-row {
+    grid-template-columns:1fr auto;
+    gap:0.5rem;
+  }
+  .agent-table-row {
+    grid-template-columns:1fr;
+    gap:0.5rem;
+  }
+  .project-table-row > :nth-child(2),
+  .project-table-row > :nth-child(3),
+  .project-table-row > :nth-child(4),
+  .project-table-row > :nth-child(5) {
+    display:none;
+  }
+  .project-expanded { padding-left:0.75rem; }
+  .project-workspace-row { grid-template-columns:1fr; }
+  .two { grid-template-columns:1fr; }
+  .composer-modal { min-height:auto; }
+  .composer-body, .composer-footer { padding:1rem; }
+  .composer-top, .composer-footer, .ticket-actions { align-items:stretch; flex-direction:column; }
+  .ticket-preview { grid-template-columns:1fr; }
+  .issue-title { font-size:1.5rem; }
 }
 </style>
 </head>
 <body>
 <header>
   <div>
-    <div class="eyebrow">Local control plane</div>
-    <h1>thomas dashboard</h1>
-    <div class="muted" id="subtitle">Loading...</div>
+    <div class="eyebrow">Local workspace control</div>
+    <h1>Thomas</h1>
   </div>
   <div class="row">
-    <span class="pill" id="counts"></span>
-    <button onclick="loadState()">Refresh</button>
+    <span class="chip" id="counts">Loading</span>
+    <button class="secondary" onclick="loadState()">Refresh</button>
   </div>
 </header>
-<main>
-  <aside class="stack">
-    <section>
-      <h2>Create workspace</h2>
-      <form data-action="workspace/create">
-        <label>Project<select name="project" data-projects></select></label>
-        <label>Name<input name="name" required placeholder="auth-flow" /></label>
-        <label>Base ref<input name="base" placeholder="origin/main" /></label>
-        <label>Agent<select name="agent" data-agents-optional></select></label>
-        <label>Launch<select name="launchMode"><option value="terminal">New terminal tab</option><option value="detach">Background log</option><option value="none">No session</option></select></label>
-        <label>Custom command<textarea name="command" placeholder="optional shell command"></textarea></label>
-        <button>Create</button>
-      </form>
-    </section>
 
-    <section>
-      <h2>Register project</h2>
-      <form data-action="project/add">
-        <label>Name<input name="name" required /></label>
-        <label>Repo path<input name="repoPath" required placeholder="~/src/app" /></label>
-        <label>Base ref<input name="base" placeholder="origin/main" /></label>
-        <label>Worktrees dir<input name="worktreesDir" /></label>
-        <label>GitHub user<input name="githubUser" /></label>
-        <label>Agent profile<select name="agentProfile" data-agents-default></select></label>
-        <button>Register</button>
-      </form>
-    </section>
-
-    <section>
-      <h2>Agent profiles</h2>
-      <form data-action="agent-profile/add">
-        <label>Name<input name="name" /></label>
-        <label>Command<input name="command" placeholder="claude-work" /></label>
-        <button>Add profile</button>
-      </form>
-      <div id="profiles" class="stack"></div>
-    </section>
-
-    <section>
-      <h2>Settings</h2>
-      <form data-action="settings/update">
-        <label>Terminal<select name="terminalApp"><option>auto</option><option>terminal</option><option>iterm</option><option>warp</option><option>warppreview</option></select></label>
-        <label>Sound<input name="soundName" /></label>
-        <label class="check-label"><input type="checkbox" name="notificationsEnabled" /> Notifications</label>
-        <label class="check-label"><input type="checkbox" name="macosNotification" /> macOS banner</label>
-        <button>Save settings</button>
-      </form>
-      <div class="row">
-        <button onclick="post('settings/hooks/install',{target:'all'})">Install hooks</button>
-        <button onclick="post('settings/test',{})">Test notification</button>
-      </div>
-    </section>
+<div class="app-shell">
+  <aside class="sidebar">
+    <div class="side-section">
+      <div class="side-label">Workspace</div>
+      <button class="nav-btn active" data-view-button="board" onclick="switchView('board')">Board</button>
+      <button class="nav-btn" data-view-button="projects" onclick="switchView('projects')">Projects</button>
+      <button class="nav-btn" data-view-button="agents" onclick="switchView('agents')">Agents</button>
+    </div>
   </aside>
-  <div class="content-stack">
-    <section>
-      <div class="section-head">
-        <h2>Projects</h2>
-        <span class="muted">Registered repos</span>
+  <main class="content">
+    <section id="boardView" class="view active">
+      <div class="toolbar">
+        <div class="row">
+          <label>Project<select id="projectFilter" onchange="renderBoard()"></select></label>
+          <label>Sort<select id="sortBy" onchange="renderBoard()"><option value="ticket">Ticket</option><option value="newest">Newest</option><option value="oldest">Oldest</option><option value="title">Title</option></select></label>
+          <label>Search<input id="search" placeholder="Search tickets" oninput="renderBoard()" /></label>
+        </div>
       </div>
-      <div id="projects" class="grid"></div>
+      <div id="board" class="board"></div>
     </section>
-    <section>
-      <div class="section-head">
-        <h2>Workspaces</h2>
-        <span class="muted">Active worktrees</span>
+    <section id="projectsView" class="view">
+      <div class="projects-shell">
+        <div class="projects-header">
+          <h2>Projects</h2>
+          <button class="secondary icon" title="New project" onclick="openProjectModal()">+</button>
+        </div>
+        <div class="projects-toolbar">
+          <button class="secondary project-filter-pill">All projects</button>
+        </div>
+        <div id="projectsList" class="projects-table"></div>
       </div>
-      <div id="workspaces" class="grid"></div>
     </section>
-    <section>
-      <div class="section-head">
-        <h2>Sessions</h2>
-        <span class="muted">Agent processes</span>
+    <section id="agentsView" class="view">
+      <div class="projects-shell">
+        <div class="projects-header">
+          <h2>Agents</h2>
+          <button class="secondary icon" title="New agent profile" onclick="openAgentModal()">+</button>
+        </div>
+        <div class="projects-toolbar">
+          <button class="secondary project-filter-pill">All agents</button>
+          <span class="muted">Default: <span id="defaultAgentLabel">claude</span></span>
+        </div>
+        <div id="agentsList" class="projects-table"></div>
       </div>
-      <div id="sessions" class="grid"></div>
     </section>
-    <section>
-      <div class="section-head">
-        <h2>Output</h2>
-        <span class="muted">Checks, logs, and command results</span>
+  </main>
+</div>
+
+<div id="ticketModal" class="modal-backdrop" onclick="closeModalOnBackdrop(event)">
+  <div class="modal ticket-modal">
+    <div class="modal-head">
+      <div>
+        <div class="eyebrow" id="ticketId"></div>
+        <h2 id="ticketTitle"></h2>
       </div>
-      <pre id="output">Ready.</pre>
-    </section>
+      <button class="secondary icon" onclick="closeModal('ticketModal')">x</button>
+    </div>
+    <div class="ticket-summary" id="ticketSummary"></div>
+    <div class="ticket-description" id="ticketDescriptionBlock"></div>
+    <div class="ticket-panel">
+      <div class="ticket-actions">
+        <div class="ticket-footer-actions">
+          <button onclick="saveTicket()">Save</button>
+        </div>
+      </div>
+    </div>
   </div>
-</main>
+</div>
+
+<div id="createTicketModal" class="modal-backdrop" onclick="closeModalOnBackdrop(event)">
+  <form class="modal composer-modal" onsubmit="submitTicket(event)">
+    <div class="composer-body">
+      <div class="composer-top">
+        <div class="composer-pills">
+          <span class="chip">To-do</span>
+          <div class="pill-control project-control">
+            <button type="button" class="secondary pill-button" id="ticketProjectButton" onclick="toggleProjectPicker()">Add to project</button>
+            <div id="projectPickerPopover" class="project-popover"></div>
+          </div>
+        </div>
+        <button type="button" class="secondary icon" onclick="closeModal('createTicketModal')">x</button>
+      </div>
+      <div class="composer-fields">
+        <input class="issue-title" name="title" required placeholder="Issue title" />
+        <textarea class="issue-description" name="description" placeholder="Add description..."></textarea>
+      </div>
+      <input type="hidden" name="project" id="ticketProject" />
+    </div>
+    <div class="composer-footer">
+      <span class="muted">Workspace and branch are created from this ticket.</span>
+      <button>Create ticket</button>
+    </div>
+  </form>
+</div>
+
+<div id="projectModal" class="modal-backdrop" onclick="closeModalOnBackdrop(event)">
+  <form class="modal" onsubmit="submitProject(event)">
+    <div class="modal-head">
+      <div>
+        <div class="eyebrow">Project</div>
+        <h2 id="projectModalTitle">Create project</h2>
+      </div>
+      <button type="button" class="secondary icon" onclick="closeModal('projectModal')">x</button>
+    </div>
+    <div class="two">
+      <label>Name<input name="name" required placeholder="thomas" oninput="syncIdentifier(this.value)" /></label>
+      <label>Identifier<input name="identifier" required placeholder="THOMAS" oninput="projectIdentifierTouched=true" /></label>
+    </div>
+    <label>Repo path
+      <div class="row">
+        <input name="repoPath" required placeholder="~/src/thomas" />
+        <button type="button" class="secondary" onclick="chooseRepoPath()">Browse</button>
+      </div>
+    </label>
+    <div class="two">
+      <label>Base ref<input name="base" placeholder="origin/main" /></label>
+      <label>GitHub user<input name="githubUser" /></label>
+    </div>
+    <label>Agent profile<select name="agentProfile" id="projectAgentProfile"></select></label>
+    <label>Setup script<textarea name="setupScript" placeholder="#!/bin/sh"></textarea></label>
+    <button id="projectSubmitButton">Create project</button>
+  </form>
+</div>
+
+<div id="workspaceModal" class="modal-backdrop" onclick="closeModalOnBackdrop(event)">
+  <form class="modal" onsubmit="submitWorkspace(event)">
+    <div class="modal-head">
+      <div>
+        <div class="eyebrow" id="workspaceProjectLabel">Workspace</div>
+        <h2>Create workspace</h2>
+      </div>
+      <button type="button" class="secondary icon" onclick="closeModal('workspaceModal')">x</button>
+    </div>
+    <input type="hidden" name="project" />
+    <label>Name<input name="name" required placeholder="auth-flow" /></label>
+    <label>Base ref<input name="base" placeholder="origin/main" /></label>
+    <button>Create workspace</button>
+  </form>
+</div>
+
+<div id="agentModal" class="modal-backdrop" onclick="closeModalOnBackdrop(event)">
+  <form class="modal" onsubmit="submitAgent(event)">
+    <div class="modal-head">
+      <div>
+        <div class="eyebrow">Agent</div>
+        <h2>Create agent profile</h2>
+      </div>
+      <button type="button" class="secondary icon" onclick="closeModal('agentModal')">x</button>
+    </div>
+    <label>Name<input name="name" required placeholder="work" /></label>
+    <div class="two">
+      <label>Type<select name="type" onchange="syncAgentCommandDefault()"><option value="claude">Claude</option><option value="codex">Codex</option></select></label>
+      <label>Launch command<input name="command" placeholder="claude" oninput="agentCommandTouched=true" /></label>
+    </div>
+    <button>Create agent profile</button>
+  </form>
+</div>
+
+<div id="toast"></div>
+
 <script>
 let state = null;
+let selectedTicket = null;
+let projectIdentifierTouched = false;
+let selectedTicketProject = "";
+let activeView = "board";
+let projectModalMode = "create";
+let agentCommandTouched = false;
+const expandedProjects = new Set();
 const $ = (s, r=document) => r.querySelector(s);
 const $$ = (s, r=document) => [...r.querySelectorAll(s)];
 const esc = (s='') => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-function formData(form){ const data={}; new FormData(form).forEach((v,k)=>data[k]=v); $$('input[type=checkbox]', form).forEach(i=>data[i.name]=i.checked); return data; }
-async function api(path, options={}){ const r=await fetch('/api/'+path, {headers:{'content-type':'application/json'}, ...options}); const j=await r.json(); if(!j.ok) throw new Error(j.error || 'Request failed'); return j; }
-async function post(action, body){ try { const j=await api(action,{method:'POST',body:JSON.stringify(body)}); if(j.output) $('#output').textContent=j.output; state=j.state; render(); } catch(e){ $('#output').textContent=e.message; } }
-async function loadState(){ try { const j=await api('state'); state=j.state; render(); } catch(e){ $('#output').textContent=e.message; } }
-function render(){ if(!state) return; $('#subtitle').textContent = `${state.configPath} - ${state.generatedAt}`; $('#counts').textContent = `${state.projects.length} projects - ${state.workspaces.length} workspaces - ${state.sessions.length} sessions`; fillSelects(); renderProjects(); renderWorkspaces(); renderSessions(); renderProfiles(); renderSettings(); }
-function fillSelects(){ const ps=state.projects.map(p=>`<option value="${esc(p.name)}">${esc(p.name)}</option>`).join(''); $$('[data-projects]').forEach(s=>s.innerHTML=ps); const profiles=Object.values(state.settings.agentProfiles.profiles).sort((a,b)=>a.name.localeCompare(b.name)); $$('[data-agents-optional]').forEach(s=>s.innerHTML='<option value="">Default</option><option value="none">No session</option>'+profiles.map(p=>`<option>${esc(p.name)}</option>`).join('')); $$('[data-agents-default]').forEach(s=>s.innerHTML='<option value="">Default</option>'+profiles.map(p=>`<option>${esc(p.name)}</option>`).join('')); }
-function renderProjects(){ $('#projects').innerHTML = state.projects.map(p=>`<div class="item"><strong>${esc(p.name)}</strong><div class="meta"><div class="muted">${esc(p.repoPath)}</div><div>Base: ${esc(p.mainBranch||'')}</div><div>Agent: ${esc(p.agentProfile||'default')}</div><div>Worktrees: ${esc(p.worktreesDir||'')}</div></div><div class="row"><select onchange="post('project/set-agent-profile',{name:'${esc(p.name)}',agentProfile:this.value})"><option value="">default</option>${Object.values(state.settings.agentProfiles.profiles).map(ap=>`<option ${p.agentProfile===ap.name?'selected':''}>${esc(ap.name)}</option>`).join('')}</select><button class="danger" onclick="post('project/remove',{name:'${esc(p.name)}',force:true})">Remove</button></div></div>`).join('') || '<p class="empty">No projects.</p>'; }
-function renderWorkspaces(){ $('#workspaces').innerHTML = state.workspaces.map(w=>`<div class="item"><strong>${esc(w.project)}/${esc(w.name)}</strong><div class="meta"><div class="${w.status==='active'?'ok':'muted'}">${esc(w.status)}</div><div>${esc(w.branch||'')}</div><div class="muted">${esc(w.path||'')}</div></div><div class="row"><button onclick="checks('${esc(w.project)}','${esc(w.name)}')">Checks</button><button onclick="post('session/start',{project:'${esc(w.project)}',workspace:'${esc(w.name)}',launchMode:'terminal'})">Start session</button><button onclick="post('workspace/archive',{project:'${esc(w.project)}',workspace:'${esc(w.name)}'})">Archive</button><button class="danger" onclick="post('workspace/remove',{project:'${esc(w.project)}',workspace:'${esc(w.name)}',force:true})">Remove</button></div></div>`).join('') || '<p class="empty">No workspaces.</p>'; }
-function renderSessions(){ $('#sessions').innerHTML = state.sessions.map(s=>`<div class="item"><strong>${esc(s.id)}</strong><div class="meta"><div>${esc(s.project)}/${esc(s.workspace)} - ${esc(s.agent||'')}</div><div>Status: ${esc(s.status)} ${s.pid?'pid '+esc(s.pid):''}</div><div class="muted">${esc(s.commandText||'')}</div></div>${s.runCommand?`<pre>${esc(s.runCommand)}</pre>`:''}<div class="row"><button onclick="logs('${esc(s.id)}')">Logs</button>${s.resumeCommand?`<button onclick="post('session/resume',{id:'${esc(s.id)}'})">Resume</button>`:''}<button class="danger" onclick="post('session/stop',{id:'${esc(s.id)}'})">Stop</button></div></div>`).join('') || '<p class="empty">No sessions.</p>'; }
-function renderProfiles(){ const d=state.settings.agentProfiles.default; $('#profiles').innerHTML = Object.values(state.settings.agentProfiles.profiles).map(p=>`<div class="item"><strong>${esc(p.name)} ${p.name===d?'(default)':''}</strong><div class="muted">${esc(p.command)}</div><div class="row"><button onclick="post('agent-profile/default',{name:'${esc(p.name)}'})">Make default</button>${['claude','codex'].includes(p.name)?'':`<button class="danger" onclick="post('agent-profile/remove',{name:'${esc(p.name)}'})">Remove</button>`}</div></div>`).join(''); }
-function renderSettings(){ const s=state.settings; $('[name=terminalApp]').value=s.terminalApp||'auto'; $('[name=soundName]').value=s.notifications.soundName||'none'; $('[name=notificationsEnabled]').checked=s.notifications.enabled!==false; $('[name=macosNotification]').checked=!!s.notifications.macosNotification; }
-async function checks(project, workspace){ try { const j=await api(`checks?project=${encodeURIComponent(project)}&workspace=${encodeURIComponent(workspace)}`); $('#output').textContent=j.output||'(no output)'; } catch(e){ $('#output').textContent=e.message; } }
-async function logs(id){ try { const j=await api(`session/logs?id=${encodeURIComponent(id)}`); $('#output').textContent=j.output||'(no logs)'; } catch(e){ $('#output').textContent=e.message; } }
-document.addEventListener('submit', e => { const form=e.target.closest('form[data-action]'); if(!form) return; e.preventDefault(); const data=formData(form); if(data.agent==='none') delete data.agent; if(data.launchMode==='none') { delete data.agent; delete data.command; } post(form.dataset.action, data); });
-loadState(); setInterval(loadState, 15000);
+const formData = form => { const data={}; new FormData(form).forEach((v,k)=>data[k]=v); return data; };
+async function api(path, options={}) {
+  const response = await fetch('/api/'+path, { headers:{'content-type':'application/json'}, ...options });
+  const json = await response.json();
+  if (!json.ok) throw new Error(json.error || 'Request failed');
+  return json;
+}
+async function post(action, body) {
+  const json = await api(action, { method:'POST', body:JSON.stringify(body) });
+  state = json.state;
+  render();
+  if (json.output) showToast(json.output);
+  return json;
+}
+async function loadState() {
+  try {
+    const json = await api('state');
+    state = json.state;
+    render();
+  } catch (error) {
+    showToast(error.message);
+  }
+}
+function render() {
+  if (!state) return;
+  $('#counts').textContent = `${state.projects.length} projects · ${state.workspaces.length} workspaces · ${state.kanban.tickets.length} tickets`;
+  fillProjectFilter();
+  fillModalSelects();
+  renderProjectPicker();
+  renderBoard();
+  renderProjectsList();
+  renderAgentsList();
+  updateView();
+}
+function fillProjectFilter() {
+  const current = $('#projectFilter').value || 'all';
+  $('#projectFilter').innerHTML = '<option value="all">All projects</option>' + state.projects.map(project => `<option value="${esc(project.name)}">${esc(project.name)}</option>`).join('');
+  $('#projectFilter').value = state.projects.some(project => project.name === current) ? current : 'all';
+}
+function fillModalSelects() {
+  if (selectedTicketProject && !state.projects.some(project => project.name === selectedTicketProject)) {
+    selectedTicketProject = "";
+  }
+  $('#projectAgentProfile').innerHTML = '<option value="">Default</option>' + Object.values(state.settings.agentProfiles.profiles)
+    .sort((a,b)=>a.name.localeCompare(b.name))
+    .map(profile => `<option value="${esc(profile.name)}">${esc(profile.name)} · ${esc(agentTypeLabel(profile.type))}</option>`)
+    .join('');
+  syncSelectedTicketProject();
+}
+function renderProjectPicker() {
+  $('#projectPickerPopover').innerHTML = [
+    '<div class="project-section-label">Add to project...</div>',
+    state.projects.length
+      ? state.projects.map(project => `<button type="button" class="project-row" onclick="selectTicketProject('${esc(project.name)}')"><span><strong>${esc(project.name)}</strong><span class="muted">${esc(project.repoPath || '')}</span></span><span>${selectedTicketProject === project.name ? '✓' : ''}</span></button>`).join('')
+      : '<div class="project-row muted">No projects</div>',
+    '<div class="project-divider"></div>',
+    '<button type="button" class="project-row" onclick="selectCreateProject()"><span><strong>Create new project...</strong><span class="muted">Configure a repository for tickets</span></span><span>+</span></button>',
+  ].join('');
+}
+function syncSelectedTicketProject() {
+  const project = state.projects.find(item => item.name === selectedTicketProject);
+  $('#ticketProject').value = project ? project.name : "";
+  $('#ticketProjectButton').textContent = project
+    ? `${project.name} (${project.identifier || ''})`
+    : "Add to project";
+}
+function filteredTickets() {
+  const project = $('#projectFilter').value || 'all';
+  const query = ($('#search').value || '').trim().toLowerCase();
+  const sortBy = $('#sortBy').value || 'ticket';
+  let tickets = state.kanban.tickets.filter(ticket => {
+    if (project !== 'all' && ticket.project !== project) return false;
+    if (!query) return true;
+    return [ticket.id, ticket.title, ticket.project, ticket.workspace].some(value => String(value || '').toLowerCase().includes(query));
+  });
+  tickets = [...tickets].sort((a, b) => {
+    if (sortBy === 'newest') return String(b.createdAt || '').localeCompare(String(a.createdAt || ''));
+    if (sortBy === 'oldest') return String(a.createdAt || '').localeCompare(String(b.createdAt || ''));
+    if (sortBy === 'title') return a.title.localeCompare(b.title);
+    return a.id.localeCompare(b.id, undefined, { numeric:true });
+  });
+  return tickets;
+}
+function renderBoard() {
+  if (!state) return;
+  const byStatus = Object.fromEntries(state.kanban.statuses.map(status => [status, []]));
+  for (const ticket of filteredTickets()) (byStatus[ticket.status] || byStatus['To-do']).push(ticket);
+  $('#board').innerHTML = state.kanban.statuses.map(status => `
+    <section class="column">
+      <div class="column-head">
+        <div class="column-title"><h3>${esc(status)}</h3><span class="count">${byStatus[status].length}</span></div>
+        ${status === 'To-do' ? '<button class="secondary icon" title="Create ticket" onclick="openCreateTicket()">+</button>' : ''}
+      </div>
+      ${byStatus[status].map(renderTicket).join('') || '<div class="empty">No tickets</div>'}
+    </section>
+  `).join('');
+}
+function renderTicket(ticket) {
+  return `<article class="ticket" onclick="openTicket('${esc(ticket.id)}')"><div class="ticket-id">${esc(ticket.id)}</div><div class="ticket-title">${esc(ticket.title)}</div><div class="ticket-meta"><span>${esc(ticket.project)}</span><span>${esc(ticket.workspaceStatus)}</span></div></article>`;
+}
+function switchView(view) {
+  activeView = view;
+  updateView();
+}
+function updateView() {
+  if (!['board', 'projects', 'agents'].includes(activeView)) activeView = 'board';
+  ['board', 'projects', 'agents'].forEach(view => {
+    $(`#${view}View`).classList.toggle('active', activeView === view);
+    $(`[data-view-button="${view}"]`).classList.toggle('active', activeView === view);
+  });
+}
+function workspacesForProject(projectName) {
+  return state.workspaces
+    .filter(workspace => workspace.project === projectName)
+    .sort((a, b) => a.name.localeCompare(b.name));
+}
+function renderProjectsList() {
+  const rows = state.projects.map(project => {
+    const workspaces = workspacesForProject(project.name);
+    const expanded = expandedProjects.has(project.name);
+    return `<div>
+      <div class="project-table-row" role="button" tabindex="0" onclick="openProjectModal('${esc(project.name)}')">
+        <span class="project-name-cell">
+          <span class="project-chevron" onclick="toggleProjectWorkspaces(event,'${esc(project.name)}')">${expanded ? '▾' : '▸'}</span>
+          <span class="project-dot"></span>
+          <span class="project-name-text">${esc(project.name)}</span>
+          <span class="project-count">${workspaces.length}</span>
+        </span>
+        <span>${esc(project.identifier || '')}</span>
+        <span>${esc(project.mainBranch || '')}</span>
+        <span>${workspaces.length}</span>
+        <span>${esc(project.agentProfile || 'default')}</span>
+        <span>
+          <button type="button" class="secondary icon" title="Create workspace" onclick="openWorkspaceModal(event,'${esc(project.name)}')">+</button>
+        </span>
+      </div>
+      <div class="project-expanded ${expanded ? 'open' : ''}">
+        ${renderWorkspaceRows(workspaces)}
+      </div>
+    </div>`;
+  }).join('');
+  $('#projectsList').innerHTML = state.projects.length
+    ? `<div class="projects-table-head"><span>Name ↓</span><span>Identifier</span><span>Base</span><span>Workspaces</span><span>Agent</span><span></span></div>${rows}`
+    : '<div class="empty">No projects.</div>';
+}
+function renderWorkspaceRows(workspaces) {
+  return workspaces.map(workspace => `<div class="project-workspace-row"><strong>${esc(workspace.name)}</strong><span>${esc(workspace.branch || '')}</span><span class="chip">${esc(workspace.status)}</span><span></span></div>`).join('') || '<div class="empty">No workspaces.</div>';
+}
+function renderAgentsList() {
+  const profiles = Object.values(state.settings.agentProfiles.profiles || {})
+    .sort((a, b) => agentSortKey(a.name).localeCompare(agentSortKey(b.name)));
+  const defaultName = state.settings.agentProfiles.default || "claude";
+  $('#defaultAgentLabel').textContent = defaultName;
+  const rows = profiles.map(profile => {
+    const builtin = profile.name === "claude" || profile.name === "codex";
+    return `<div class="agent-table-row">
+      <span class="agent-name">${esc(displayName(profile.name))}</span>
+      <span class="chip">${esc(agentTypeValue(profile.type))}</span>
+      <span>${esc(profile.command || defaultAgentCommand(profile.type))}</span>
+      <span>${profile.name === defaultName ? 'Default' : ''}</span>
+      <span class="row">
+        ${profile.name === defaultName ? '' : `<button type="button" class="secondary" onclick="setDefaultAgent('${esc(profile.name)}')">Set default</button>`}
+        ${builtin ? '' : `<button type="button" class="secondary icon" title="Remove agent profile" onclick="removeAgent('${esc(profile.name)}')">x</button>`}
+      </span>
+    </div>`;
+  }).join('');
+  $('#agentsList').innerHTML = profiles.length
+    ? `<div class="agent-table-head"><span>Name</span><span>Type</span><span>Launch command</span><span>Default</span><span></span></div>${rows}`
+    : '<div class="empty">No agent profiles.</div>';
+}
+function agentSortKey(name) {
+  if (name === "claude") return "0-claude";
+  if (name === "codex") return "0-codex";
+  return `1-${name}`;
+}
+function displayName(name) {
+  return String(name || '')
+    .split(/([_.-]+)/)
+    .map(part => /^[A-Za-z0-9]+$/.test(part) ? part.charAt(0).toUpperCase() + part.slice(1) : part)
+    .join('');
+}
+function agentTypeLabel(type) {
+  return String(type || "claude").toLowerCase() === "codex" ? "Codex" : "Claude";
+}
+function agentTypeValue(type) {
+  return String(type || "claude").toLowerCase() === "codex" ? "codex" : "claude";
+}
+function defaultAgentCommand(type) {
+  return String(type || "claude").toLowerCase() === "codex" ? "codex" : "claude";
+}
+function toggleProjectWorkspaces(event, projectName) {
+  event.stopPropagation();
+  if (expandedProjects.has(projectName)) expandedProjects.delete(projectName);
+  else expandedProjects.add(projectName);
+  renderProjectsList();
+}
+function openTicket(id) {
+  selectedTicket = state.kanban.tickets.find(ticket => ticket.id === id);
+  if (!selectedTicket) return;
+  $('#ticketId').textContent = selectedTicket.id;
+  $('#ticketTitle').textContent = selectedTicket.title;
+  $('#ticketSummary').innerHTML = [
+    `<div class="summary-pill"><select id="ticketStatus">${state.kanban.statuses.map(status => `<option${status === selectedTicket.status ? ' selected' : ''}>${esc(status)}</option>`).join('')}</select></div>`,
+    `<div class="summary-pill"><span>${esc(selectedTicket.project)}</span></div>`,
+    selectedTicket.branch ? `<button class="secondary icon-action" title="Copy branch" onclick="copyBranch(event)">${branchIcon()}</button>` : '',
+    selectedTicket.prUrl ? `<button class="secondary icon-action" title="Open PR" onclick="openTicketPr(event)">${prIcon()}</button>` : '',
+    `<button class="secondary icon-action" title="Checks" onclick="checkTicket(event)">${checksIcon()}</button>`,
+  ].join('');
+  renderTicketDescription();
+  openModal('ticketModal');
+}
+function renderTicketDescription() {
+  const description = selectedTicket?.description || "";
+  const canEdit = selectedTicket?.status === "To-do";
+  $('#ticketDescriptionBlock').innerHTML = canEdit
+    ? `<label>Description<textarea id="ticketDescription" placeholder="Add description...">${esc(description)}</textarea></label>`
+    : `<div class="description-text">${esc(description || "No description.")}</div>`;
+}
+function branchIcon() {
+  return '<svg viewBox="0 0 24 24" fill="none" stroke-width="2"><circle cx="6" cy="6" r="3"></circle><circle cx="18" cy="18" r="3"></circle><path d="M6 9v3a6 6 0 0 0 6 6h3"></path></svg>';
+}
+function prIcon() {
+  return '<svg viewBox="0 0 24 24" fill="none" stroke-width="2"><path d="M7 7h10v10"></path><path d="M7 17 17 7"></path></svg>';
+}
+function checksIcon() {
+  return '<svg viewBox="0 0 24 24" fill="none" stroke-width="2"><path d="m4 12 5 5L20 6"></path></svg>';
+}
+async function copyBranch(event) {
+  event.stopPropagation();
+  if (!selectedTicket?.branch) return;
+  try {
+    await navigator.clipboard.writeText(selectedTicket.branch);
+    showToast(`Copied branch: ${selectedTicket.branch}`);
+  } catch (error) {
+    showToast(selectedTicket.branch);
+  }
+}
+function openTicketPr(event) {
+  event.stopPropagation();
+  if (selectedTicket?.prUrl) window.open(selectedTicket.prUrl, '_blank', 'noopener');
+}
+async function saveTicket() {
+  if (!selectedTicket) return;
+  const ticketId = selectedTicket.id;
+  const nextStatus = $('#ticketStatus').value;
+  const canEditDescription = selectedTicket.status === "To-do";
+  try {
+    if (canEditDescription) {
+      const descriptionInput = $('#ticketDescription');
+      const nextDescription = descriptionInput ? descriptionInput.value : selectedTicket.description || "";
+      if (nextDescription !== (selectedTicket.description || "")) {
+        await post('kanban/description', { ticketId, description: nextDescription });
+      }
+    }
+    selectedTicket = state.kanban.tickets.find(ticket => ticket.id === ticketId) || selectedTicket;
+    if (nextStatus !== selectedTicket.status) {
+      await post('kanban/status', { ticketId, status: nextStatus });
+    }
+    selectedTicket = state.kanban.tickets.find(ticket => ticket.id === ticketId) || selectedTicket;
+    if (selectedTicket) {
+      $('#ticketStatus').value = selectedTicket.status;
+      renderTicketDescription();
+    }
+    showToast(`${ticketId} saved.`);
+  } catch (error) {
+    showToast(error.message);
+  }
+}
+async function checkTicket(event) {
+  event?.stopPropagation();
+  if (!selectedTicket) return;
+  try {
+    const json = await api(`checks?project=${encodeURIComponent(selectedTicket.project)}&workspace=${encodeURIComponent(selectedTicket.workspace)}`);
+    showToast(json.output || 'No output');
+  } catch (error) {
+    showToast(error.message);
+  }
+}
+function openCreateTicket() {
+  const form = $('#createTicketModal form');
+  form.reset();
+  selectedTicketProject = state.projects[0]?.name || "";
+  syncSelectedTicketProject();
+  closeProjectPicker();
+  openModal('createTicketModal');
+}
+function toggleProjectPicker() {
+  renderProjectPicker();
+  $('#projectPickerPopover').classList.toggle('open');
+}
+function closeProjectPicker() {
+  $('#projectPickerPopover')?.classList.remove('open');
+}
+function selectTicketProject(name) {
+  selectedTicketProject = name;
+  syncSelectedTicketProject();
+  closeProjectPicker();
+}
+function selectCreateProject() {
+  closeProjectPicker();
+  openProjectModal();
+}
+async function submitTicket(event) {
+  event.preventDefault();
+  const data = formData(event.currentTarget);
+  if (!data.project) {
+    toggleProjectPicker();
+    return;
+  }
+  data.status = 'To-do';
+  try {
+    await post('kanban/create', data);
+    closeModal('createTicketModal');
+  } catch (error) {
+    showToast(error.message);
+  }
+}
+function openProjectModal(projectName = null) {
+  const form = $('#projectModal form');
+  form.reset();
+  projectModalMode = projectName ? "edit" : "create";
+  projectIdentifierTouched = false;
+  const project = projectName ? state.projects.find(item => item.name === projectName) : null;
+  $('#projectModalTitle').textContent = project ? "Edit project" : "Create project";
+  $('#projectSubmitButton').textContent = project ? "Save project" : "Create project";
+  form.elements.name.readOnly = Boolean(project);
+  form.elements.repoPath.readOnly = Boolean(project);
+  if (project) {
+    form.elements.name.value = project.name;
+    form.elements.identifier.value = project.identifier || defaultIdentifier(project.name);
+    form.elements.repoPath.value = project.repoPath || "";
+    form.elements.base.value = project.mainBranch || "";
+    form.elements.githubUser.value = project.githubUser || "";
+    form.elements.agentProfile.value = project.agentProfile || "";
+    form.elements.setupScript.value = project.setupScript?.content || "";
+  } else {
+    form.elements.githubUser.value = state?.defaultGithubUser || '';
+    form.elements.agentProfile.value = "";
+  }
+  openModal('projectModal');
+}
+function syncIdentifier(name) {
+  if (projectIdentifierTouched) return;
+  const form = $('#projectModal form');
+  form.elements.identifier.value = defaultIdentifier(name);
+}
+function defaultIdentifier(name) {
+  const parts = String(name || '').split(/[^A-Za-z0-9]+/).filter(Boolean);
+  const raw = parts.length === 0
+    ? ''
+    : parts.length === 1
+      ? parts[0]
+      : parts.slice(0, -1).map(part => part[0]).join('') + parts[parts.length - 1];
+  const candidate = (/^[A-Za-z]/.test(raw) ? raw : `P${raw}`).toUpperCase().replace(/[^A-Z0-9]+/g, '');
+  return candidate;
+}
+function nameFromPath(repoPath) {
+  return String(repoPath || '').replace(/\/+$/, '').split('/').filter(Boolean).pop() || '';
+}
+async function chooseRepoPath() {
+  try {
+    const json = await api('project/choose-repo', { method:'POST', body:'{}' });
+    const form = $('#projectModal form');
+    form.elements.repoPath.value = json.repoPath || '';
+    if (!form.elements.name.value && json.repoPath) {
+      form.elements.name.value = nameFromPath(json.repoPath);
+      syncIdentifier(form.elements.name.value);
+    }
+  } catch (error) {
+    showToast(error.message);
+  }
+}
+async function submitProject(event) {
+  event.preventDefault();
+  const data = formData(event.currentTarget);
+  try {
+    await post(projectModalMode === "edit" ? 'project/update' : 'project/add', data);
+    closeModal('projectModal');
+    selectedTicketProject = data.name;
+    syncSelectedTicketProject();
+  } catch (error) {
+    showToast(error.message);
+  }
+}
+function openWorkspaceModal(event, projectName) {
+  event.stopPropagation();
+  const form = $('#workspaceModal form');
+  form.reset();
+  form.elements.project.value = projectName;
+  const project = state.projects.find(item => item.name === projectName);
+  form.elements.base.value = project?.mainBranch || "";
+  $('#workspaceProjectLabel').textContent = projectName;
+  openModal('workspaceModal');
+}
+async function submitWorkspace(event) {
+  event.preventDefault();
+  const data = formData(event.currentTarget);
+  try {
+    await post('workspace/create', data);
+    closeModal('workspaceModal');
+  } catch (error) {
+    showToast(error.message);
+  }
+}
+function openAgentModal() {
+  const form = $('#agentModal form');
+  form.reset();
+  agentCommandTouched = false;
+  form.elements.type.value = "claude";
+  form.elements.command.value = "claude";
+  openModal('agentModal');
+}
+function syncAgentCommandDefault() {
+  if (agentCommandTouched) return;
+  const form = $('#agentModal form');
+  form.elements.command.value = defaultAgentCommand(form.elements.type.value);
+}
+async function submitAgent(event) {
+  event.preventDefault();
+  const data = formData(event.currentTarget);
+  if (!data.command) data.command = defaultAgentCommand(data.type);
+  try {
+    await post('agent-profile/add', data);
+    closeModal('agentModal');
+  } catch (error) {
+    showToast(error.message);
+  }
+}
+async function setDefaultAgent(name) {
+  try {
+    await post('agent-profile/default', { name });
+  } catch (error) {
+    showToast(error.message);
+  }
+}
+async function removeAgent(name) {
+  try {
+    await post('agent-profile/remove', { name });
+  } catch (error) {
+    showToast(error.message);
+  }
+}
+function openModal(id) { $('#'+id).classList.add('open'); }
+function closeModal(id) { $('#'+id).classList.remove('open'); }
+function closeModalOnBackdrop(event) {
+  if (event.target.classList.contains('modal-backdrop')) event.target.classList.remove('open');
+}
+function showToast(message) {
+  const toast = $('#toast');
+  toast.textContent = message;
+  toast.classList.add('open');
+  clearTimeout(showToast.timer);
+  showToast.timer = setTimeout(() => toast.classList.remove('open'), 6000);
+}
+document.addEventListener('keydown', event => {
+  if (event.key === 'Escape') {
+    closeProjectPicker();
+    $$('.modal-backdrop.open').forEach(modal => modal.classList.remove('open'));
+  }
+});
+document.addEventListener('click', event => {
+  if (!event.target.closest('.project-control')) closeProjectPicker();
+});
+loadState();
+setInterval(loadState, 15000);
 </script>
 </body>
 </html>

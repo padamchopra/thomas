@@ -19,12 +19,20 @@ const CONFIG_DIR =
   process.env.THOMAS_CLI_HOME ||
   path.join(os.homedir(), ".thomas");
 const CONFIG_PATH = path.join(CONFIG_DIR, "config.json");
+const STATE_DB_PATH = path.join(CONFIG_DIR, "thomas.db");
 const LOG_DIR = path.join(CONFIG_DIR, "logs");
 const HOOKS_DIR = path.join(CONFIG_DIR, "hooks");
 const HOOK_SCRIPT_PATH = path.join(HOOKS_DIR, "agent-notify.js");
 const NOTIFIER_SOURCE_PATH = path.join(HOOKS_DIR, "ThomasNotifier.swift");
 const NOTIFIER_EXECUTABLE_PATH = path.join(HOOKS_DIR, "thomas-notifier");
 const SWIFT_MODULE_CACHE_DIR = path.join(HOOKS_DIR, "swift-module-cache");
+const KANBAN_STATUSES = [
+  "To-do",
+  "In Progress",
+  "PR Review",
+  "Human Review",
+  "Done",
+];
 
 class CliError extends Error {
   constructor(message, exitCode = 1) {
@@ -92,6 +100,9 @@ async function main(argv) {
     case "ws":
       commandWorkspace(rest);
       break;
+    case "kanban":
+      commandKanban(rest);
+      break;
     case "session":
     case "sessions":
       commandSession(rest);
@@ -125,9 +136,10 @@ function printHelp(topic) {
     console.log(`Project commands
 
 Usage:
-  thomas project add <name> <repo-path> [--worktrees-dir <dir>] [--base <ref>] [--gh-user <username>] [--agent-profile <profile>] [--setup-script <file|->]
+  thomas project add <name> <repo-path> [--worktrees-dir <dir>] [--base <ref>] [--gh-user <username>] [--identifier <id>] [--agent-profile <profile>] [--setup-script <file|->]
   thomas project list
   thomas project info <name>
+  thomas project set-identifier <name> <identifier>
   thomas project set-agent-profile <name> <profile|default|none>
   thomas project set-setup-script <name> <file|-|none>
   thomas project remove <name>
@@ -159,6 +171,34 @@ Notes:
   a session is prepared and a terminal tab is opened by default.
   The workspace name determines the branch: <github-user>/<workspace>.
   If the project has a setup script, create runs it before preparing a session.
+`);
+    return;
+  }
+
+  if (topic === "kanban") {
+    console.log(`Kanban commands
+
+Usage:
+  thomas kanban --create <project> [title] [--status <status>] [--agent <profile>] [--terminal <auto|terminal|iterm|warp>] [--attach|--detach]
+  thomas kanban create <project> [title] [--status <status>] [--agent <profile>] [--terminal <auto|terminal|iterm|warp>] [--attach|--detach]
+  thomas kanban list [project] [--all]
+  thomas kanban status <ticket-id> <status>
+  thomas kanban description <ticket-id> <description>
+  thomas kanban project-id <project> <identifier>
+
+Examples:
+  thomas kanban --create thomas "Add board dashboard"
+  thomas kanban status THOMAS-1 "PR Review"
+  thomas kanban project-id jupiter-mobile JMOBILE
+
+Behavior:
+  Kanban is optional. Tickets are workspaces with extra board metadata.
+  Ticket IDs use the project identifier and project-local number, such as
+  THOMAS-1. Creating THOMAS-1 creates workspace thomas-1 and branch
+  <github-user>/thomas-1.
+
+Statuses:
+  ${KANBAN_STATUSES.join(", ")}
 `);
     return;
   }
@@ -218,14 +258,14 @@ Notes:
     console.log(`Agent profile commands
 
 Usage:
-  thomas agent-profile add <name> <command>
+  thomas agent-profile add <name> [command] [--type claude|codex]
   thomas agent-profile list
   thomas agent-profile default <name>
   thomas agent-profile remove <name>
   thomas agent-profile resolve [project]
 
 Examples:
-  thomas agent-profile add work claude-work
+  thomas agent-profile add work claude-work --type claude
   thomas agent-profile default codex
   thomas project set-agent-profile app work
 
@@ -271,8 +311,8 @@ Usage:
   thomas dashboard [--host <host>] [--port <port>] [--no-open]
 
 Behavior:
-  Starts a local web dashboard for managing projects, workspaces, sessions,
-  agent profiles, settings, and workspace checks. Binds to localhost by default.
+  Starts a local web dashboard for the board, projects, workspaces, sessions,
+  agent profiles, settings, and checks. Binds to localhost by default.
 `);
     return;
   }
@@ -304,6 +344,7 @@ Commands:
   project     Register and inspect repositories
   register    Alias for project add
   workspace   Create, inspect, archive, and remove git worktree workspaces
+  kanban      Optional ticket board built on top of workspaces
   session     Start, list, stop, and inspect agent sessions
   checks      Show git and GitHub PR readiness for a workspace
   pr          Watch PR state and clean up merged workspaces
@@ -322,6 +363,10 @@ Common flow:
   thomas checks app auth
   thomas pr watch app --cleanup
 
+Optional kanban flow:
+  thomas kanban --create app "Auth flow"
+  thomas kanban status APP-1 "In Progress"
+
 Agent sessions prepare a terminal tab by default.
 
 Run thomas help <command> for command details.
@@ -331,13 +376,17 @@ Run thomas help <command> for command details.
 function commandDoctor() {
   const rows = [
     ["git", hasCommand("git") ? "ok" : "missing", "required"],
+    ["sqlite3", hasCommand("sqlite3") ? "ok" : "missing", "required for local state"],
     ["gh", hasCommand("gh") ? "ok" : "missing", "needed for PR watch/checks"],
     ["codex", hasCommand("codex") ? "ok" : "missing", "optional agent"],
     ["claude", hasCommand("claude") ? "ok" : "missing", "optional agent"],
   ];
 
   printTable(rows, ["tool", "status", "purpose"]);
-  console.log(`config: ${CONFIG_PATH}`);
+  console.log(`state: ${STATE_DB_PATH}`);
+  if (fs.existsSync(CONFIG_PATH)) {
+    console.log(`legacy config: ${CONFIG_PATH}`);
+  }
 }
 
 function commandState(args) {
@@ -398,7 +447,7 @@ async function commandDashboard(args) {
 async function handleDashboardRequest(req, res) {
   const requestUrl = new URL(req.url || "/", "http://localhost");
   if (req.method === "GET" && requestUrl.pathname === "/") {
-    sendHtml(res, dashboardHtml());
+    sendHtml(res, dashboardHtml("index.html"));
     return;
   }
   if (req.method === "GET" && requestUrl.pathname === "/api/state") {
@@ -443,12 +492,37 @@ function handleDashboardAction(action, body) {
         "--worktrees-dir", body.worktreesDir,
         "--base", body.base,
         "--gh-user", body.githubUser,
+        "--identifier", body.identifier,
         "--agent-profile", body.agentProfile,
       ])));
     case "project/remove":
       return withCapturedOutput(() => projectRemove(compactArgs([body.name, body.force ? "--force" : null])));
     case "project/set-agent-profile":
       return withCapturedOutput(() => projectSetAgentProfile([body.name, body.agentProfile || "default"]));
+    case "project/set-identifier":
+      return withCapturedOutput(() => projectSetIdentifier([body.name, body.identifier]));
+    case "project/choose-repo":
+      return { repoPath: chooseProjectRepoPath() };
+    case "project/update":
+      return withCapturedOutput(() => projectUpdateFromDashboard(body));
+    case "kanban/create": {
+      const args = compactArgs([
+        body.project,
+        body.title,
+        "--description", body.description,
+        "--status", body.status,
+        "--agent", body.agent,
+        "--port", body.port,
+      ]);
+      if (body.launchMode === "detach") args.push("--detach");
+      if (body.launchMode === "terminal") args.push("--terminal", body.terminal || "auto");
+      if (body.command) args.push("--", "sh", "-lc", body.command);
+      return withCapturedOutput(() => kanbanCreate(args));
+    }
+    case "kanban/status":
+      return withCapturedOutput(() => kanbanStatus([body.ticketId, body.status]));
+    case "kanban/description":
+      return withCapturedOutput(() => kanbanDescription([body.ticketId, body.description || ""]));
     case "workspace/create": {
       const args = compactArgs([
         body.project,
@@ -497,7 +571,7 @@ function handleDashboardAction(action, body) {
     case "session/resume":
       return withCapturedOutput(() => sessionResume([body.id]));
     case "agent-profile/add":
-      return withCapturedOutput(() => commandAgentProfile(["add", body.name, body.command]));
+      return withCapturedOutput(() => commandAgentProfile(compactArgs(["add", body.name, body.command, "--type", body.type])));
     case "agent-profile/default":
       return withCapturedOutput(() => commandAgentProfile(["default", body.name]));
     case "agent-profile/remove":
@@ -606,30 +680,65 @@ function openBrowser(url) {
   child.unref();
 }
 
-function dashboardHtml() {
-  return fs.readFileSync(path.join(ROOT_DIR, "dashboard", "index.html"), "utf8");
+function dashboardHtml(fileName = "index.html") {
+  return fs.readFileSync(path.join(ROOT_DIR, "dashboard", fileName), "utf8");
 }
 
 function buildAppState(config) {
+  const workspaces = Object.values(config.workspaces)
+    .flatMap((projectWorkspaces) => Object.values(projectWorkspaces))
+    .sort((a, b) =>
+      `${a.project}/${a.name}`.localeCompare(`${b.project}/${b.name}`),
+    );
   return {
     version: config.version,
     cliVersion: PACKAGE.version,
     generatedAt: new Date().toISOString(),
-    configPath: CONFIG_PATH,
+    configPath: STATE_DB_PATH,
+    statePath: STATE_DB_PATH,
+    defaultGithubUser: detectDefaultGithubUsername(),
     projects: Object.values(config.projects).sort((a, b) =>
       a.name.localeCompare(b.name),
     ),
-    workspaces: Object.values(config.workspaces)
-      .flatMap((workspaces) => Object.values(workspaces))
-      .sort((a, b) =>
-        `${a.project}/${a.name}`.localeCompare(`${b.project}/${b.name}`),
-      ),
+    workspaces,
+    kanban: {
+      statuses: KANBAN_STATUSES,
+      tickets: workspaces
+        .filter((workspace) => workspace.kanban)
+        .map((workspace) => kanbanTicketState(config, workspace))
+        .sort((a, b) => a.sortKey.localeCompare(b.sortKey)),
+    },
     sessions: Object.values(config.sessions).map(appSessionState).sort((a, b) =>
       String(b.startedAt || b.openedAt || b.resumedAt || "").localeCompare(
         String(a.startedAt || a.openedAt || a.resumedAt || ""),
       ),
     ),
     settings: config.settings,
+  };
+}
+
+function kanbanTicketState(config, workspace) {
+  const project = config.projects[workspace.project] || {};
+  const ticket = workspace.kanban || {};
+  const number = Number(ticket.number || 0);
+  const identifier = project.identifier || defaultProjectIdentifier(workspace.project);
+  const ticketId = formatTicketId(identifier, number);
+  const status = normalizeKanbanStatus(ticket.status || "To-do");
+  return {
+    id: ticketId,
+    sortKey: `${workspace.project}/${String(number).padStart(8, "0")}`,
+    project: workspace.project,
+    projectIdentifier: identifier,
+    number,
+    title: ticket.title || ticketId,
+    description: ticket.description || "",
+    status,
+    workspace: workspace.name,
+    workspaceStatus: workspace.status,
+    branch: workspace.branch,
+    path: workspace.path,
+    prUrl: workspace.prUrl || null,
+    createdAt: ticket.createdAt || workspace.createdAt,
   };
 }
 
@@ -786,6 +895,11 @@ async function interactiveRegisterProject(rl) {
   const name = await ask(rl, "Project name", defaultName);
   const repoPath = await ask(rl, "Repo path", defaultRepo);
   const base = await ask(rl, "Base ref", "origin/main");
+  const identifier = await ask(
+    rl,
+    "Kanban identifier",
+    defaultProjectIdentifier(name),
+  );
   const ghUser = await ask(rl, "GitHub username for branch prefix", "");
   const worktreesDir = await ask(
     rl,
@@ -805,6 +919,7 @@ async function interactiveRegisterProject(rl) {
   const args = [name, repoPath];
   if (worktreesDir) args.push("--worktrees-dir", worktreesDir);
   if (base) args.push("--base", base);
+  if (identifier) args.push("--identifier", identifier);
   if (ghUser) args.push("--gh-user", ghUser);
   if (agentProfile !== "default") args.push("--agent-profile", agentProfile);
   if (setupScript) args.push("--setup-script", setupScript);
@@ -1470,6 +1585,10 @@ function commandProject(args) {
     case "info":
       projectInfo(args.slice(1));
       break;
+    case "set-identifier":
+    case "set-id":
+      projectSetIdentifier(args.slice(1));
+      break;
     case "set-agent-profile":
       projectSetAgentProfile(args.slice(1));
       break;
@@ -1495,6 +1614,7 @@ function projectAdd(args) {
       "main",
       "base",
       "gh-user",
+      "identifier",
       "agent-profile",
       "claude-profile",
       "setup-script",
@@ -1513,6 +1633,9 @@ function projectAdd(args) {
   );
   const mainBranch = parsed.base || parsed.main || "origin/main";
   const githubUser = parsed["gh-user"] || detectGithubUsername(repoPath);
+  const identifier = normalizeProjectIdentifier(
+    parsed.identifier || defaultProjectIdentifier(name),
+  );
   const agentProfile = normalizeOptionalAgentProfile(
     parsed["agent-profile"] || parsed["claude-profile"],
   );
@@ -1536,6 +1659,8 @@ function projectAdd(args) {
     repoPath,
     worktreesDir,
     mainBranch,
+    identifier,
+    kanbanNextNumber: 1,
     githubUser: githubUser || null,
     agentProfile,
     setupScript,
@@ -1549,6 +1674,7 @@ function projectAdd(args) {
   console.log(`repo: ${repoPath}`);
   console.log(`worktrees: ${worktreesDir}`);
   console.log(`base: ${mainBranch}`);
+  console.log(`identifier: ${identifier}`);
   console.log(`branch prefix: ${githubUser || "thomas"}/*`);
   console.log(`Agent profile: ${agentProfile || "default"}`);
   console.log(`Setup script: ${setupScript ? "configured" : "none"}`);
@@ -1561,6 +1687,7 @@ function projectList() {
     const active = workspaces.filter((ws) => ws.status === "active").length;
     return [
       project.name,
+      project.identifier || defaultProjectIdentifier(project.name),
       project.repoPath,
       project.mainBranch,
       project.agentProfile || "default",
@@ -1574,7 +1701,7 @@ function projectList() {
     return;
   }
 
-  printTable(rows, ["name", "repo", "base", "agent", "active", "worktrees"]);
+  printTable(rows, ["name", "id", "repo", "base", "agent", "active", "worktrees"]);
 }
 
 function projectInfo(args) {
@@ -1589,12 +1716,30 @@ function projectInfo(args) {
   console.log(`repo: ${project.repoPath}`);
   console.log(`worktrees: ${project.worktreesDir}`);
   console.log(`base: ${project.mainBranch}`);
+  console.log(`identifier: ${project.identifier || defaultProjectIdentifier(project.name)}`);
+  console.log(`next ticket: ${project.kanbanNextNumber || nextKanbanNumber(config, project.name)}`);
   console.log(`branch prefix: ${project.githubUser || "thomas"}/*`);
   const resolved = resolveAgentProfile(config, project.name);
   console.log(`Agent profile: ${project.agentProfile || "default"} (${resolved.name} -> ${resolved.command})`);
   console.log(`Setup script: ${project.setupScript?.content ? "configured" : "none"}`);
   if (project.remote) console.log(`remote: ${project.remote}`);
   console.log(`workspaces: ${workspaces.length}`);
+}
+
+function projectSetIdentifier(args) {
+  const [name, identifierInput] = args;
+  if (!name || !identifierInput) {
+    throw new CliError("Usage: thomas project set-identifier <name> <identifier>");
+  }
+  const config = loadConfig();
+  const project = requireProject(config, name);
+  project.identifier = normalizeProjectIdentifier(identifierInput);
+  project.kanbanNextNumber = Math.max(
+    Number(project.kanbanNextNumber || 1),
+    nextKanbanNumber(config, name),
+  );
+  saveConfig(config);
+  console.log(`Project ${name} identifier set to ${project.identifier}.`);
 }
 
 function projectSetAgentProfile(args, options = {}) {
@@ -1613,6 +1758,48 @@ function projectSetAgentProfile(args, options = {}) {
   delete project.claudeProfile;
   saveConfig(config);
   console.log(`Project ${name} agent profile set to ${profile || "default"}.`);
+}
+
+function projectUpdateFromDashboard(body) {
+  const name = body.name;
+  if (!name) throw new CliError("Missing project name.");
+  const config = loadConfig();
+  const project = requireProject(config, name);
+
+  if (body.identifier !== undefined) {
+    project.identifier = normalizeProjectIdentifier(body.identifier);
+  }
+  if (body.base !== undefined && String(body.base).trim()) {
+    project.mainBranch = String(body.base).trim();
+  }
+  if (body.githubUser !== undefined) {
+    const githubUser = String(body.githubUser || "").trim();
+    project.githubUser = githubUser ? sanitizeBranchSegment(githubUser) : null;
+  }
+  if (body.agentProfile !== undefined) {
+    const profile = normalizeOptionalAgentProfile(body.agentProfile);
+    if (profile && !config.settings.agentProfiles.profiles[profile]) {
+      throw new CliError(`Unknown agent profile: ${profile}`);
+    }
+    project.agentProfile = profile;
+  }
+  if (body.setupScript !== undefined) {
+    const content = String(body.setupScript || "");
+    project.setupScript = content.trim()
+      ? {
+          source: "dashboard",
+          content,
+          updatedAt: new Date().toISOString(),
+        }
+      : null;
+  }
+
+  project.kanbanNextNumber = Math.max(
+    Number(project.kanbanNextNumber || 1),
+    nextKanbanNumber(config, name),
+  );
+  saveConfig(config);
+  console.log(`Updated project ${name}.`);
 }
 
 function projectSetSetupScript(args) {
@@ -1648,6 +1835,164 @@ function projectRemove(args) {
   delete config.workspaces[name];
   saveConfig(config);
   console.log(`Removed project ${name}`);
+}
+
+function commandKanban(args) {
+  const normalized = normalizeKanbanArgs(args);
+  const sub = normalized[0] || "list";
+
+  if (sub === "--help" || sub === "-h" || sub === "help") {
+    printHelp("kanban");
+    return;
+  }
+
+  switch (sub) {
+    case "create":
+      kanbanCreate(normalized.slice(1));
+      break;
+    case "list":
+    case "ls":
+      kanbanList(normalized.slice(1));
+      break;
+    case "status":
+    case "move":
+      kanbanStatus(normalized.slice(1));
+      break;
+    case "description":
+    case "describe":
+      kanbanDescription(normalized.slice(1));
+      break;
+    case "project-id":
+    case "identifier":
+      projectSetIdentifier(normalized.slice(1));
+      break;
+    default:
+      throw new CliError(`Unknown kanban command: ${sub}`);
+  }
+}
+
+function normalizeKanbanArgs(args) {
+  if (args[0] === "--create") return ["create", ...args.slice(1)];
+  if (args[0] === "--list") return ["list", ...args.slice(1)];
+  if (args[0] === "--status") return ["status", ...args.slice(1)];
+  if (args[0] === "--project-id" || args[0] === "--identifier") {
+    return ["project-id", ...args.slice(1)];
+  }
+  return args;
+}
+
+function kanbanCreate(args) {
+  const parsed = parseOptions(args, {
+    boolean: ["attach", "detach"],
+    string: ["status", "description", "agent", "session", "port", "terminal", "base"],
+  });
+  const [projectName, ...titleParts] = parsed._;
+  if (!projectName) {
+    throw new CliError("Usage: thomas kanban --create <project> [title] [options]");
+  }
+
+  const config = loadConfig();
+  const project = requireProject(config, projectName);
+  const number = nextKanbanNumber(config, projectName);
+  const identifier = project.identifier || defaultProjectIdentifier(projectName);
+  const ticketId = formatTicketId(identifier, number);
+  const workspaceName = normalizeName(ticketId.toLowerCase(), "workspace");
+  const status = normalizeKanbanStatus(parsed.status || "To-do");
+  const title = titleParts.join(" ").trim() || ticketId;
+  const description = parsed.description || "";
+
+  const createArgs = [projectName, workspaceName];
+  if (parsed.base) createArgs.push("--base", parsed.base);
+  if (parsed.agent) createArgs.push("--agent", parsed.agent);
+  if (parsed.session) createArgs.push("--session", parsed.session);
+  if (parsed.port) createArgs.push("--port", parsed.port);
+  if (parsed.terminal) createArgs.push("--terminal", parsed.terminal);
+  if (parsed.attach) createArgs.push("--attach");
+  if (parsed.detach) createArgs.push("--detach");
+  if (parsed["--"].length > 0) createArgs.push("--", ...parsed["--"]);
+
+  workspaceCreate(createArgs);
+
+  const updatedConfig = loadConfig();
+  const workspace = requireWorkspace(updatedConfig, projectName, workspaceName);
+  workspace.kanban = {
+    number,
+    title,
+    description,
+    status,
+    createdAt: workspace.createdAt || new Date().toISOString(),
+  };
+  const updatedProject = requireProject(updatedConfig, projectName);
+  updatedProject.identifier = identifier;
+  updatedProject.kanbanNextNumber = Math.max(number + 1, nextKanbanNumber(updatedConfig, projectName));
+  saveConfig(updatedConfig);
+
+  console.log(`ticket: ${ticketId}`);
+  console.log(`status: ${status}`);
+  console.log(`title: ${title}`);
+}
+
+function kanbanList(args) {
+  const parsed = parseOptions(args, { boolean: ["all"] });
+  const [projectName] = parsed._;
+  const config = loadConfig();
+  if (projectName) requireProject(config, projectName);
+  const rows = [];
+
+  for (const workspace of Object.values(config.workspaces).flatMap((items) => Object.values(items))) {
+    if (!workspace.kanban) continue;
+    if (projectName && workspace.project !== projectName) continue;
+    if (!parsed.all && workspace.status !== "active") continue;
+    const ticket = kanbanTicketState(config, workspace);
+    rows.push([
+      ticket.id,
+      ticket.status,
+      ticket.project,
+      ticket.workspace,
+      ticket.title,
+      ticket.branch || "",
+    ]);
+  }
+
+  rows.sort((a, b) => a[0].localeCompare(b[0], undefined, { numeric: true }));
+  if (rows.length === 0) {
+    console.log("No kanban tickets found.");
+    return;
+  }
+  printTable(rows, ["ticket", "status", "project", "workspace", "title", "branch"]);
+}
+
+function kanbanStatus(args) {
+  const [ticketInput, ...statusParts] = args;
+  const statusInput = statusParts.join(" ");
+  if (!ticketInput || !statusInput) {
+    throw new CliError("Usage: thomas kanban status <ticket-id> <status>");
+  }
+  const status = normalizeKanbanStatus(statusInput);
+  const config = loadConfig();
+  const workspace = findKanbanWorkspace(config, ticketInput);
+  workspace.kanban.status = status;
+  workspace.kanban.updatedAt = new Date().toISOString();
+  saveConfig(config);
+  console.log(`${kanbanTicketState(config, workspace).id} -> ${status}`);
+}
+
+function kanbanDescription(args) {
+  const [ticketInput, ...descriptionParts] = args;
+  if (!ticketInput) {
+    throw new CliError("Usage: thomas kanban description <ticket-id> <description>");
+  }
+  const config = loadConfig();
+  const workspace = findKanbanWorkspace(config, ticketInput);
+  workspace.kanban = workspace.kanban || {};
+  const status = normalizeKanbanStatus(workspace.kanban.status || "To-do");
+  if (status !== "To-do") {
+    throw new CliError("Ticket description can only be edited while status is To-do.");
+  }
+  workspace.kanban.description = descriptionParts.join(" ");
+  workspace.kanban.updatedAt = new Date().toISOString();
+  saveConfig(config);
+  console.log(`${kanbanTicketState(config, workspace).id} description updated.`);
 }
 
 function commandWorkspace(args) {
@@ -1864,14 +2209,19 @@ function commandAgentProfile(args, options = {}) {
   const config = loadConfig();
   switch (sub) {
     case "add": {
-      const [name, command, ...extra] = args.slice(1);
-      if (!name || !command || extra.length > 0) {
-        throw new CliError(`Usage: thomas ${commandName} add <name> <command>`);
+      const parsed = parseOptions(args.slice(1), {
+        string: ["type", "command"],
+      });
+      const [name, commandArg, ...extra] = parsed._;
+      if (!name || extra.length > 0) {
+        throw new CliError(`Usage: thomas ${commandName} add <name> [command] [--type claude|codex]`);
       }
       validateAgentProfileName(name, { allowBuiltin: false });
-      config.settings.agentProfiles.profiles[name] = { name, command };
+      const type = normalizeAgentProfileType(parsed.type || name);
+      const command = parsed.command || commandArg || defaultAgentCommand(type);
+      config.settings.agentProfiles.profiles[name] = { name, type, command };
       saveConfig(config);
-      console.log(`Agent profile ${name} -> ${command}`);
+      console.log(`Agent profile ${name} (${type}) -> ${command}`);
       break;
     }
     case "list":
@@ -1913,7 +2263,7 @@ function commandAgentProfile(args, options = {}) {
     case "resolve": {
       const project = args[1] || null;
       const profile = resolveAgentProfile(config, project);
-      console.log(`${profile.name}: ${profile.command}`);
+      console.log(`${profile.name}: ${profile.type || "claude"} -> ${profile.command}`);
       break;
     }
     default:
@@ -1928,11 +2278,12 @@ function printAgentProfiles(config) {
   printTable(
     profiles.map((profile) => [
       profile.name,
+      profile.type || "claude",
       profile.command,
       profile.name === defaultName ? "yes" : "",
       isBuiltinAgentProfile(profile.name) ? "yes" : "",
     ]),
-    ["name", "command", "default", "built-in"],
+    ["name", "type", "command", "default", "built-in"],
   );
 }
 
@@ -3008,6 +3359,88 @@ function defaultWorkspaceBranch(project, workspaceName) {
   return `${prefix}/${sanitizeBranchSegment(workspaceName)}`;
 }
 
+function defaultProjectIdentifier(name) {
+  const parts = String(name || "")
+    .split(/[^A-Za-z0-9]+/)
+    .filter(Boolean);
+  const raw = parts.length === 0
+    ? "PROJECT"
+    : parts.length === 1
+      ? parts[0]
+      : `${parts.slice(0, -1).map((part) => part[0]).join("")}${parts[parts.length - 1]}`;
+  return normalizeProjectIdentifier(
+    /^[A-Za-z]/.test(raw) ? raw : `P${raw}`,
+  );
+}
+
+function normalizeProjectIdentifier(identifier) {
+  const normalized = String(identifier || "")
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z0-9]+/g, "");
+  if (!normalized) throw new CliError("Project identifier cannot be empty.");
+  if (!/^[A-Z][A-Z0-9]*$/.test(normalized)) {
+    throw new CliError("Project identifier must start with a letter and contain only letters or numbers.");
+  }
+  return normalized;
+}
+
+function formatTicketId(identifier, number) {
+  const parsed = Number.parseInt(number, 10);
+  if (!Number.isInteger(parsed) || parsed < 1) {
+    throw new CliError(`Invalid ticket number: ${number}`);
+  }
+  return `${normalizeProjectIdentifier(identifier)}-${parsed}`;
+}
+
+function normalizeKanbanStatus(status) {
+  const normalized = String(status || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[-_\s]+/g, " ");
+  const match = KANBAN_STATUSES.find(
+    (value) => value.toLowerCase().replace(/[-_\s]+/g, " ") === normalized,
+  );
+  if (!match) {
+    throw new CliError(`Unknown kanban status: ${status}\nUse one of: ${KANBAN_STATUSES.join(", ")}`);
+  }
+  return match;
+}
+
+function nextKanbanNumber(config, projectName) {
+  const project = requireProject(config, projectName);
+  const configured = Number.parseInt(project.kanbanNextNumber || "1", 10);
+  const maxExisting = Object.values(config.workspaces[projectName] || {})
+    .map((workspace) => Number.parseInt(workspace.kanban?.number || "0", 10))
+    .filter((number) => Number.isInteger(number) && number > 0)
+    .reduce((max, number) => Math.max(max, number), 0);
+  return Math.max(Number.isInteger(configured) ? configured : 1, maxExisting + 1);
+}
+
+function findKanbanWorkspace(config, ticketInput) {
+  const parsed = parseTicketId(ticketInput);
+  const matches = [];
+  for (const project of Object.values(config.projects)) {
+    const identifier = project.identifier || defaultProjectIdentifier(project.name);
+    if (identifier !== parsed.identifier) continue;
+    const workspace = Object.values(config.workspaces[project.name] || {})
+      .find((item) => Number(item.kanban?.number) === parsed.number);
+    if (workspace) matches.push(workspace);
+  }
+  if (matches.length === 1) return matches[0];
+  if (matches.length > 1) throw new CliError(`Ambiguous ticket id: ${ticketInput}`);
+  throw new CliError(`Unknown kanban ticket: ${ticketInput}`);
+}
+
+function parseTicketId(ticketInput) {
+  const match = String(ticketInput || "").trim().match(/^([A-Za-z][A-Za-z0-9]*)-(\d+)$/);
+  if (!match) throw new CliError(`Invalid ticket id: ${ticketInput}`);
+  return {
+    identifier: normalizeProjectIdentifier(match[1]),
+    number: Number.parseInt(match[2], 10),
+  };
+}
+
 function detectGithubUsername(repoPath) {
   const envUser =
     process.env.THOMAS_CLI_GH_USER ||
@@ -3027,6 +3460,36 @@ function detectGithubUsername(repoPath) {
     allowFailure: true,
   }).stdout.trim();
   return ghUser ? sanitizeBranchSegment(ghUser) : null;
+}
+
+function detectDefaultGithubUsername() {
+  const envUser =
+    process.env.THOMAS_CLI_GH_USER ||
+    process.env.GITHUB_USER ||
+    process.env.GH_USER;
+  if (envUser) return sanitizeBranchSegment(envUser);
+  if (!hasCommand("gh")) return null;
+
+  const ghUser = run("gh", ["api", "user", "--jq", ".login"], {
+    allowFailure: true,
+  }).stdout.trim();
+  return ghUser ? sanitizeBranchSegment(ghUser) : null;
+}
+
+function chooseProjectRepoPath() {
+  if (process.platform !== "darwin") {
+    throw new CliError("Folder picker is currently supported on macOS only.");
+  }
+  const result = run("osascript", [
+    "-e",
+    'POSIX path of (choose folder with prompt "Select project repository")',
+  ], {
+    allowFailure: true,
+  });
+  if (result.status !== 0) {
+    throw new CliError((result.stderr || result.stdout || "Folder selection cancelled.").trim());
+  }
+  return result.stdout.trim().replace(/\/$/, "");
 }
 
 function readSetupScriptInput(input) {
@@ -3249,10 +3712,30 @@ function defaultAgentProfiles() {
   return {
     default: "claude",
     profiles: {
-      claude: { name: "claude", command: "claude" },
-      codex: { name: "codex", command: "codex" },
+      claude: { name: "claude", type: "claude", command: "claude" },
+      codex: { name: "codex", type: "codex", command: "codex" },
     },
   };
+}
+
+function normalizeAgentProfile(name, profile) {
+  const raw = typeof profile === "string" ? { command: profile } : profile || {};
+  const type = normalizeAgentProfileType(raw.type || name);
+  return {
+    name: raw.name || name,
+    type,
+    command: raw.command || defaultAgentCommand(type),
+  };
+}
+
+function normalizeAgentProfileType(type) {
+  const normalized = String(type || "").trim().toLowerCase();
+  if (normalized === "codex") return "codex";
+  return "claude";
+}
+
+function defaultAgentCommand(type) {
+  return normalizeAgentProfileType(type) === "codex" ? "codex" : "claude";
 }
 
 function normalizeConfig(config) {
@@ -3272,10 +3755,7 @@ function normalizeConfig(config) {
     },
   };
   for (const [name, profile] of Object.entries(agentProfiles.profiles)) {
-    agentProfiles.profiles[name] = {
-      name: profile.name || name,
-      command: profile.command,
-    };
+    agentProfiles.profiles[name] = normalizeAgentProfile(name, profile);
   }
   if (!agentProfiles.profiles[agentProfiles.default]) {
     agentProfiles.default = defaults.settings.agentProfiles.default;
@@ -3312,6 +3792,13 @@ function normalizeConfig(config) {
   delete config.settings.claudeProfiles;
   delete config.settings.notifications.scope;
   for (const project of Object.values(config.projects)) {
+    project.identifier = normalizeProjectIdentifier(
+      project.identifier || defaultProjectIdentifier(project.name),
+    );
+    project.kanbanNextNumber = Math.max(
+      Number.parseInt(project.kanbanNextNumber || "1", 10) || 1,
+      nextKanbanNumberForProjectData(config, project.name),
+    );
     if (!project.agentProfile && project.claudeProfile) {
       project.agentProfile = project.claudeProfile;
     }
@@ -3327,6 +3814,14 @@ function normalizeConfig(config) {
     }
   }
   return config;
+}
+
+function nextKanbanNumberForProjectData(config, projectName) {
+  const maxExisting = Object.values(config.workspaces?.[projectName] || {})
+    .map((workspace) => Number.parseInt(workspace.kanban?.number || "0", 10))
+    .filter((number) => Number.isInteger(number) && number > 0)
+    .reduce((max, number) => Math.max(max, number), 0);
+  return maxExisting + 1;
 }
 
 function printSettings(config) {
@@ -3406,7 +3901,7 @@ function parseBoolean(value) {
 function ensureHookScript(config) {
   fs.mkdirSync(HOOKS_DIR, { recursive: true });
   const notifierExecutable = ensureNotifierApp(config);
-  const script = buildHookScript(CONFIG_PATH, notifierExecutable);
+  const script = buildHookScript(STATE_DB_PATH, notifierExecutable);
   if (!fs.existsSync(HOOK_SCRIPT_PATH) || fs.readFileSync(HOOK_SCRIPT_PATH, "utf8") !== script) {
     fs.writeFileSync(HOOK_SCRIPT_PATH, script);
     fs.chmodSync(HOOK_SCRIPT_PATH, 0o755);
@@ -3521,7 +4016,7 @@ function refreshHookScriptIfInstalled(config) {
   }
 }
 
-function buildHookScript(configPath, notifierExecutable) {
+function buildHookScript(stateDbPath, notifierExecutable) {
   return `#!/usr/bin/env node
 "use strict";
 
@@ -3529,7 +4024,7 @@ const fs = require("fs");
 const path = require("path");
 const { spawnSync } = require("child_process");
 
-const CONFIG_PATH = ${JSON.stringify(configPath)};
+const STATE_DB_PATH = ${JSON.stringify(stateDbPath)};
 const NOTIFIER_EXECUTABLE = ${JSON.stringify(notifierExecutable || "")};
 
 function main() {
@@ -3577,7 +4072,15 @@ function notificationText(agent, event, hook) {
 
 function loadConfig() {
   try {
-    return JSON.parse(fs.readFileSync(CONFIG_PATH, "utf8"));
+    const result = spawnSync(
+      "sqlite3",
+      ["-json", STATE_DB_PATH, "SELECT data FROM settings WHERE id = 1"],
+      { encoding: "utf8", timeout: 5000 },
+    );
+    if (result.status !== 0) return {};
+    const rows = JSON.parse(result.stdout || "[]");
+    const settings = rows[0]?.data ? JSON.parse(rows[0].data) : {};
+    return { settings };
   } catch (error) {
     return {};
   }
@@ -3919,18 +4422,158 @@ function shellJoin(values) {
 }
 
 function loadConfig() {
-  if (!fs.existsSync(CONFIG_PATH)) {
-    return defaultConfig();
+  ensureStateDb();
+  if (fs.existsSync(CONFIG_PATH) && !stateDbHasData()) {
+    saveConfig(JSON.parse(fs.readFileSync(CONFIG_PATH, "utf8")));
   }
 
-  return normalizeConfig(JSON.parse(fs.readFileSync(CONFIG_PATH, "utf8")));
+  return normalizeConfig(readConfigFromStateDb());
 }
 
 function saveConfig(config) {
+  const normalized = normalizeConfig(config);
+  ensureStateDb();
+
+  const statements = [
+    "BEGIN IMMEDIATE;",
+    "DELETE FROM meta;",
+    "DELETE FROM settings;",
+    "DELETE FROM projects;",
+    "DELETE FROM workspaces;",
+    "DELETE FROM sessions;",
+    `INSERT INTO meta (key, value) VALUES ('schema_version', ${sqlValue("1")});`,
+    `INSERT INTO meta (key, value) VALUES ('state_version', ${sqlValue(String(normalized.version || 1))});`,
+    `INSERT INTO settings (id, data) VALUES (1, ${sqlJson(normalized.settings)});`,
+  ];
+
+  for (const [name, project] of Object.entries(normalized.projects).sort()) {
+    statements.push(
+      `INSERT INTO projects (name, data) VALUES (${sqlValue(name)}, ${sqlJson(project)});`,
+    );
+  }
+
+  for (const [projectName, projectWorkspaces] of Object.entries(normalized.workspaces).sort()) {
+    for (const [name, workspace] of Object.entries(projectWorkspaces).sort()) {
+      statements.push(
+        `INSERT INTO workspaces (project, name, data) VALUES (${sqlValue(projectName)}, ${sqlValue(name)}, ${sqlJson(workspace)});`,
+      );
+    }
+  }
+
+  for (const [id, session] of Object.entries(normalized.sessions).sort()) {
+    statements.push(
+      `INSERT INTO sessions (id, data) VALUES (${sqlValue(id)}, ${sqlJson(session)});`,
+    );
+  }
+
+  statements.push("COMMIT;");
+  sqliteExec(statements.join("\n"));
+}
+
+function ensureStateDb() {
   fs.mkdirSync(CONFIG_DIR, { recursive: true });
-  const tmp = `${CONFIG_PATH}.tmp`;
-  fs.writeFileSync(tmp, `${JSON.stringify(config, null, 2)}\n`);
-  fs.renameSync(tmp, CONFIG_PATH);
+  if (!hasCommand("sqlite3")) {
+    throw new CliError("Missing sqlite3. Install SQLite to use thomas state.");
+  }
+  sqliteExec(`
+CREATE TABLE IF NOT EXISTS meta (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS settings (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  data TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS projects (
+  name TEXT PRIMARY KEY,
+  data TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS workspaces (
+  project TEXT NOT NULL,
+  name TEXT NOT NULL,
+  data TEXT NOT NULL,
+  PRIMARY KEY (project, name)
+);
+CREATE TABLE IF NOT EXISTS sessions (
+  id TEXT PRIMARY KEY,
+  data TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS workspaces_project_index ON workspaces (project);
+`);
+}
+
+function stateDbHasData() {
+  const rows = sqliteJson(`
+SELECT
+  (SELECT COUNT(*) FROM settings) +
+  (SELECT COUNT(*) FROM projects) +
+  (SELECT COUNT(*) FROM workspaces) +
+  (SELECT COUNT(*) FROM sessions) AS count;
+`);
+  return Number(rows[0]?.count || 0) > 0;
+}
+
+function readConfigFromStateDb() {
+  const config = defaultConfig();
+  const settings = sqliteJson("SELECT data FROM settings WHERE id = 1;")[0]?.data;
+  if (settings) {
+    config.settings = jsonParse(settings, defaultSettings());
+  }
+
+  for (const row of sqliteJson("SELECT name, data FROM projects ORDER BY name;")) {
+    config.projects[row.name] = jsonParse(row.data, {});
+  }
+
+  for (const row of sqliteJson("SELECT project, name, data FROM workspaces ORDER BY project, name;")) {
+    if (!config.workspaces[row.project]) config.workspaces[row.project] = {};
+    config.workspaces[row.project][row.name] = jsonParse(row.data, {});
+  }
+
+  for (const row of sqliteJson("SELECT id, data FROM sessions ORDER BY id;")) {
+    config.sessions[row.id] = jsonParse(row.data, {});
+  }
+
+  const version = sqliteJson("SELECT value FROM meta WHERE key = 'state_version';")[0]?.value;
+  config.version = Number.parseInt(version || "1", 10) || 1;
+  return config;
+}
+
+function jsonParse(value, fallback) {
+  try {
+    return JSON.parse(value);
+  } catch (error) {
+    return fallback;
+  }
+}
+
+function sqliteExec(sql) {
+  const result = spawnSync("sqlite3", [STATE_DB_PATH], {
+    input: sql,
+    encoding: "utf8",
+  });
+  if (result.status !== 0) {
+    throw new CliError(`SQLite state error: ${result.stderr.trim() || result.stdout.trim()}`);
+  }
+  return result.stdout;
+}
+
+function sqliteJson(sql) {
+  const result = spawnSync("sqlite3", ["-json", STATE_DB_PATH, sql], {
+    encoding: "utf8",
+  });
+  if (result.status !== 0) {
+    throw new CliError(`SQLite state error: ${result.stderr.trim() || result.stdout.trim()}`);
+  }
+  return jsonParse(result.stdout || "[]", []);
+}
+
+function sqlJson(value) {
+  return sqlValue(JSON.stringify(value ?? null));
+}
+
+function sqlValue(value) {
+  if (value === null || value === undefined) return "NULL";
+  return `'${String(value).replace(/'/g, "''")}'`;
 }
 
 function requireProject(config, name) {

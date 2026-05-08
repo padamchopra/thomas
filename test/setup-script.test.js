@@ -31,6 +31,24 @@ function git(cwd, args) {
   return result;
 }
 
+function state(home) {
+  return JSON.parse(run(["state"], { home }).stdout);
+}
+
+function projectState(home, name) {
+  const project = state(home).projects.find((item) => item.name === name);
+  assert.ok(project, `expected project ${name}`);
+  return project;
+}
+
+function workspaceState(home, project, name) {
+  const workspace = state(home).workspaces.find(
+    (item) => item.project === project && item.name === name,
+  );
+  assert.ok(workspace, `expected workspace ${project}/${name}`);
+  return workspace;
+}
+
 function makeGitRepo(root) {
   fs.mkdirSync(root, { recursive: true });
   git(root, ["init", "-b", "main"]);
@@ -42,7 +60,7 @@ function makeGitRepo(root) {
   return root;
 }
 
-test("project add --setup-script stores script contents in thomas config", () => {
+test("project add --setup-script stores script contents in thomas state", () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "thomas-setup-add-"));
   const home = path.join(tmp, "home");
   const repo = makeGitRepo(path.join(tmp, "repo"));
@@ -51,9 +69,9 @@ test("project add --setup-script stores script contents in thomas config", () =>
 
   run(["project", "add", "app", repo, "--base", "main", "--setup-script", setupPath], { home });
 
-  const config = JSON.parse(fs.readFileSync(path.join(home, "config.json"), "utf8"));
-  assert.equal(config.projects.app.setupScript.content, "#!/bin/sh\necho configured > setup-output.txt\n");
-  assert.equal(config.projects.app.setupScript.source, setupPath);
+  const project = projectState(home, "app");
+  assert.equal(project.setupScript.content, "#!/bin/sh\necho configured > setup-output.txt\n");
+  assert.equal(project.setupScript.source, setupPath);
 });
 
 test("project add --setup-script - stores script contents from stdin", () => {
@@ -67,9 +85,9 @@ test("project add --setup-script - stores script contents from stdin", () => {
     input: script,
   });
 
-  const config = JSON.parse(fs.readFileSync(path.join(home, "config.json"), "utf8"));
-  assert.equal(config.projects.app.setupScript.content, script);
-  assert.equal(config.projects.app.setupScript.source, "-");
+  const project = projectState(home, "app");
+  assert.equal(project.setupScript.content, script);
+  assert.equal(project.setupScript.source, "-");
 });
 
 test("workspace create runs the stored setup script in the new worktree", () => {
@@ -101,10 +119,108 @@ test("project set-setup-script updates and clears scripts for existing projects"
 
   run(["project", "add", "app", repo, "--base", "main"], { home });
   run(["project", "set-setup-script", "app", setupPath], { home });
-  let config = JSON.parse(fs.readFileSync(path.join(home, "config.json"), "utf8"));
-  assert.equal(config.projects.app.setupScript.content, "#!/bin/sh\necho updated\n");
+  assert.equal(projectState(home, "app").setupScript.content, "#!/bin/sh\necho updated\n");
 
   run(["project", "set-setup-script", "app", "none"], { home });
-  config = JSON.parse(fs.readFileSync(path.join(home, "config.json"), "utf8"));
-  assert.equal(config.projects.app.setupScript, null);
+  assert.equal(projectState(home, "app").setupScript, null);
+});
+
+test("state migrates legacy config json into sqlite", () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "thomas-state-migrate-"));
+  const home = path.join(tmp, "home");
+  const repo = makeGitRepo(path.join(tmp, "repo"));
+  fs.mkdirSync(home, { recursive: true });
+  fs.writeFileSync(
+    path.join(home, "config.json"),
+    `${JSON.stringify({
+      version: 1,
+      projects: {
+        app: {
+          name: "app",
+          repoPath: repo,
+          worktreesDir: path.join(home, "worktrees", "app"),
+          mainBranch: "main",
+          identifier: "APP",
+          kanbanNextNumber: 1,
+          githubUser: "thomas",
+          agentProfile: null,
+          setupScript: null,
+          createdAt: "2026-01-01T00:00:00.000Z",
+        },
+      },
+      workspaces: {},
+      sessions: {},
+      settings: {},
+    })}\n`,
+  );
+
+  assert.equal(projectState(home, "app").identifier, "APP");
+  assert.ok(fs.existsSync(path.join(home, "thomas.db")));
+});
+
+test("agent profiles store type and default launch command", () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "thomas-agent-profile-"));
+  const home = path.join(tmp, "home");
+
+  run(["agent-profile", "add", "reviewer", "--type", "codex"], { home });
+  run(["agent-profile", "default", "reviewer"], { home });
+
+  const profileState = state(home);
+  assert.equal(profileState.settings.agentProfiles.default, "reviewer");
+  assert.equal(profileState.settings.agentProfiles.profiles.reviewer.type, "codex");
+  assert.equal(profileState.settings.agentProfiles.profiles.reviewer.command, "codex");
+  assert.equal(profileState.settings.agentProfiles.profiles.claude.type, "claude");
+  assert.equal(profileState.settings.agentProfiles.profiles.codex.type, "codex");
+});
+
+test("kanban create makes a numbered workspace-backed ticket", () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "thomas-kanban-create-"));
+  const home = path.join(tmp, "home");
+  const repo = makeGitRepo(path.join(tmp, "repo"));
+
+  run(["project", "add", "app", repo, "--base", "main", "--identifier", "APP"], { home });
+  run(["kanban", "--create", "app", "First ticket"], { home });
+  run(["kanban", "--create", "app", "Second ticket", "--status", "In Progress"], { home });
+
+  const project = projectState(home, "app");
+  const first = workspaceState(home, "app", "app-1");
+  const second = workspaceState(home, "app", "app-2");
+  assert.equal(project.identifier, "APP");
+  assert.equal(project.kanbanNextNumber, 3);
+  assert.equal(first.kanban.number, 1);
+  assert.equal(first.kanban.title, "First ticket");
+  assert.equal(first.kanban.status, "To-do");
+  assert.equal(second.kanban.status, "In Progress");
+  assert.equal(first.branch, "thomas/app-1");
+});
+
+test("kanban status moves a ticket manually", () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "thomas-kanban-status-"));
+  const home = path.join(tmp, "home");
+  const repo = makeGitRepo(path.join(tmp, "repo"));
+
+  run(["project", "add", "app", repo, "--base", "main", "--identifier", "APP"], { home });
+  run(["kanban", "create", "app", "Review this"], { home });
+  run(["kanban", "status", "APP-1", "PR Review"], { home });
+
+  assert.equal(workspaceState(home, "app", "app-1").kanban.status, "PR Review");
+});
+
+test("kanban descriptions can only be edited while todo", () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "thomas-kanban-description-"));
+  const home = path.join(tmp, "home");
+  const repo = makeGitRepo(path.join(tmp, "repo"));
+
+  run(["project", "add", "app", repo, "--base", "main", "--identifier", "APP"], { home });
+  run(["kanban", "create", "app", "Describe this", "--description", "initial"], { home });
+  run(["kanban", "description", "APP-1", "updated"], { home });
+  run(["kanban", "status", "APP-1", "In Progress"], { home });
+  const blocked = run(["kanban", "description", "APP-1", "blocked"], {
+    home,
+    allowFailure: true,
+  });
+
+  assert.equal(workspaceState(home, "app", "app-1").kanban.description, "updated");
+  assert.notEqual(blocked.status, 0);
+  assert.match(blocked.stderr, /only be edited while status is To-do/);
 });
