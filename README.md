@@ -1,6 +1,6 @@
-# conductor-cli
+# thomas
 
-`conductor-cli` is a small CLI for running AI coding work in isolated git worktrees.
+`thomas` is a small CLI for running AI coding work in isolated git worktrees.
 
 Use it when you want several Codex or Claude sessions working on separate branches without touching your main checkout.
 
@@ -13,7 +13,7 @@ Use it when you want several Codex or Claude sessions working on separate branch
 Then run:
 
 ```sh
-conductor-cli
+thomas
 ```
 
 The installer links the CLI into `/usr/local/bin` when possible, otherwise `~/.local/bin`.
@@ -28,7 +28,7 @@ The installer links the CLI into `/usr/local/bin` when possible, otherwise `~/.l
 Check your setup:
 
 ```sh
-conductor-cli doctor
+thomas doctor
 ```
 
 ## How It Works
@@ -38,10 +38,10 @@ A **project** is a registered git repo.
 A **workspace** is one task branch plus one git worktree:
 
 ```text
-project: conductor-cli
+project: thomas
 workspace: add-pr-cleanup
 branch: padamchopra/add-pr-cleanup
-path: ~/.conductor-cli/worktrees/conductor-cli/add-pr-cleanup
+path: ~/.thomas/worktrees/thomas/add-pr-cleanup
 ```
 
 Each workspace can run its own agent session.
@@ -53,7 +53,7 @@ printed command inside it so the agent gets a real interactive terminal.
 Start the local web dashboard:
 
 ```sh
-conductor-cli dashboard
+thomas dashboard
 ```
 
 It serves a localhost dashboard for the same day-to-day actions as the CLI:
@@ -68,14 +68,14 @@ It serves a localhost dashboard for the same day-to-day actions as the CLI:
 By default the dashboard binds to `127.0.0.1:4587` and opens your browser when run from an interactive terminal. You can override that:
 
 ```sh
-conductor-cli dashboard --port 0 --no-open
-conductor-cli dashboard --host 127.0.0.1 --port 8080
+thomas dashboard --port 0 --no-open
+thomas dashboard --host 127.0.0.1 --port 8080
 ```
 
 You can still use the terminal menu when you want a keyboard-driven flow:
 
 ```sh
-conductor-cli menu
+thomas menu
 ```
 
 ## Useful Commands
@@ -83,57 +83,57 @@ conductor-cli menu
 Register a repo:
 
 ```sh
-conductor-cli project add app ~/src/app
-conductor-cli project add app ~/src/app --setup-script ./scripts/bootstrap-worktree.sh
+thomas project add app ~/src/app
+thomas project add app ~/src/app --setup-script ./scripts/bootstrap-worktree.sh
 ```
 
-Setup scripts are copied into `~/.conductor-cli/config.json` rather than linked
+Setup scripts are copied into `~/.thomas/config.json` rather than linked
 from the original file path, then run automatically from each new workspace
 root after `git worktree add`:
 
 ```sh
-conductor-cli project set-setup-script app ./scripts/bootstrap-worktree.sh
-conductor-cli project set-setup-script app none
+thomas project set-setup-script app ./scripts/bootstrap-worktree.sh
+thomas project set-setup-script app none
 ```
 
-When a setup script runs, conductor exports `CONDUCTOR_PROJECT`,
-`CONDUCTOR_WORKSPACE`, `CONDUCTOR_BRANCH`, `CONDUCTOR_WORKSPACE_PATH`, and
-`CONDUCTOR_REPO_PATH`.
+When a setup script runs, thomas exports `THOMAS_PROJECT`,
+`THOMAS_WORKSPACE`, `THOMAS_BRANCH`, `THOMAS_WORKSPACE_PATH`, and
+`THOMAS_REPO_PATH`.
 
 Create a workspace and prepare Codex:
 
 ```sh
-conductor-cli workspace create app auth --agent codex
+thomas workspace create app auth --agent codex
 ```
 
 Prepare a session in an existing workspace:
 
 ```sh
-conductor-cli session start app auth --agent claude
+thomas session start app auth --agent claude
 ```
 
 Resume a stored agent session:
 
 ```sh
-conductor-cli session resume <session-id>
+thomas session resume <session-id>
 ```
 
 List workspaces:
 
 ```sh
-conductor-cli workspace list app
+thomas workspace list app
 ```
 
 Remove a workspace:
 
 ```sh
-conductor-cli workspace remove app auth
+thomas workspace remove app auth
 ```
 
 Clean up merged PR workspaces:
 
 ```sh
-conductor-cli pr watch app --once --cleanup
+thomas pr watch app --once --cleanup
 ```
 
 For continuous cleanup, omit `--once`.
@@ -141,24 +141,24 @@ For continuous cleanup, omit `--once`.
 Configure session completion sounds:
 
 ```sh
-conductor-cli settings show
-conductor-cli settings terminal warp
-conductor-cli settings sound Glass
-conductor-cli settings hooks install all
+thomas settings show
+thomas settings terminal warp
+thomas settings sound Glass
+thomas settings hooks install all
 ```
 
 Agent profiles choose the command used when a session starts. `claude` and
 `codex` are built in, and `claude` is the default:
 
 ```sh
-conductor-cli agent-profile list
-conductor-cli agent-profile default codex
-conductor-cli agent-profile add work claude-work
-conductor-cli project set-agent-profile app work
+thomas agent-profile list
+thomas agent-profile default codex
+thomas agent-profile add work claude-work
+thomas project set-agent-profile app work
 ```
 
 Claude uses `Stop` and `SubagentStop` hooks. Codex uses its `notify` command.
-Hook notifications only fire for conductor-launched sessions, even though the
+Hook notifications only fire for thomas-launched sessions, even though the
 Claude and Codex hook entries are installed globally.
 
 Terminal sessions auto-detect your terminal on macOS:
@@ -168,13 +168,13 @@ Terminal sessions auto-detect your terminal on macOS:
 - Warp opens a new tab at the workspace
 
 The agent does not auto-run in the new terminal. Run the printed
-`conductor-cli session run <id>` command there; the dashboard shows it on the
+`thomas session run <id>` command there; the dashboard shows it on the
 session card. Use `--detach` only when you explicitly want background log mode.
 
 ## Defaults
 
-- Config lives in `~/.conductor-cli/config.json`.
-- Worktrees live in `~/.conductor-cli/worktrees/<project>/<workspace>`.
+- Config lives in `~/.thomas/config.json`.
+- Worktrees live in `~/.thomas/worktrees/<project>/<workspace>`.
 - New workspaces branch from `origin/main`.
 - Project setup scripts, when configured, run automatically after workspace creation.
 - Branches default to `<github-user>/<workspace>`.
@@ -184,26 +184,27 @@ session card. Use `--detach` only when you explicitly want background log mode.
   or `warppreview` from settings.
 - Workspaces are not deleted automatically unless you run PR cleanup.
 - Agent completion sounds are opt-in through `settings hooks install`.
-- Hook notifications only fire for conductor sessions.
+- Hook notifications only fire for thomas sessions.
 
 ## More Help
 
 Use built-in help instead of memorizing commands:
 
 ```sh
-conductor-cli --help
-conductor-cli help project
-conductor-cli help workspace
-conductor-cli help session
-conductor-cli help pr
-conductor-cli help settings
-conductor-cli help dashboard
+thomas --help
+thomas --version
+thomas help project
+thomas help workspace
+thomas help session
+thomas help pr
+thomas help settings
+thomas help dashboard
 ```
 
 ## Web Dashboard
 
-`conductor-cli dashboard` replaces the old native macOS menu app. It serves the
-UI and JSON API from the CLI process itself, so `~/.conductor-cli/config.json`
+`thomas dashboard` replaces the old native macOS menu app. It serves the
+UI and JSON API from the CLI process itself, so `~/.thomas/config.json`
 remains the single source of truth and there is nothing platform-specific to
 install.
 

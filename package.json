@@ -1,12 +1,12 @@
 {
-  "name": "conductor-cli",
-  "version": "0.1.0",
+  "name": "thomas",
+  "version": "0.0.1",
   "description": "A local-first CLI for managing agent workspaces with git worktrees.",
   "bin": {
-    "conductor-cli": "./bin/conductor-cli.js"
+    "thomas": "./bin/thomas.js"
   },
   "scripts": {
-    "check": "node --check bin/conductor-cli.js",
+    "check": "node --check bin/thomas.js",
     "test": "node --test"
   },
   "license": "MIT",

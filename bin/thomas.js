@@ -16,14 +16,14 @@ const PACKAGE_PATH = path.join(ROOT_DIR, "package.json");
 const PACKAGE = JSON.parse(fs.readFileSync(PACKAGE_PATH, "utf8"));
 
 const CONFIG_DIR =
-  process.env.CONDUCTOR_CLI_HOME ||
-  path.join(os.homedir(), ".conductor-cli");
+  process.env.THOMAS_CLI_HOME ||
+  path.join(os.homedir(), ".thomas");
 const CONFIG_PATH = path.join(CONFIG_DIR, "config.json");
 const LOG_DIR = path.join(CONFIG_DIR, "logs");
 const HOOKS_DIR = path.join(CONFIG_DIR, "hooks");
 const HOOK_SCRIPT_PATH = path.join(HOOKS_DIR, "agent-notify.js");
-const NOTIFIER_SOURCE_PATH = path.join(HOOKS_DIR, "ConductorNotifier.swift");
-const NOTIFIER_EXECUTABLE_PATH = path.join(HOOKS_DIR, "conductor-notifier");
+const NOTIFIER_SOURCE_PATH = path.join(HOOKS_DIR, "ThomasNotifier.swift");
+const NOTIFIER_EXECUTABLE_PATH = path.join(HOOKS_DIR, "thomas-notifier");
 const SWIFT_MODULE_CACHE_DIR = path.join(HOOKS_DIR, "swift-module-cache");
 
 class CliError extends Error {
@@ -66,6 +66,9 @@ async function main(argv) {
       break;
     case "help":
       printHelp(rest[0]);
+      break;
+    case "version":
+      console.log(PACKAGE.version);
       break;
     case "dashboard":
     case "dash":
@@ -113,7 +116,7 @@ async function main(argv) {
       commandSettings(rest);
       break;
     default:
-      throw new CliError(`Unknown command: ${command}\nRun conductor-cli --help`);
+      throw new CliError(`Unknown command: ${command}\nRun thomas --help`);
   }
 }
 
@@ -122,19 +125,19 @@ function printHelp(topic) {
     console.log(`Project commands
 
 Usage:
-  conductor-cli project add <name> <repo-path> [--worktrees-dir <dir>] [--base <ref>] [--gh-user <username>] [--agent-profile <profile>] [--setup-script <file|->]
-  conductor-cli project list
-  conductor-cli project info <name>
-  conductor-cli project set-agent-profile <name> <profile|default|none>
-  conductor-cli project set-setup-script <name> <file|-|none>
-  conductor-cli project remove <name>
+  thomas project add <name> <repo-path> [--worktrees-dir <dir>] [--base <ref>] [--gh-user <username>] [--agent-profile <profile>] [--setup-script <file|->]
+  thomas project list
+  thomas project info <name>
+  thomas project set-agent-profile <name> <profile|default|none>
+  thomas project set-setup-script <name> <file|-|none>
+  thomas project remove <name>
 
 Aliases:
-  conductor-cli register <name> <repo-path>
-  conductor-cli project set-claude-profile <name> <profile|default|none>
+  thomas register <name> <repo-path>
+  thomas project set-claude-profile <name> <profile|default|none>
 
 Notes:
-  Setup scripts are stored in conductor-cli config and run automatically from
+  Setup scripts are stored in thomas config and run automatically from
   the workspace root after git worktree creation.
 `);
     return;
@@ -144,12 +147,12 @@ Notes:
     console.log(`Workspace commands
 
 Usage:
-  conductor-cli workspace create <project> <name> [--base <branch>] [--agent <profile>] [--port <port>] [--terminal <auto|terminal|iterm|warp>] [--attach|--detach] [-- <command>...]
-  conductor-cli workspace list [project] [--all]
-  conductor-cli workspace status <project> <name>
-  conductor-cli workspace path <project> <name>
-  conductor-cli workspace remove <project> <name> [--force] [--delete-branch]
-  conductor-cli workspace archive <project> <name>
+  thomas workspace create <project> <name> [--base <branch>] [--agent <profile>] [--port <port>] [--terminal <auto|terminal|iterm|warp>] [--attach|--detach] [-- <command>...]
+  thomas workspace list [project] [--all]
+  thomas workspace status <project> <name>
+  thomas workspace path <project> <name>
+  thomas workspace remove <project> <name> [--force] [--delete-branch]
+  thomas workspace archive <project> <name>
 
 Notes:
   create uses git worktree add. If --agent or a command after -- is provided,
@@ -164,23 +167,23 @@ Notes:
     console.log(`Session commands
 
 Usage:
-  conductor-cli session start <project> <workspace> [--agent <profile>] [--name <name>] [--port <port>] [--terminal <auto|terminal|iterm|warp>] [--attach|--detach] [-- <command>...]
-  conductor-cli session run <session-id>
-  conductor-cli session resume <session-id>
-  conductor-cli session list [project] [workspace] [--all]
-  conductor-cli session stop <session-id>
-  conductor-cli session logs <session-id> [--tail <lines>]
+  thomas session start <project> <workspace> [--agent <profile>] [--name <name>] [--port <port>] [--terminal <auto|terminal|iterm|warp>] [--attach|--detach] [-- <command>...]
+  thomas session run <session-id>
+  thomas session resume <session-id>
+  thomas session list [project] [workspace] [--all]
+  thomas session stop <session-id>
+  thomas session logs <session-id> [--tail <lines>]
 
 Examples:
-  conductor-cli session start app auth --agent codex
-  conductor-cli session start app auth --agent claude --terminal warp
-  conductor-cli session start app auth --agent codex --detach
-  conductor-cli session start app auth -- npm test -- --watch
+  thomas session start app auth --agent codex
+  thomas session start app auth --agent claude --terminal warp
+  thomas session start app auth --agent codex --detach
+  thomas session start app auth -- npm test -- --watch
 
 Notes:
   Codex and Claude prepare a session and open a terminal tab by default.
-  Run the printed conductor-cli session run command inside that terminal to
-  start the agent with conductor's project/workspace environment.
+  Run the printed thomas session run command inside that terminal to
+  start the agent with thomas's project/workspace environment.
   Resume uses the agent's native resume command when supported.
   Use --detach for background log mode, or --attach to run immediately in the
   current terminal.
@@ -192,7 +195,7 @@ Notes:
     console.log(`Pull request commands
 
 Usage:
-  conductor-cli pr watch [project] [--once] [--interval <seconds>] [--cleanup] [--force] [--delete-branch]
+  thomas pr watch [project] [--once] [--interval <seconds>] [--cleanup] [--force] [--delete-branch]
 
 Behavior:
   Polls gh pr view from each active workspace. When a PR is merged, the
@@ -215,25 +218,25 @@ Notes:
     console.log(`Agent profile commands
 
 Usage:
-  conductor-cli agent-profile add <name> <command>
-  conductor-cli agent-profile list
-  conductor-cli agent-profile default <name>
-  conductor-cli agent-profile remove <name>
-  conductor-cli agent-profile resolve [project]
+  thomas agent-profile add <name> <command>
+  thomas agent-profile list
+  thomas agent-profile default <name>
+  thomas agent-profile remove <name>
+  thomas agent-profile resolve [project]
 
 Examples:
-  conductor-cli agent-profile add work claude-work
-  conductor-cli agent-profile default codex
-  conductor-cli project set-agent-profile app work
+  thomas agent-profile add work claude-work
+  thomas agent-profile default codex
+  thomas project set-agent-profile app work
 
 Behavior:
   Projects use their assigned agent profile. If no project profile is set,
-  conductor-cli uses the default agent profile.
+  thomas uses the default agent profile.
   The built-in claude and codex profiles are always available. The default is
   claude unless you change it.
 
 Aliases:
-  conductor-cli claude-profile ...
+  thomas claude-profile ...
 `);
     return;
   }
@@ -242,21 +245,21 @@ Aliases:
     console.log(`Settings commands
 
 Usage:
-  conductor-cli settings show
-  conductor-cli settings notifications on|off
-  conductor-cli settings sound <sound-name|none>
-  conductor-cli settings terminal <auto|terminal|iterm|warp|warppreview>
-  conductor-cli settings macos-notification on|off
-  conductor-cli settings hooks status
-  conductor-cli settings hooks install <claude|codex|all>
-  conductor-cli settings hooks remove <claude|codex|all>
-  conductor-cli settings test
+  thomas settings show
+  thomas settings notifications on|off
+  thomas settings sound <sound-name|none>
+  thomas settings terminal <auto|terminal|iterm|warp|warppreview>
+  thomas settings macos-notification on|off
+  thomas settings hooks status
+  thomas settings hooks install <claude|codex|all>
+  thomas settings hooks remove <claude|codex|all>
+  thomas settings test
 
 Notes:
   Claude uses Stop and SubagentStop hooks.
   Codex uses its notify command from ~/.codex/config.toml.
-  Hook notifications default to conductor-launched sessions only.
-  Terminal controls which app conductor-cli uses for new agent tabs.
+  Hook notifications default to thomas-launched sessions only.
+  Terminal controls which app thomas uses for new agent tabs.
 `);
     return;
   }
@@ -265,7 +268,7 @@ Notes:
     console.log(`Dashboard command
 
 Usage:
-  conductor-cli dashboard [--host <host>] [--port <port>] [--no-open]
+  thomas dashboard [--host <host>] [--port <port>] [--no-open]
 
 Behavior:
   Starts a local web dashboard for managing projects, workspaces, sessions,
@@ -278,23 +281,23 @@ Behavior:
     console.log(`State command
 
 Usage:
-  conductor-cli state
-  conductor-cli dashboard [--host <host>] [--port <port>] [--no-open]
+  thomas state
+  thomas dashboard [--host <host>] [--port <port>] [--no-open]
 
 Notes:
-  Prints the normalized conductor-cli state as JSON for GUI and automation
+  Prints the normalized thomas state as JSON for GUI and automation
   clients. The CLI config remains the source of truth.
 `);
     return;
   }
 
-  console.log(`conductor-cli ${PACKAGE.version}
+  console.log(`thomas ${PACKAGE.version}
 
 Local-first multi-agent workspace management with git worktrees.
 
 Usage:
-  conductor-cli
-  conductor-cli <command> [options]
+  thomas
+  thomas <command> [options]
 
 Commands:
   menu        Open the interactive selection menu
@@ -310,17 +313,18 @@ Commands:
   state       Print JSON state for app integrations
   dashboard   Serve the local web dashboard
   doctor      Check local tool availability
+  version     Print the CLI version
 
 Common flow:
-  conductor-cli project add app ~/src/app
-  conductor-cli workspace create app auth --agent codex
-  conductor-cli workspace list app
-  conductor-cli checks app auth
-  conductor-cli pr watch app --cleanup
+  thomas project add app ~/src/app
+  thomas workspace create app auth --agent codex
+  thomas workspace list app
+  thomas checks app auth
+  thomas pr watch app --cleanup
 
 Agent sessions prepare a terminal tab by default.
 
-Run conductor-cli help <command> for command details.
+Run thomas help <command> for command details.
 `);
 }
 
@@ -343,7 +347,7 @@ function commandState(args) {
   }
 
   if (args.length > 0) {
-    throw new CliError("Usage: conductor-cli state");
+    throw new CliError("Usage: thomas state");
   }
 
   const config = loadConfig();
@@ -358,11 +362,11 @@ async function commandDashboard(args) {
     string: ["host", "port"],
   });
   if (parsed._.length > 0) {
-    throw new CliError("Usage: conductor-cli dashboard [--host <host>] [--port <port>] [--no-open]");
+    throw new CliError("Usage: thomas dashboard [--host <host>] [--port <port>] [--no-open]");
   }
 
   const host = parsed.host || "127.0.0.1";
-  const requestedPort = Number.parseInt(parsed.port || process.env.CONDUCTOR_DASHBOARD_PORT || "4587", 10);
+  const requestedPort = Number.parseInt(parsed.port || process.env.THOMAS_DASHBOARD_PORT || "4587", 10);
   const port = Number.isFinite(requestedPort) && requestedPort >= 0 ? requestedPort : 4587;
   const server = http.createServer((req, res) => {
     handleDashboardRequest(req, res).catch((error) => {
@@ -384,7 +388,7 @@ async function commandDashboard(args) {
   const address = server.address();
   const actualPort = typeof address === "object" && address ? address.port : port;
   const url = `http://${host}:${actualPort}/`;
-  console.log(`conductor-cli dashboard: ${url}`);
+  console.log(`thomas dashboard: ${url}`);
   console.log("Press Ctrl-C to stop.");
 
   const shouldOpen = parsed.open || (!parsed["no-open"] && process.stdout.isTTY);
@@ -644,7 +648,7 @@ async function runInteractiveMenu() {
     output: process.stdout,
   });
 
-  console.log(`conductor-cli ${PACKAGE.version}`);
+  console.log(`thomas ${PACKAGE.version}`);
 
   try {
     while (true) {
@@ -687,7 +691,7 @@ async function runInteractiveMenu() {
         {
           label: "Register project",
           value: "register-project",
-          description: "add a repo to conductor-cli",
+          description: "add a repo to thomas",
         },
         {
           label: "List projects",
@@ -862,11 +866,11 @@ async function interactiveCreateWorkspace(rl) {
 
   if (sessionMode !== "none" && sessionMode !== "custom") {
     args.push("--agent", sessionMode);
-    const port = await ask(rl, "CONDUCTOR_PORT", "");
+    const port = await ask(rl, "THOMAS_PORT", "");
     if (port) args.push("--port", port);
   } else if (sessionMode === "custom") {
     const command = await askRequired(rl, "Command to run");
-    const port = await ask(rl, "CONDUCTOR_PORT", "");
+    const port = await ask(rl, "THOMAS_PORT", "");
     if (port) args.push("--port", port);
     customCommand = ["sh", "-lc", command];
   }
@@ -951,7 +955,7 @@ async function interactiveStartSession(rl) {
 
   const args = [projectName, workspaceName];
   const name = await ask(rl, "Session name", "");
-  const port = await ask(rl, "CONDUCTOR_PORT", "");
+  const port = await ask(rl, "THOMAS_PORT", "");
   if (name) args.push("--name", name);
   if (port) args.push("--port", port);
   let customCommand = null;
@@ -1107,7 +1111,7 @@ async function interactiveSettings(rl) {
       console.log("Removed Codex notify hook.");
     } else if (action === "test") {
       ensureHookScript(config);
-      sendNotification(config.settings.notifications, "test", "conductor-cli/settings");
+      sendNotification(config.settings.notifications, "test", "thomas/settings");
       console.log("Notification test sent.");
     }
 
@@ -1499,7 +1503,7 @@ function projectAdd(args) {
 
   const [name, repoInput] = parsed._;
   if (!name || !repoInput) {
-    throw new CliError("Usage: conductor-cli project add <name> <repo-path>");
+    throw new CliError("Usage: thomas project add <name> <repo-path>");
   }
   validateName(name, "project");
 
@@ -1545,7 +1549,7 @@ function projectAdd(args) {
   console.log(`repo: ${repoPath}`);
   console.log(`worktrees: ${worktreesDir}`);
   console.log(`base: ${mainBranch}`);
-  console.log(`branch prefix: ${githubUser || "conductor"}/*`);
+  console.log(`branch prefix: ${githubUser || "thomas"}/*`);
   console.log(`Agent profile: ${agentProfile || "default"}`);
   console.log(`Setup script: ${setupScript ? "configured" : "none"}`);
 }
@@ -1575,7 +1579,7 @@ function projectList() {
 
 function projectInfo(args) {
   const [name] = args;
-  if (!name) throw new CliError("Usage: conductor-cli project info <name>");
+  if (!name) throw new CliError("Usage: thomas project info <name>");
 
   const config = loadConfig();
   const project = requireProject(config, name);
@@ -1585,7 +1589,7 @@ function projectInfo(args) {
   console.log(`repo: ${project.repoPath}`);
   console.log(`worktrees: ${project.worktreesDir}`);
   console.log(`base: ${project.mainBranch}`);
-  console.log(`branch prefix: ${project.githubUser || "conductor"}/*`);
+  console.log(`branch prefix: ${project.githubUser || "thomas"}/*`);
   const resolved = resolveAgentProfile(config, project.name);
   console.log(`Agent profile: ${project.agentProfile || "default"} (${resolved.name} -> ${resolved.command})`);
   console.log(`Setup script: ${project.setupScript?.content ? "configured" : "none"}`);
@@ -1597,7 +1601,7 @@ function projectSetAgentProfile(args, options = {}) {
   const [name, profileInput] = args;
   if (!name || !profileInput) {
     const sub = options.legacyName || "set-agent-profile";
-    throw new CliError(`Usage: conductor-cli project ${sub} <name> <profile|default|none>`);
+    throw new CliError(`Usage: thomas project ${sub} <name> <profile|default|none>`);
   }
   const config = loadConfig();
   const project = requireProject(config, name);
@@ -1614,7 +1618,7 @@ function projectSetAgentProfile(args, options = {}) {
 function projectSetSetupScript(args) {
   const [name, scriptInput, ...extra] = args;
   if (!name || !scriptInput || extra.length > 0) {
-    throw new CliError("Usage: conductor-cli project set-setup-script <name> <file|-|none>");
+    throw new CliError("Usage: thomas project set-setup-script <name> <file|-|none>");
   }
   const config = loadConfig();
   const project = requireProject(config, name);
@@ -1626,7 +1630,7 @@ function projectSetSetupScript(args) {
 function projectRemove(args) {
   const parsed = parseOptions(args, { boolean: ["force"] });
   const [name] = parsed._;
-  if (!name) throw new CliError("Usage: conductor-cli project remove <name>");
+  if (!name) throw new CliError("Usage: thomas project remove <name>");
 
   const config = loadConfig();
   requireProject(config, name);
@@ -1690,7 +1694,7 @@ function workspaceCreate(args) {
   const [projectName, rawName] = parsed._;
   if (!projectName || !rawName) {
     throw new CliError(
-      "Usage: conductor-cli workspace create <project> <name> [options]",
+      "Usage: thomas workspace create <project> <name> [options]",
     );
   }
 
@@ -1798,7 +1802,7 @@ function workspaceList(args) {
 function workspaceStatus(args) {
   const [projectName, workspaceName] = args;
   if (!projectName || !workspaceName) {
-    throw new CliError("Usage: conductor-cli workspace status <project> <name>");
+    throw new CliError("Usage: thomas workspace status <project> <name>");
   }
 
   const config = loadConfig();
@@ -1809,7 +1813,7 @@ function workspaceStatus(args) {
 function workspacePath(args) {
   const [projectName, workspaceName] = args;
   if (!projectName || !workspaceName) {
-    throw new CliError("Usage: conductor-cli workspace path <project> <name>");
+    throw new CliError("Usage: thomas workspace path <project> <name>");
   }
 
   const config = loadConfig();
@@ -1820,7 +1824,7 @@ function workspacePath(args) {
 function workspaceArchive(args) {
   const [projectName, workspaceName] = args;
   if (!projectName || !workspaceName) {
-    throw new CliError("Usage: conductor-cli workspace archive <project> <name>");
+    throw new CliError("Usage: thomas workspace archive <project> <name>");
   }
 
   const config = loadConfig();
@@ -1836,7 +1840,7 @@ function workspaceRemove(args) {
   });
   const [projectName, workspaceName] = parsed._;
   if (!projectName || !workspaceName) {
-    throw new CliError("Usage: conductor-cli workspace remove <project> <name>");
+    throw new CliError("Usage: thomas workspace remove <project> <name>");
   }
 
   const config = loadConfig();
@@ -1862,7 +1866,7 @@ function commandAgentProfile(args, options = {}) {
     case "add": {
       const [name, command, ...extra] = args.slice(1);
       if (!name || !command || extra.length > 0) {
-        throw new CliError(`Usage: conductor-cli ${commandName} add <name> <command>`);
+        throw new CliError(`Usage: thomas ${commandName} add <name> <command>`);
       }
       validateAgentProfileName(name, { allowBuiltin: false });
       config.settings.agentProfiles.profiles[name] = { name, command };
@@ -1876,7 +1880,7 @@ function commandAgentProfile(args, options = {}) {
       break;
     case "default": {
       const name = args[1];
-      if (!name) throw new CliError(`Usage: conductor-cli ${commandName} default <name>`);
+      if (!name) throw new CliError(`Usage: thomas ${commandName} default <name>`);
       if (!config.settings.agentProfiles.profiles[name]) {
         throw new CliError(`Unknown agent profile: ${name}`);
       }
@@ -1888,7 +1892,7 @@ function commandAgentProfile(args, options = {}) {
     case "remove":
     case "rm": {
       const name = args[1];
-      if (!name) throw new CliError(`Usage: conductor-cli ${commandName} remove <name>`);
+      if (!name) throw new CliError(`Usage: thomas ${commandName} remove <name>`);
       if (isBuiltinAgentProfile(name)) {
         throw new CliError("Built-in agent profiles cannot be removed.");
       }
@@ -1998,7 +2002,7 @@ function commandSettings(args) {
     case "notifications":
       config.settings.notifications.enabled = requireBoolean(
         args[1],
-        "Usage: conductor-cli settings notifications on|off",
+        "Usage: thomas settings notifications on|off",
       );
       saveConfig(config);
       console.log(
@@ -2007,7 +2011,7 @@ function commandSettings(args) {
       break;
     case "sound":
       if (!args[1]) {
-        throw new CliError("Usage: conductor-cli settings sound <sound-name|none>");
+        throw new CliError("Usage: thomas settings sound <sound-name|none>");
       }
       config.settings.notifications.soundName = args[1];
       saveConfig(config);
@@ -2016,7 +2020,7 @@ function commandSettings(args) {
     case "terminal":
       if (!args[1]) {
         throw new CliError(
-          "Usage: conductor-cli settings terminal <auto|terminal|iterm|warp|warppreview>",
+          "Usage: thomas settings terminal <auto|terminal|iterm|warp|warppreview>",
         );
       }
       config.settings.terminalApp = normalizeTerminalApp(args[1]);
@@ -2026,7 +2030,7 @@ function commandSettings(args) {
     case "macos-notification":
       config.settings.notifications.macosNotification = requireBoolean(
         args[1],
-        "Usage: conductor-cli settings macos-notification on|off",
+        "Usage: thomas settings macos-notification on|off",
       );
       saveConfig(config);
       console.log(
@@ -2038,7 +2042,7 @@ function commandSettings(args) {
       break;
     case "test":
       ensureHookScript(config);
-      sendNotification(config.settings.notifications, "test", "conductor-cli/settings");
+      sendNotification(config.settings.notifications, "test", "thomas/settings");
       console.log("Notification test sent.");
       break;
     default:
@@ -2060,7 +2064,7 @@ function commandSettingsHooks(config, args) {
       if (target === "claude" || target === "all") installClaudeHook(config);
       if (target === "codex" || target === "all") installCodexHook(config);
       if (!["claude", "codex", "all"].includes(target)) {
-        throw new CliError("Usage: conductor-cli settings hooks install <claude|codex|all>");
+        throw new CliError("Usage: thomas settings hooks install <claude|codex|all>");
       }
       saveConfig(config);
       console.log(`Installed ${target} hook${target === "all" ? "s" : ""}.`);
@@ -2069,7 +2073,7 @@ function commandSettingsHooks(config, args) {
       if (target === "claude" || target === "all") removeClaudeHook(config);
       if (target === "codex" || target === "all") removeCodexHook(config);
       if (!["claude", "codex", "all"].includes(target)) {
-        throw new CliError("Usage: conductor-cli settings hooks remove <claude|codex|all>");
+        throw new CliError("Usage: thomas settings hooks remove <claude|codex|all>");
       }
       saveConfig(config);
       console.log(`Removed ${target} hook${target === "all" ? "s" : ""}.`);
@@ -2121,7 +2125,7 @@ function sessionStart(args) {
   const [projectName, workspaceName] = parsed._;
   if (!projectName || !workspaceName) {
     throw new CliError(
-      "Usage: conductor-cli session start <project> <workspace> [options]",
+      "Usage: thomas session start <project> <workspace> [options]",
     );
   }
 
@@ -2143,7 +2147,7 @@ function sessionStart(args) {
 
 function sessionRun(args) {
   runStoredSessionCommand(args, {
-    usage: "Usage: conductor-cli session run <session-id>",
+    usage: "Usage: thomas session run <session-id>",
     action: "Starting",
     commandForSession: (session) => session.command,
     missingMessage: (session) => `Session ${session.id} does not have a runnable command.`,
@@ -2152,7 +2156,7 @@ function sessionRun(args) {
 
 function sessionResume(args) {
   runStoredSessionCommand(args, {
-    usage: "Usage: conductor-cli session resume <session-id>",
+    usage: "Usage: thomas session resume <session-id>",
     action: "Resuming",
     commandForSession: sessionResumeAgentCommand,
     missingMessage: (session) =>
@@ -2242,12 +2246,12 @@ function sessionEnvForRun(config, session) {
   if (session.env && typeof session.env === "object") return session.env;
   const workspace = config.workspaces?.[session.project]?.[session.workspace];
   return {
-    CONDUCTOR_CLI: "1",
-    CONDUCTOR_SESSION_ID: session.id,
-    CONDUCTOR_SESSION_NAME: session.name || session.id,
-    CONDUCTOR_PROJECT: session.project,
-    CONDUCTOR_WORKSPACE: session.workspace,
-    ...(workspace?.branch ? { CONDUCTOR_BRANCH: workspace.branch } : {}),
+    THOMAS_CLI: "1",
+    THOMAS_SESSION_ID: session.id,
+    THOMAS_SESSION_NAME: session.name || session.id,
+    THOMAS_PROJECT: session.project,
+    THOMAS_WORKSPACE: session.workspace,
+    ...(workspace?.branch ? { THOMAS_BRANCH: workspace.branch } : {}),
   };
 }
 
@@ -2288,7 +2292,7 @@ function sessionList(args) {
 
 function sessionStop(args) {
   const [id] = args;
-  if (!id) throw new CliError("Usage: conductor-cli session stop <session-id>");
+  if (!id) throw new CliError("Usage: thomas session stop <session-id>");
 
   const config = loadConfig();
   const session = config.sessions[id];
@@ -2306,7 +2310,7 @@ function sessionStop(args) {
 function sessionLogs(args) {
   const parsed = parseOptions(args, { string: ["tail"] });
   const [id] = parsed._;
-  if (!id) throw new CliError("Usage: conductor-cli session logs <session-id>");
+  if (!id) throw new CliError("Usage: thomas session logs <session-id>");
 
   const config = loadConfig();
   const session = config.sessions[id];
@@ -2371,14 +2375,14 @@ function sessionResumeCommand(session) {
 }
 
 function cliInvocation() {
-  if (hasCommand("conductor-cli")) return "conductor-cli";
+  if (hasCommand("thomas")) return "thomas";
   return shellJoin([process.execPath, SCRIPT_PATH]);
 }
 
 function commandChecks(args) {
   const [projectName, workspaceName] = args;
   if (!projectName || !workspaceName) {
-    throw new CliError("Usage: conductor-cli checks <project> <workspace>");
+    throw new CliError("Usage: thomas checks <project> <workspace>");
   }
 
   const config = loadConfig();
@@ -2609,13 +2613,13 @@ function prepareSession(config, projectName, workspaceName, options) {
   );
   const id = uniqueSessionId(config, sessionName);
   const env = {
-    CONDUCTOR_CLI: "1",
-    CONDUCTOR_SESSION_ID: id,
-    CONDUCTOR_SESSION_NAME: sessionName,
-    CONDUCTOR_PROJECT: projectName,
-    CONDUCTOR_WORKSPACE: workspace.name,
-    CONDUCTOR_BRANCH: workspace.branch,
-    ...(options.port ? { CONDUCTOR_PORT: String(options.port) } : {}),
+    THOMAS_CLI: "1",
+    THOMAS_SESSION_ID: id,
+    THOMAS_SESSION_NAME: sessionName,
+    THOMAS_PROJECT: projectName,
+    THOMAS_WORKSPACE: workspace.name,
+    THOMAS_BRANCH: workspace.branch,
+    ...(options.port ? { THOMAS_PORT: String(options.port) } : {}),
   };
 
   return {
@@ -3000,13 +3004,13 @@ function defaultWorktreesDir(projectName) {
 
 function defaultWorkspaceBranch(project, workspaceName) {
   const username = project.githubUser || detectGithubUsername(project.repoPath);
-  const prefix = username ? sanitizeBranchSegment(username) : "conductor";
+  const prefix = username ? sanitizeBranchSegment(username) : "thomas";
   return `${prefix}/${sanitizeBranchSegment(workspaceName)}`;
 }
 
 function detectGithubUsername(repoPath) {
   const envUser =
-    process.env.CONDUCTOR_CLI_GH_USER ||
+    process.env.THOMAS_CLI_GH_USER ||
     process.env.GITHUB_USER ||
     process.env.GH_USER;
   if (envUser) return sanitizeBranchSegment(envUser);
@@ -3047,7 +3051,7 @@ function runProjectSetupScript(project, workspace) {
   const setupScript = project.setupScript;
   if (!setupScript?.content) return;
 
-  const scriptPath = path.join(workspace.path, ".context", "conductor-setup-script");
+  const scriptPath = path.join(workspace.path, ".context", "thomas-setup-script");
   fs.mkdirSync(path.dirname(scriptPath), { recursive: true });
   fs.writeFileSync(scriptPath, setupScript.content);
   fs.chmodSync(scriptPath, 0o700);
@@ -3059,12 +3063,12 @@ function runProjectSetupScript(project, workspace) {
     cwd: workspace.path,
     env: {
       ...process.env,
-      CONDUCTOR_CLI: "1",
-      CONDUCTOR_PROJECT: project.name,
-      CONDUCTOR_WORKSPACE: workspace.name,
-      CONDUCTOR_BRANCH: workspace.branch,
-      CONDUCTOR_WORKSPACE_PATH: workspace.path,
-      CONDUCTOR_REPO_PATH: project.repoPath,
+      THOMAS_CLI: "1",
+      THOMAS_PROJECT: project.name,
+      THOMAS_WORKSPACE: workspace.name,
+      THOMAS_BRANCH: workspace.branch,
+      THOMAS_WORKSPACE_PATH: workspace.path,
+      THOMAS_REPO_PATH: project.repoPath,
     },
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
@@ -3471,11 +3475,11 @@ function setNotifierAppError(config, message) {
 }
 
 function cleanupLegacyNotifierApp() {
-  fs.rmSync(path.join(HOOKS_DIR, "ConductorNotifier.app"), {
+  fs.rmSync(path.join(HOOKS_DIR, "ThomasNotifier.app"), {
     recursive: true,
     force: true,
   });
-  fs.rmSync(path.join(HOOKS_DIR, "ConductorNotifier.applescript"), { force: true });
+  fs.rmSync(path.join(HOOKS_DIR, "ThomasNotifier.applescript"), { force: true });
 }
 
 function buildNotifierSwift() {
@@ -3532,12 +3536,12 @@ function main() {
   const agent = process.argv[2] || "agent";
   const config = loadConfig();
   const settings = config.settings?.notifications || {};
-  const isConductorSession =
-    process.env.CONDUCTOR_CLI === "1" ||
+  const isThomasSession =
+    process.env.THOMAS_CLI === "1" ||
     Boolean(
-      process.env.CONDUCTOR_SESSION_ID ||
-        process.env.CONDUCTOR_PROJECT ||
-        process.env.CONDUCTOR_WORKSPACE,
+      process.env.THOMAS_SESSION_ID ||
+        process.env.THOMAS_PROJECT ||
+        process.env.THOMAS_WORKSPACE,
     );
 
   const input = readStdin();
@@ -3545,7 +3549,7 @@ function main() {
   const event = hook?.hook_event_name || hook?.hookEventName || "done";
   const text = notificationText(agent, event, hook);
 
-  if (settings.enabled !== false && isConductorSession) {
+  if (settings.enabled !== false && isThomasSession) {
     play(settings.soundName || "Glass");
     if (settings.macosNotification) {
       notify(text.title, text.message);
@@ -3555,10 +3559,10 @@ function main() {
 }
 
 function notificationText(agent, event, hook) {
-  const project = process.env.CONDUCTOR_PROJECT || "";
-  const workspace = process.env.CONDUCTOR_WORKSPACE || "";
-  const session = process.env.CONDUCTOR_SESSION_NAME || process.env.CONDUCTOR_SESSION_ID || "";
-  const branch = process.env.CONDUCTOR_BRANCH || "";
+  const project = process.env.THOMAS_PROJECT || "";
+  const workspace = process.env.THOMAS_WORKSPACE || "";
+  const session = process.env.THOMAS_SESSION_NAME || process.env.THOMAS_SESSION_ID || "";
+  const branch = process.env.THOMAS_BRANCH || "";
   const target = hook?.cwd || hook?.workspace || hook?.project_dir || "";
   const fallback = target ? path.basename(target) : "workspace";
   const location = project && workspace ? project + "/" + workspace : fallback;
@@ -3877,7 +3881,7 @@ function findSystemSoundPath(soundName) {
 function getClaudeSettingsPath() {
   return path.resolve(
     expandHome(
-      process.env.CONDUCTOR_CLI_CLAUDE_SETTINGS ||
+      process.env.THOMAS_CLI_CLAUDE_SETTINGS ||
         path.join(os.homedir(), ".claude", "settings.json"),
     ),
   );
@@ -3886,7 +3890,7 @@ function getClaudeSettingsPath() {
 function getCodexConfigPath() {
   return path.resolve(
     expandHome(
-      process.env.CONDUCTOR_CLI_CODEX_CONFIG ||
+      process.env.THOMAS_CLI_CODEX_CONFIG ||
         path.join(os.homedir(), ".codex", "config.toml"),
     ),
   );

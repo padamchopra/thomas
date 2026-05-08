@@ -7,12 +7,12 @@ const path = require("node:path");
 const test = require("node:test");
 const { spawnSync } = require("node:child_process");
 
-const CLI = path.resolve(__dirname, "..", "bin", "conductor-cli.js");
+const CLI = path.resolve(__dirname, "..", "bin", "thomas.js");
 
 function run(args, options = {}) {
   const result = spawnSync(process.execPath, [CLI, ...args], {
     cwd: options.cwd,
-    env: { ...process.env, CONDUCTOR_CLI_HOME: options.home },
+    env: { ...process.env, THOMAS_CLI_HOME: options.home },
     encoding: "utf8",
     input: options.input,
   });
@@ -20,7 +20,7 @@ function run(args, options = {}) {
   assert.equal(
     result.status,
     0,
-    `command failed: conductor-cli ${args.join(" ")}\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`,
+    `command failed: thomas ${args.join(" ")}\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`,
   );
   return result;
 }
@@ -42,8 +42,8 @@ function makeGitRepo(root) {
   return root;
 }
 
-test("project add --setup-script stores script contents in conductor config", () => {
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "conductor-setup-add-"));
+test("project add --setup-script stores script contents in thomas config", () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "thomas-setup-add-"));
   const home = path.join(tmp, "home");
   const repo = makeGitRepo(path.join(tmp, "repo"));
   const setupPath = path.join(tmp, "setup.sh");
@@ -57,7 +57,7 @@ test("project add --setup-script stores script contents in conductor config", ()
 });
 
 test("project add --setup-script - stores script contents from stdin", () => {
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "conductor-setup-stdin-"));
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "thomas-setup-stdin-"));
   const home = path.join(tmp, "home");
   const repo = makeGitRepo(path.join(tmp, "repo"));
   const script = "echo stdin-script > setup-output.txt\n";
@@ -73,13 +73,13 @@ test("project add --setup-script - stores script contents from stdin", () => {
 });
 
 test("workspace create runs the stored setup script in the new worktree", () => {
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "conductor-setup-run-"));
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "thomas-setup-run-"));
   const home = path.join(tmp, "home");
   const repo = makeGitRepo(path.join(tmp, "repo"));
   const setupPath = path.join(tmp, "setup.sh");
   fs.writeFileSync(
     setupPath,
-    "#!/bin/sh\nprintf '%s/%s/%s' \"$CONDUCTOR_PROJECT\" \"$CONDUCTOR_WORKSPACE\" \"$(pwd)\" > setup-output.txt\n",
+    "#!/bin/sh\nprintf '%s/%s/%s' \"$THOMAS_PROJECT\" \"$THOMAS_WORKSPACE\" \"$(pwd)\" > setup-output.txt\n",
   );
 
   run(["project", "add", "app", repo, "--base", "main", "--setup-script", setupPath], { home });
@@ -93,7 +93,7 @@ test("workspace create runs the stored setup script in the new worktree", () => 
 });
 
 test("project set-setup-script updates and clears scripts for existing projects", () => {
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "conductor-setup-set-"));
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "thomas-setup-set-"));
   const home = path.join(tmp, "home");
   const repo = makeGitRepo(path.join(tmp, "repo"));
   const setupPath = path.join(tmp, "setup.sh");

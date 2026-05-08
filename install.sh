@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-TARGET="${ROOT_DIR}/bin/conductor-cli.js"
+TARGET="${ROOT_DIR}/bin/thomas.js"
 
 if [[ ! -f "${TARGET}" ]]; then
   echo "Missing CLI entrypoint: ${TARGET}" >&2
@@ -11,8 +11,8 @@ fi
 
 chmod +x "${TARGET}"
 
-if [[ -n "${CONDUCTOR_CLI_INSTALL_DIR:-}" ]]; then
-  INSTALL_DIR="${CONDUCTOR_CLI_INSTALL_DIR}"
+if [[ -n "${THOMAS_CLI_INSTALL_DIR:-}" ]]; then
+  INSTALL_DIR="${THOMAS_CLI_INSTALL_DIR}"
 elif [[ -d "/usr/local/bin" && -w "/usr/local/bin" ]]; then
   INSTALL_DIR="/usr/local/bin"
 else
@@ -20,9 +20,18 @@ else
 fi
 
 mkdir -p "${INSTALL_DIR}"
-ln -sfn "${TARGET}" "${INSTALL_DIR}/conductor-cli"
+ln -sfn "${TARGET}" "${INSTALL_DIR}/thomas"
 
-echo "Installed conductor-cli -> ${INSTALL_DIR}/conductor-cli"
+echo "Installed thomas -> ${INSTALL_DIR}/thomas"
+
+LEGACY_LINK="${INSTALL_DIR}/conductor-cli"
+if [[ -L "${LEGACY_LINK}" ]]; then
+  LEGACY_TARGET="$(readlink "${LEGACY_LINK}")"
+  if [[ "${LEGACY_TARGET}" == "${ROOT_DIR}/bin/conductor-cli.js" || "${LEGACY_TARGET}" == "${ROOT_DIR}/bin/thomas.js" ]]; then
+    rm -f "${LEGACY_LINK}"
+    echo "Removed old conductor-cli link -> ${LEGACY_LINK}"
+  fi
+fi
 
 case ":${PATH}:" in
   *":${INSTALL_DIR}:"*) ;;
