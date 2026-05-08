@@ -19,6 +19,13 @@ struct Project: Decodable {
   let githubUser: String?
   let agentProfile: String?
   let claudeProfile: String?
+  let setupScript: SetupScript?
+}
+
+struct SetupScript: Decodable {
+  let source: String?
+  let content: String?
+  let updatedAt: String?
 }
 
 struct Workspace: Decodable {
@@ -92,6 +99,7 @@ struct RegistrationForm {
   let githubUser: String
   let worktreesDir: String
   let agentProfile: String
+  let setupScript: String
 }
 
 struct WorkspaceCreationForm {
@@ -127,7 +135,7 @@ final class ConductorService {
   }
 
   @discardableResult
-  func run(_ arguments: [String]) throws -> String {
+  func run(_ arguments: [String], input: String? = nil) throws -> String {
     let process = Process()
     switch command {
     case .executable(let path):
@@ -148,8 +156,17 @@ final class ConductorService {
     let error = Pipe()
     process.standardOutput = output
     process.standardError = error
-
-    try process.run()
+    if let input {
+      let inputPipe = Pipe()
+      process.standardInput = inputPipe
+      try process.run()
+      if let data = input.data(using: .utf8) {
+        inputPipe.fileHandleForWriting.write(data)
+      }
+      try? inputPipe.fileHandleForWriting.close()
+    } else {
+      try process.run()
+    }
     process.waitUntilExit()
 
     let stdout = String(
@@ -528,11 +545,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
       menu.addItem(disabledItem("Worktrees: \(worktreesDir)"))
     }
     menu.addItem(disabledItem("Agent: \(projectAgentProfileLabel(project))"))
+    menu.addItem(disabledItem("Setup script: \(project.setupScript?.content?.isEmpty == false ? "Configured" : "None")"))
     menu.addItem(.separator())
     menu.addItem(
       actionItem(
         "Set Agent Profile...",
         action: #selector(setProjectAgentProfile(_:)),
+        object: projectObject(project)
+      )
+    )
+    menu.addItem(
+      actionItem(
+        "Set Setup Script...",
+        action: #selector(setProjectSetupScript(_:)),
         object: projectObject(project)
       )
     )
@@ -997,6 +1022,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
     }
   }
 
+  @objc private func setProjectSetupScript(_ sender: NSMenuItem) {
+    guard let project = sender.representedObject as? [String: String],
+      let name = project["name"] else { return }
+    let current = project["setupScript"] ?? ""
+    guard let script = setupScriptForm(projectName: name, current: current) else { return }
+    do {
+      if script.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        try service.run(["project", "set-setup-script", name, "none"])
+      } else {
+        try service.run(["project", "set-setup-script", name, "-"], input: script)
+      }
+      refresh(silent: true)
+    } catch {
+      showError(title: "Unable to set project setup script", message: error.localizedDescription)
+    }
+  }
+
   @objc private func setSound(_ sender: NSMenuItem) {
     guard let sound = sender.representedObject as? String else { return }
     runSettings(["sound", sound], title: "Unable to update sound")
@@ -1090,9 +1132,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
     if !form.agentProfile.isEmpty && form.agentProfile != "default" {
       args.append(contentsOf: ["--agent-profile", form.agentProfile])
     }
+    let setupScript = form.setupScript.trimmingCharacters(in: .whitespacesAndNewlines)
+    let setupInput = setupScript.isEmpty ? nil : form.setupScript
+    if setupInput != nil {
+      args.append(contentsOf: ["--setup-script", "-"])
+    }
 
     do {
-      try service.run(args)
+      try service.run(args, input: setupInput)
       refresh(silent: true)
     } catch {
       showError(title: "Unable to register project", message: error.localizedDescription)
@@ -1152,6 +1199,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
       "githubUser": project.githubUser ?? "",
       "agentProfile": project.agentProfile ?? "",
       "claudeProfile": project.claudeProfile ?? "",
+      "setupScript": project.setupScript?.content ?? "",
     ]
   }
 
@@ -1166,7 +1214,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
       base: "origin/main",
       githubUser: "",
       worktreesDir: "\(home)/.conductor-cli/worktrees/\(projectName)",
-      agentProfile: ""
+      agentProfile: "",
+      setupScript: ""
     )
   }
 
@@ -1318,6 +1367,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
     return selected == "Default" ? "default" : selected
   }
 
+  private func setupScriptForm(projectName: String, current: String) -> String? {
+    let scrollView = NSScrollView(frame: NSRect(x: 0, y: 0, width: 520, height: 240))
+    let textView = NSTextView(frame: scrollView.bounds)
+    textView.isRichText = false
+    textView.font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
+    textView.string = current
+    scrollView.borderType = .bezelBorder
+    scrollView.hasVerticalScroller = true
+    scrollView.documentView = textView
+
+    let alert = NSAlert()
+    alert.messageText = "Set Setup Script"
+    alert.informativeText = "Project: \(projectName). Leave blank to clear. The script is stored in conductor-cli config and runs from each new workspace root."
+    alert.accessoryView = scrollView
+    alert.addButton(withTitle: "Save")
+    alert.addButton(withTitle: "Cancel")
+
+    guard alert.runModal() == .alertFirstButtonReturn else { return nil }
+    return textView.string
+  }
+
   private func registrationForm(defaults: RegistrationForm) -> RegistrationForm? {
     let nameField = NSTextField(string: defaults.name)
     let baseField = NSTextField(string: defaults.base)
@@ -1331,6 +1401,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
       agentProfilePopup.select(item)
     }
     let worktreesField = NSTextField(string: defaults.worktreesDir)
+    let setupScriptScroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: 240, height: 96))
+    let setupScriptView = NSTextView(frame: setupScriptScroll.bounds)
+    setupScriptView.isRichText = false
+    setupScriptView.font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
+    setupScriptView.string = defaults.setupScript
+    setupScriptScroll.borderType = .bezelBorder
+    setupScriptScroll.hasVerticalScroller = true
+    setupScriptScroll.documentView = setupScriptView
 
     let stack = NSStackView()
     stack.orientation = .vertical
@@ -1340,7 +1418,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
     stack.addArrangedSubview(labeledField("GitHub user", githubUserField))
     stack.addArrangedSubview(labeledControl("Agent profile", agentProfilePopup))
     stack.addArrangedSubview(labeledField("Worktrees dir", worktreesField))
-    stack.frame = NSRect(x: 0, y: 0, width: 360, height: 192)
+    stack.addArrangedSubview(labeledControl("Setup script", setupScriptScroll))
+    stack.frame = NSRect(x: 0, y: 0, width: 360, height: 296)
 
     let alert = NSAlert()
     alert.messageText = "Register Project"
@@ -1363,7 +1442,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
       worktreesDir: worktreesField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines),
       agentProfile: agentProfilePopup.titleOfSelectedItem == "Default"
         ? "default"
-        : (agentProfilePopup.titleOfSelectedItem ?? "default")
+        : (agentProfilePopup.titleOfSelectedItem ?? "default"),
+      setupScript: setupScriptView.string
     )
   }
 

@@ -11,6 +11,9 @@ The menu app is intentionally thin:
   same `~/.conductor-cli/config.json` file.
 - Agent profiles are shared with the CLI. The built-in `claude` and `codex`
   profiles are always shown, and `claude` is the default until changed.
+- Project setup scripts can be edited from the project menu; the script text is
+  saved through the CLI into `~/.conductor-cli/config.json` and runs for new
+  workspaces.
 
 ## Install
 
