@@ -7,8 +7,7 @@
   },
   "scripts": {
     "check": "node --check bin/conductor-cli.js",
-    "test": "node --test",
-    "build:macos-menu": "./macos/ConductorMenu/build-app.sh"
+    "test": "node --test"
   },
   "license": "MIT",
   "engines": {
