@@ -80,7 +80,21 @@ Register a repo:
 
 ```sh
 conductor-cli project add app ~/src/app
+conductor-cli project add app ~/src/app --setup-script ./scripts/bootstrap-worktree.sh
 ```
+
+Setup scripts are copied into `~/.conductor-cli/config.json` rather than linked
+from the original file path, then run automatically from each new workspace
+root after `git worktree add`:
+
+```sh
+conductor-cli project set-setup-script app ./scripts/bootstrap-worktree.sh
+conductor-cli project set-setup-script app none
+```
+
+When a setup script runs, conductor exports `CONDUCTOR_PROJECT`,
+`CONDUCTOR_WORKSPACE`, `CONDUCTOR_BRANCH`, `CONDUCTOR_WORKSPACE_PATH`, and
+`CONDUCTOR_REPO_PATH`.
 
 Create a workspace and prepare Codex:
 
@@ -158,6 +172,7 @@ Use `--detach` only when you explicitly want background log mode.
 - Config lives in `~/.conductor-cli/config.json`.
 - Worktrees live in `~/.conductor-cli/worktrees/<project>/<workspace>`.
 - New workspaces branch from `origin/main`.
+- Project setup scripts, when configured, run automatically after workspace creation.
 - Branches default to `<github-user>/<workspace>`.
 - Codex and Claude sessions prepare a terminal tab and print a run command.
 - Agent profiles always include `claude` and `codex`; the default is `claude`.

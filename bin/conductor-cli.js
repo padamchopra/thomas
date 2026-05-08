@@ -116,15 +116,20 @@ function printHelp(topic) {
     console.log(`Project commands
 
 Usage:
-  conductor-cli project add <name> <repo-path> [--worktrees-dir <dir>] [--base <ref>] [--gh-user <username>] [--agent-profile <profile>]
+  conductor-cli project add <name> <repo-path> [--worktrees-dir <dir>] [--base <ref>] [--gh-user <username>] [--agent-profile <profile>] [--setup-script <file|->]
   conductor-cli project list
   conductor-cli project info <name>
   conductor-cli project set-agent-profile <name> <profile|default|none>
+  conductor-cli project set-setup-script <name> <file|-|none>
   conductor-cli project remove <name>
 
 Aliases:
   conductor-cli register <name> <repo-path>
   conductor-cli project set-claude-profile <name> <profile|default|none>
+
+Notes:
+  Setup scripts are stored in conductor-cli config and run automatically from
+  the workspace root after git worktree creation.
 `);
     return;
   }
@@ -144,6 +149,7 @@ Notes:
   create uses git worktree add. If --agent or a command after -- is provided,
   a session is prepared and a terminal tab is opened by default.
   The workspace name determines the branch: <github-user>/<workspace>.
+  If the project has a setup script, create runs it before preparing a session.
 `);
     return;
   }
@@ -511,12 +517,18 @@ async function interactiveRegisterProject(rl) {
     { label: `Default (${config.settings.agentProfiles.default})`, value: "default" },
     ...agentProfileChoices(config),
   ]);
+  const setupScript = await ask(
+    rl,
+    "Setup script path (stored in config, blank for none)",
+    "",
+  );
 
   const args = [name, repoPath];
   if (worktreesDir) args.push("--worktrees-dir", worktreesDir);
   if (base) args.push("--base", base);
   if (ghUser) args.push("--gh-user", ghUser);
   if (agentProfile !== "default") args.push("--agent-profile", agentProfile);
+  if (setupScript) args.push("--setup-script", setupScript);
   projectAdd(args);
 }
 
@@ -1182,6 +1194,9 @@ function commandProject(args) {
     case "set-agent-profile":
       projectSetAgentProfile(args.slice(1));
       break;
+    case "set-setup-script":
+      projectSetSetupScript(args.slice(1));
+      break;
     case "set-claude-profile":
       projectSetAgentProfile(args.slice(1), { legacyName: "set-claude-profile" });
       break;
@@ -1203,6 +1218,7 @@ function projectAdd(args) {
       "gh-user",
       "agent-profile",
       "claude-profile",
+      "setup-script",
     ],
   });
 
@@ -1221,6 +1237,9 @@ function projectAdd(args) {
   const agentProfile = normalizeOptionalAgentProfile(
     parsed["agent-profile"] || parsed["claude-profile"],
   );
+  const setupScript = parsed["setup-script"]
+    ? readSetupScriptInput(parsed["setup-script"])
+    : null;
   const remote = git(repoPath, ["config", "--get", "remote.origin.url"], {
     allowFailure: true,
   }).stdout.trim();
@@ -1240,6 +1259,7 @@ function projectAdd(args) {
     mainBranch,
     githubUser: githubUser || null,
     agentProfile,
+    setupScript,
     remote: remote || null,
     createdAt: new Date().toISOString(),
   };
@@ -1252,6 +1272,7 @@ function projectAdd(args) {
   console.log(`base: ${mainBranch}`);
   console.log(`branch prefix: ${githubUser || "conductor"}/*`);
   console.log(`Agent profile: ${agentProfile || "default"}`);
+  console.log(`Setup script: ${setupScript ? "configured" : "none"}`);
 }
 
 function projectList() {
@@ -1292,6 +1313,7 @@ function projectInfo(args) {
   console.log(`branch prefix: ${project.githubUser || "conductor"}/*`);
   const resolved = resolveAgentProfile(config, project.name);
   console.log(`Agent profile: ${project.agentProfile || "default"} (${resolved.name} -> ${resolved.command})`);
+  console.log(`Setup script: ${project.setupScript?.content ? "configured" : "none"}`);
   if (project.remote) console.log(`remote: ${project.remote}`);
   console.log(`workspaces: ${workspaces.length}`);
 }
@@ -1312,6 +1334,18 @@ function projectSetAgentProfile(args, options = {}) {
   delete project.claudeProfile;
   saveConfig(config);
   console.log(`Project ${name} agent profile set to ${profile || "default"}.`);
+}
+
+function projectSetSetupScript(args) {
+  const [name, scriptInput, ...extra] = args;
+  if (!name || !scriptInput || extra.length > 0) {
+    throw new CliError("Usage: conductor-cli project set-setup-script <name> <file|-|none>");
+  }
+  const config = loadConfig();
+  const project = requireProject(config, name);
+  project.setupScript = readSetupScriptInput(scriptInput);
+  saveConfig(config);
+  console.log(`Project ${name} setup script ${project.setupScript ? "configured" : "cleared"}.`);
 }
 
 function projectRemove(args) {
@@ -1433,6 +1467,8 @@ function workspaceCreate(args) {
   projectWorkspaces[workspaceName] = workspace;
   config.workspaces[projectName] = projectWorkspaces;
   saveConfig(config);
+
+  runProjectSetupScript(project, workspace);
 
   console.log(`Created workspace ${projectName}/${workspaceName}`);
   console.log(`branch: ${actualBranch}`);
@@ -2714,6 +2750,61 @@ function detectGithubUsername(repoPath) {
   return ghUser ? sanitizeBranchSegment(ghUser) : null;
 }
 
+function readSetupScriptInput(input) {
+  const normalized = String(input || "").trim();
+  if (["none", "null", "clear", "off", "remove", "delete"].includes(normalized.toLowerCase())) {
+    return null;
+  }
+
+  const content = normalized === "-"
+    ? fs.readFileSync(0, "utf8")
+    : fs.readFileSync(path.resolve(expandHome(normalized)), "utf8");
+  if (!content.trim()) throw new CliError("Setup script cannot be empty.");
+
+  return {
+    source: normalized,
+    content,
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+function runProjectSetupScript(project, workspace) {
+  const setupScript = project.setupScript;
+  if (!setupScript?.content) return;
+
+  const scriptPath = path.join(workspace.path, ".context", "conductor-setup-script");
+  fs.mkdirSync(path.dirname(scriptPath), { recursive: true });
+  fs.writeFileSync(scriptPath, setupScript.content);
+  fs.chmodSync(scriptPath, 0o700);
+
+  console.log("Running setup script...");
+  const command = setupScript.content.startsWith("#!") ? scriptPath : "/bin/sh";
+  const args = setupScript.content.startsWith("#!") ? [] : [scriptPath];
+  const result = spawnSync(command, args, {
+    cwd: workspace.path,
+    env: {
+      ...process.env,
+      CONDUCTOR_CLI: "1",
+      CONDUCTOR_PROJECT: project.name,
+      CONDUCTOR_WORKSPACE: workspace.name,
+      CONDUCTOR_BRANCH: workspace.branch,
+      CONDUCTOR_WORKSPACE_PATH: workspace.path,
+      CONDUCTOR_REPO_PATH: project.repoPath,
+    },
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+
+  if (result.error) throw new CliError(`Setup script failed: ${result.error.message}`);
+  if (result.status !== 0) {
+    const output = [result.stdout, result.stderr].filter(Boolean).join("\n").trim();
+    throw new CliError(
+      `Setup script failed with exit code ${result.status}${output ? `\n${output}` : ""}`,
+    );
+  }
+  console.log("Setup script completed.");
+}
+
 function addWorktreeExclude(workspacePath, pattern) {
   const result = git(workspacePath, ["rev-parse", "--git-path", "info/exclude"], {
     allowFailure: true,
@@ -2951,6 +3042,9 @@ function normalizeConfig(config) {
       !config.settings.agentProfiles.profiles[project.agentProfile]
     ) {
       project.agentProfile = null;
+    }
+    if (!project.setupScript?.content) {
+      project.setupScript = null;
     }
   }
   return config;
