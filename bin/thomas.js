@@ -625,6 +625,8 @@ function handleDashboardAction(action, body) {
       return withCapturedOutput(() => sessionStop([body.id]));
     case "session/resume":
       return withCapturedOutput(() => sessionResume([body.id]));
+    case "session/resume-terminal":
+      return withCapturedOutput(() => sessionResumeTerminal([body.id]));
     case "agent-profile/add":
       return withCapturedOutput(() => commandAgentProfile(compactArgs(["add", body.name, body.command, "--type", body.type])));
     case "agent-profile/default":
@@ -855,6 +857,7 @@ function kanbanTicketState(config, workspace) {
     branch: workspace.branch,
     path: workspace.path,
     prUrl: workspace.prUrl || null,
+    compareUrl: ticketCompareUrl(project, workspace),
     createdAt: ticket.createdAt || workspace.createdAt,
   };
 }
@@ -866,6 +869,33 @@ function appSessionState(session) {
     runCommand: session.runCommand || sessionRunCommand(session.id),
     resumeCommand: sessionResumeCommand(session),
   };
+}
+
+function ticketCompareUrl(project, workspace) {
+  if (!workspace.branch) return null;
+  const repoUrl = githubRepoUrl(project.remote);
+  if (!repoUrl) return null;
+  const base = branchNameForCompare(project.mainBranch || "origin/main");
+  const branch = branchNameForCompare(workspace.branch);
+  return `${repoUrl}/compare/${encodeURIComponent(base)}...${encodeURIComponent(branch)}?expand=1`;
+}
+
+function githubRepoUrl(remote) {
+  const value = String(remote || "").trim();
+  if (!value) return null;
+  let ownerRepo = null;
+  const ssh = value.match(/^git@github\.com:([^/]+\/[^/]+?)(?:\.git)?$/i);
+  const https = value.match(/^https:\/\/github\.com\/([^/]+\/[^/]+?)(?:\.git)?(?:\/)?$/i);
+  if (ssh) ownerRepo = ssh[1];
+  if (https) ownerRepo = https[1];
+  return ownerRepo ? `https://github.com/${ownerRepo.replace(/\.git$/i, "")}` : null;
+}
+
+function branchNameForCompare(ref) {
+  return String(ref || "main")
+    .replace(/^refs\/heads\//, "")
+    .replace(/^refs\/remotes\/origin\//, "")
+    .replace(/^origin\//, "");
 }
 
 async function runInteractiveMenu() {
@@ -2223,8 +2253,8 @@ function ticketReply(args) {
   refreshKanbanAgentRuns(config);
   const workspace = findKanbanWorkspace(config, ticketInput);
   const status = derivedTicketStatus(workspace);
-  if (status !== "Human Review") {
-    throw new CliError(`Ticket replies are only available in Human Review. Current status: ${status}.`);
+  if (!canReplyToTicketStatus(status)) {
+    throw new CliError(`Ticket replies are only available in Human Review or PR Review. Current status: ${status}.`);
   }
   addTicketComment(workspace, {
     author: "human",
@@ -2848,6 +2878,29 @@ function sessionResume(args) {
   });
 }
 
+function sessionResumeTerminal(args) {
+  const [id] = args;
+  if (!id) throw new CliError("Usage: thomas session resume-terminal <session-id>");
+
+  const config = loadConfig();
+  const session = config.sessions[id];
+  if (!session) throw new CliError(`Unknown session: ${id}`);
+  const command = sessionResumeCommand(session);
+  if (!command) {
+    throw new CliError(`Session ${session.id} does not have a supported resume command.`);
+  }
+  if (!session.cwd || !fs.existsSync(session.cwd)) {
+    throw new CliError(`Session cwd does not exist: ${session.cwd || ""}`);
+  }
+
+  const terminal = resolveTerminalApp(config.settings?.terminalApp || "auto");
+  copyTextToClipboard(command);
+  openTerminalTab(terminal, { cwd: session.cwd });
+  console.log(`Opened ${session.id} in ${terminalLabel(terminal)}.`);
+  console.log("Copied resume command to clipboard.");
+  console.log(`paste: ${command}`);
+}
+
 function runStoredSessionCommand(args, options) {
   const [id] = args;
   if (!id) throw new CliError(options.usage);
@@ -2920,7 +2973,10 @@ function sessionResumeAgentCommand(session) {
     return [executable || "codex", "resume", "--last"];
   }
   if (agent.includes("claude") || binary.includes("claude")) {
-    return [executable || "claude", "--continue"];
+    const claudeSessionId = findClaudeSessionIdForSession(session);
+    return claudeSessionId
+      ? [executable || "claude", "--resume", claudeSessionId]
+      : [executable || "claude", "--continue"];
   }
   return null;
 }
@@ -2936,6 +2992,83 @@ function sessionEnvForRun(config, session) {
     THOMAS_WORKSPACE: session.workspace,
     ...(workspace?.branch ? { THOMAS_BRANCH: workspace.branch } : {}),
   };
+}
+
+function findNativeAgentSessionId(session) {
+  if (!session) return null;
+  const command = Array.isArray(session.command) ? session.command : [];
+  const executable = command[0] || session.agent;
+  const agent = String(session.agent || path.basename(executable || ""))
+    .toLowerCase();
+  const binary = path.basename(String(executable || "")).toLowerCase();
+  if (agent.includes("claude") || binary.includes("claude")) {
+    return findClaudeSessionIdForSession(session);
+  }
+  return null;
+}
+
+function findClaudeSessionIdForSession(session) {
+  if (!session) return null;
+  const fromLog = extractClaudeSessionIdFromLog(session.logPath);
+  if (fromLog) return fromLog;
+  return findClaudeSessionIdFromProjectHistory(session);
+}
+
+function extractClaudeSessionIdFromLog(logPath) {
+  if (!logPath || !fs.existsSync(logPath)) return null;
+  const text = tailFile(logPath, 200);
+  for (const pattern of [
+    /"session_id"\s*:\s*"([^"]+)"/g,
+    /"sessionId"\s*:\s*"([^"]+)"/g,
+  ]) {
+    let match;
+    while ((match = pattern.exec(text))) {
+      if (looksLikeUuid(match[1])) return match[1];
+    }
+  }
+  return null;
+}
+
+function findClaudeSessionIdFromProjectHistory(session) {
+  const cwd = session.cwd;
+  if (!cwd) return null;
+  const dir = path.join(os.homedir(), ".claude", "projects", claudeProjectKey(cwd));
+  if (!fs.existsSync(dir)) return null;
+  const startedAt = Date.parse(session.startedAt || session.openedAt || session.resumedAt || "");
+  const minMtime = Number.isFinite(startedAt) ? startedAt - 5 * 60 * 1000 : 0;
+  const needle = session.ticketId || session.env?.THOMAS_TICKET_ID || session.workspace || "";
+
+  const candidates = fs.readdirSync(dir)
+    .filter((name) => name.endsWith(".jsonl"))
+    .map((name) => {
+      const filePath = path.join(dir, name);
+      const stat = fs.statSync(filePath);
+      return { filePath, name, mtimeMs: stat.mtimeMs };
+    })
+    .filter((item) => !needle || fileContains(item.filePath, needle))
+    .sort((a, b) => b.mtimeMs - a.mtimeMs);
+  const recentCandidates = candidates.filter((item) => item.mtimeMs >= minMtime);
+
+  return (recentCandidates.length > 0 ? recentCandidates : candidates)
+    .map((item) => path.basename(item.name, ".jsonl"))
+    .find(looksLikeUuid) || null;
+}
+
+function claudeProjectKey(cwd) {
+  return path.resolve(cwd).replace(/[^A-Za-z0-9_-]/g, "-");
+}
+
+function fileContains(filePath, text) {
+  if (!text) return true;
+  try {
+    return fs.readFileSync(filePath, "utf8").includes(text);
+  } catch {
+    return false;
+  }
+}
+
+function looksLikeUuid(value) {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(value || ""));
 }
 
 function sessionList(args) {
@@ -3092,8 +3225,10 @@ function launchTicketAgent(config, workspace, options = {}) {
   fs.mkdirSync(LOG_DIR, { recursive: true });
   const logPath = path.join(LOG_DIR, `${id}.log`);
   const statusPath = path.join(LOG_DIR, `${id}.status`);
+  const previousSession = currentRun?.sessionId ? config.sessions[currentRun.sessionId] : null;
   const command = ticketAgentCommand(profile, {
     resume: Boolean(options.resume),
+    resumeAgentSessionId: options.resume ? findNativeAgentSessionId(previousSession) : null,
     prompt,
     showAgentLogs: config.settings.preferences?.showAgentLogs !== false,
   });
@@ -3220,14 +3355,17 @@ function ticketAgentCommand(profile, options) {
       ? [executable, "exec", "resume", "--json", "--last", options.prompt]
       : [executable, "exec", "--json", options.prompt];
   }
+  const resumeArgs = options.resumeAgentSessionId
+    ? ["--resume", options.resumeAgentSessionId]
+    : ["--continue"];
   if (options.showAgentLogs === false) {
     return options.resume
-      ? [executable, "--continue", "-p", options.prompt]
+      ? [executable, ...resumeArgs, "-p", options.prompt]
       : [executable, "-p", options.prompt];
   }
   const streamArgs = ["--output-format", "stream-json", "--verbose", "--include-partial-messages"];
   return options.resume
-    ? [executable, ...streamArgs, "--continue", "-p", options.prompt]
+    ? [executable, ...streamArgs, ...resumeArgs, "-p", options.prompt]
     : [executable, ...streamArgs, "-p", options.prompt];
 }
 
@@ -3735,6 +3873,23 @@ function openWarpTab(terminal, cwd) {
   }
 }
 
+function copyTextToClipboard(text) {
+  if (process.platform !== "darwin") {
+    throw new CliError("Clipboard copy is currently supported on macOS only.");
+  }
+  const result = spawnSync("pbcopy", [], {
+    encoding: "utf8",
+    input: text,
+    stdio: ["pipe", "pipe", "pipe"],
+  });
+
+  if (result.status !== 0) {
+    throw new CliError(
+      `Unable to copy resume command: ${(result.stderr || result.stdout).trim()}`,
+    );
+  }
+}
+
 function stopSession(session) {
   if (session.status !== "running" || !session.pid) {
     session.status = "stopped";
@@ -3969,6 +4124,10 @@ function derivedTicketStatus(workspace) {
   if (runStatus === "running" || runStatus === "queued") return "In Progress";
   if (["blocked", "done", "failed", "missing"].includes(runStatus)) return "Human Review";
   return "To-do";
+}
+
+function canReplyToTicketStatus(status) {
+  return status === "Human Review" || status === "PR Review";
 }
 
 function extractBlockedReason(logText) {
