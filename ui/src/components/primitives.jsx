@@ -1,4 +1,5 @@
-import { AlertTriangle, MessageSquare, Network } from "lucide-react";
+import { useEffect, useState } from "react";
+import { AlertTriangle, Clock, MessageSquare, Network } from "lucide-react";
 
 export function SidebarSection({ label, children }) {
   return (
@@ -28,13 +29,13 @@ export function Identity({ name }) {
   return <span className="assignee-pill"><span>{name.slice(0, 1).toUpperCase()}</span>{name}</span>;
 }
 
-export function IssueRow({ ticket, onOpenTicket, compact = false }) {
+export function IssueRow({ ticket, onOpenTicket, compact = false, run = null }) {
   return (
     <button className={compact ? "issue-row-compact" : "issue-row"} onClick={() => onOpenTicket(ticket.id)}>
       {compact ? (
         <>
           <span><StatusIcon status={ticket.status} /><strong>{ticket.id}</strong>{ticket.title}</span>
-          <small>{ticket.statusLabel} · {ticket.assignee?.name || "Unassigned"}</small>
+          <small>{ticket.statusLabel} · {ticket.assignee?.name || "Unassigned"}<RunningElapsed run={run} compact /></small>
         </>
       ) : (
         <>
@@ -46,6 +47,7 @@ export function IssueRow({ ticket, onOpenTicket, compact = false }) {
               {ticket.children.length > 0 && <span>{ticket.children.length} sub-issues</span>}
               {ticket.blockedBy.length > 0 && <span>{ticket.blockedBy.length} blockers</span>}
               {ticket.labels?.slice(0, 2).map((label) => <span className="metadata-chip" key={label}>{label}</span>)}
+              <RunningElapsed run={run} />
             </span>
           </span>
           <span>{ticket.assignee?.name || "Unassigned"}</span>
@@ -57,7 +59,7 @@ export function IssueRow({ ticket, onOpenTicket, compact = false }) {
   );
 }
 
-export function KanbanBoard({ statuses, tickets, statusLabel, onOpenTicket }) {
+export function KanbanBoard({ statuses, tickets, statusLabel, onOpenTicket, runs = [] }) {
   const populatedStatuses = statuses.filter((status) => tickets.some((ticket) => ticket.status === status));
   const visibleStatuses = populatedStatuses.length > 0 ? populatedStatuses : statuses;
   return (
@@ -72,7 +74,7 @@ export function KanbanBoard({ statuses, tickets, statusLabel, onOpenTicket }) {
             </div>
             {columnTickets.length === 0 ? <div className="lane-placeholder" /> : null}
             {columnTickets.map((ticket) => (
-              <IssueCard key={ticket.id} ticket={ticket} onOpenTicket={onOpenTicket} />
+              <IssueCard key={ticket.id} ticket={ticket} run={runningRunForTicket(runs, ticket.id)} onOpenTicket={onOpenTicket} />
             ))}
           </div>
         );
@@ -81,7 +83,7 @@ export function KanbanBoard({ statuses, tickets, statusLabel, onOpenTicket }) {
   );
 }
 
-export function IssueCard({ ticket, onOpenTicket }) {
+export function IssueCard({ ticket, onOpenTicket, run = null }) {
   const isDone = ticket.status === "done";
   return (
     <article className={`task-card${isDone ? " task-card-complete" : ""}`}>
@@ -91,6 +93,7 @@ export function IssueCard({ ticket, onOpenTicket }) {
       >
         <span className="card-head">
           <span className="task-key">{ticket.id}</span>
+          <RunningElapsed run={run} compact />
         </span>
         <span className="card-title"><StatusIcon status={ticket.status} /><strong>{ticket.title}</strong></span>
         {!isDone ? (
@@ -113,6 +116,39 @@ export function IssueCard({ ticket, onOpenTicket }) {
 
 export function Badge({ icon, text }) {
   return <span className="tag">{icon}{text}</span>;
+}
+
+export function RunningElapsed({ run, compact = false }) {
+  const elapsed = useElapsedLabel(run?.status === "running" ? run.startedAt : null);
+  if (!elapsed) return null;
+  return <span className={compact ? "elapsed-pill elapsed-pill-compact" : "elapsed-pill"}><Clock />{elapsed}</span>;
+}
+
+function useElapsedLabel(startedAt) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!startedAt) return undefined;
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [startedAt]);
+  if (!startedAt) return "";
+  return formatElapsed(now - new Date(startedAt).getTime());
+}
+
+function runningRunForTicket(runs, ticketId) {
+  return runs.find((run) => run.ticketId === ticketId && run.status === "running") || null;
+}
+
+function formatElapsed(diffMs) {
+  if (!Number.isFinite(diffMs) || diffMs < 0) return "0s";
+  const totalSeconds = Math.floor(diffMs / 1000);
+  const seconds = totalSeconds % 60;
+  const totalMinutes = Math.floor(totalSeconds / 60);
+  const minutes = totalMinutes % 60;
+  const hours = Math.floor(totalMinutes / 60);
+  if (hours > 0) return `${hours}h ${minutes}m`;
+  if (minutes > 0) return `${minutes}m ${seconds}s`;
+  return `${seconds}s`;
 }
 
 export function timeAgo(value) {

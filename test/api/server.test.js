@@ -4,7 +4,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
-const { spawnSync } = require("node:child_process");
+const { spawn, spawnSync } = require("node:child_process");
 const test = require("node:test");
 const { createStateStore } = require("../../src/core/state-store");
 const { createThomasService } = require("../../src/core/thomas-service");
@@ -16,6 +16,7 @@ async function withServer(fn, options = {}) {
     store: createStateStore({ dbPath: path.join(tmp, "thomas.db") }),
   });
   const serverOptions = {
+    workspaceRoot: path.join(tmp, "worktrees"),
     runLogRoot: path.join(tmp, "run-logs"),
     ...(typeof options === "function" ? options(tmp) : options),
   };
@@ -60,10 +61,10 @@ test("API creates projects, tickets, and comments", async () => {
   });
 });
 
-test("API dispatches assigned ticket and exposes live activity", async () => {
+test("API auto-dispatches assigned tickets on create and exposes live activity", async () => {
   await withServer(async (baseUrl, tmp) => {
     const repoPath = path.join(tmp, "repo");
-    fs.mkdirSync(repoPath);
+    createGitRepo(repoPath);
     const agentScript = path.join(tmp, "fake-agent.js");
     fs.writeFileSync(agentScript, [
       "console.log(JSON.stringify({ type: 'system', subtype: 'init' }));",
@@ -73,7 +74,12 @@ test("API dispatches assigned ticket and exposes live activity", async () => {
       "console.log('SUMMARY: changed one file');",
     ].join("\n"));
 
-    const project = await post(`${baseUrl}/api/projects`, { name: "App", prefix: "APP", repoPath });
+    const project = await post(`${baseUrl}/api/projects`, {
+      name: "App",
+      prefix: "APP",
+      repoPath,
+      setupScript: "printf \"%s/%s/%s\" \"$THOMAS_PROJECT\" \"$THOMAS_WORKSPACE\" \"$THOMAS_WORKSPACE_PATH\" > setup-output.txt",
+    });
     const agent = await post(`${baseUrl}/api/agents`, {
       name: "Fake",
       type: "custom",
@@ -84,9 +90,8 @@ test("API dispatches assigned ticket and exposes live activity", async () => {
       title: "Dispatch me",
       assigneeAgentId: agent.agent.id,
     });
-
-    const run = await post(`${baseUrl}/api/tickets/${ticket.ticket.id}/dispatch`, {});
-    assert.equal(run.run.status, "running");
+    assert.equal(ticket.run.status, "running");
+    assert.equal(ticket.ticket.status, "in_progress");
 
     const state = await waitForState(baseUrl, (next) => {
       const updated = next.tickets.find((item) => item.id === ticket.ticket.id);
@@ -95,11 +100,47 @@ test("API dispatches assigned ticket and exposes live activity", async () => {
     const updated = state.tickets.find((item) => item.id === ticket.ticket.id);
     assert.match(updated.comments.at(-1).body, /changed one file|Reading context/);
     const completedRun = state.runs.find((item) => item.ticketId === ticket.ticket.id);
+    const expectedWorktree = path.join(tmp, "worktrees", "App", "app-1");
+    assert.equal(completedRun.cwd, expectedWorktree);
+    assert.equal(fs.readFileSync(path.join(expectedWorktree, "setup-output.txt"), "utf8"), `App/app-1/${expectedWorktree}`);
     assert.equal(completedRun.events.some((event) => event.kind === "status" && event.text === "System"), false);
     assert.equal(completedRun.events.some((event) => event.kind === "assistant" && event.text === "Reading context"), true);
     assert.equal(completedRun.events.some((event) => event.kind === "tool" && event.text === "$ git status"), true);
     assert.equal(fs.existsSync(completedRun.logPath), true);
     assert.match(fs.readFileSync(completedRun.logPath, "utf8"), /Reading context/);
+  });
+});
+
+test("API auto-dispatches todo tickets when an assignee is added", async () => {
+  await withServer(async (baseUrl, tmp) => {
+    const repoPath = path.join(tmp, "repo");
+    createGitRepo(repoPath);
+    const agentScript = path.join(tmp, "assign-agent.js");
+    fs.writeFileSync(agentScript, "console.log('SUMMARY: started after assignment');");
+
+    const project = await post(`${baseUrl}/api/projects`, { name: "App", prefix: "APP", repoPath });
+    const agent = await post(`${baseUrl}/api/agents`, {
+      name: "Fake",
+      type: "custom",
+      command: `${process.execPath} ${agentScript}`,
+    });
+    const ticket = await post(`${baseUrl}/api/tickets`, {
+      projectId: project.project.id,
+      title: "Assign me",
+    });
+
+    const assigned = await patchAsUi(`${baseUrl}/api/tickets/${ticket.ticket.id}`, {
+      assigneeAgentId: agent.agent.id,
+    });
+    assert.equal(assigned.run.status, "running");
+    assert.equal(assigned.ticket.status, "in_progress");
+
+    const state = await waitForState(baseUrl, (next) => {
+      const updated = next.tickets.find((item) => item.id === ticket.ticket.id);
+      return updated?.status === "human_review" && updated.comments.some((item) => item.author === "agent");
+    });
+    const updated = state.tickets.find((item) => item.id === ticket.ticket.id);
+    assert.match(updated.comments.at(-1).body, /started after assignment/);
   });
 });
 
@@ -112,7 +153,7 @@ test("run transcript is hydrated from log files after restart", async () => {
   let server = await startServer({ service, runLogRoot });
   try {
     const repoPath = path.join(tmp, "repo");
-    fs.mkdirSync(repoPath);
+    createGitRepo(repoPath);
     const agentScript = path.join(tmp, "fake-agent.js");
     fs.writeFileSync(agentScript, "setTimeout(() => console.log(JSON.stringify({ type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text: 'Persistent transcript' } } })), 500);");
     const project = await post(`${server.baseUrl}/api/projects`, { name: "App", prefix: "APP", repoPath });
@@ -126,7 +167,7 @@ test("run transcript is hydrated from log files after restart", async () => {
       title: "Persist me",
       assigneeAgentId: agent.agent.id,
     });
-    await post(`${server.baseUrl}/api/tickets/${ticket.ticket.id}/dispatch`, {});
+    assert.equal(ticket.run.status, "running");
     await server.close();
     server = null;
 
@@ -147,7 +188,7 @@ test("run transcript is hydrated from log files after restart", async () => {
 test("API stops running ticket agents", async () => {
   await withServer(async (baseUrl, tmp) => {
     const repoPath = path.join(tmp, "repo");
-    fs.mkdirSync(repoPath);
+    createGitRepo(repoPath);
     const agentScript = path.join(tmp, "slow-agent.js");
     fs.writeFileSync(agentScript, "setTimeout(() => console.log('SUMMARY: done'), 30000);");
 
@@ -162,16 +203,17 @@ test("API stops running ticket agents", async () => {
       title: "Stop me",
       assigneeAgentId: agent.agent.id,
     });
+    assert.equal(ticket.run.status, "running");
 
-    await post(`${baseUrl}/api/tickets/${ticket.ticket.id}/dispatch`, {});
     const stopped = await post(`${baseUrl}/api/tickets/${ticket.ticket.id}/stop`, {});
     assert.equal(stopped.run.status, "running");
 
     const state = await waitForState(baseUrl, (next) => {
       const updated = next.tickets.find((item) => item.id === ticket.ticket.id);
-      return updated?.status === "todo";
+      return updated?.status === "human_review";
     });
     const updated = state.tickets.find((item) => item.id === ticket.ticket.id);
+    assert.equal(updated.status, "human_review");
     assert.equal(updated.comments.length, 0);
   });
 });
@@ -179,7 +221,7 @@ test("API stops running ticket agents", async () => {
 test("human review comments resume the assigned agent", async () => {
   await withServer(async (baseUrl, tmp) => {
     const repoPath = path.join(tmp, "repo");
-    fs.mkdirSync(repoPath);
+    createGitRepo(repoPath);
     const agentScript = path.join(tmp, "review-agent.js");
     fs.writeFileSync(agentScript, "console.log('SUMMARY: applied review feedback');");
 
@@ -195,6 +237,7 @@ test("human review comments resume the assigned agent", async () => {
       status: "human_review",
       assigneeAgentId: agent.agent.id,
     });
+    assert.equal(ticket.run, null);
 
     const comment = await postAsUi(`${baseUrl}/api/tickets/${ticket.ticket.id}/comments`, {
       body: "Please address this review note.",
@@ -212,10 +255,83 @@ test("human review comments resume the assigned agent", async () => {
   });
 });
 
+test("todo comments dispatch the assigned agent", async () => {
+  await withServer(async (baseUrl, tmp) => {
+    const repoPath = path.join(tmp, "repo");
+    createGitRepo(repoPath);
+    const agentScript = path.join(tmp, "todo-reply-agent.js");
+    fs.writeFileSync(agentScript, "console.log('SUMMARY: picked up todo reply');");
+
+    const project = await post(`${baseUrl}/api/projects`, { name: "App", prefix: "APP", repoPath });
+    const agent = await post(`${baseUrl}/api/agents`, {
+      name: "Fake",
+      type: "custom",
+      command: `${process.execPath} ${agentScript}`,
+    });
+    const ticket = await post(`${baseUrl}/api/tickets`, {
+      projectId: project.project.id,
+      title: "Reply from todo",
+      status: "human_review",
+      assigneeAgentId: agent.agent.id,
+    });
+    await patchAsAgent(`${baseUrl}/api/tickets/${ticket.ticket.id}`, { status: "todo" });
+
+    const comment = await postAsUi(`${baseUrl}/api/tickets/${ticket.ticket.id}/comments`, {
+      body: "Please start from this note.",
+    });
+    assert.equal(comment.run.status, "running");
+
+    const state = await waitForState(baseUrl, (next) => {
+      const updated = next.tickets.find((item) => item.id === ticket.ticket.id);
+      return updated?.status === "human_review" && updated.comments.some((item) => item.author === "agent");
+    });
+    const updated = state.tickets.find((item) => item.id === ticket.ticket.id);
+    assert.equal(updated.comments.some((item) => item.author === "you" && item.body.includes("start from this note")), true);
+    assert.match(updated.comments.at(-1).body, /picked up todo reply/);
+  });
+});
+
+test("agent completion detects pull requests with gh and moves ticket to PR review", async () => {
+  let detectedCwd = "";
+  await withServer(async (baseUrl, tmp) => {
+    const repoPath = path.join(tmp, "repo");
+    createGitRepo(repoPath);
+    const agentScript = path.join(tmp, "pr-agent.js");
+    fs.writeFileSync(agentScript, "console.log('SUMMARY: opened a pull request');");
+
+    const project = await post(`${baseUrl}/api/projects`, { name: "App", prefix: "APP", repoPath });
+    const agent = await post(`${baseUrl}/api/agents`, {
+      name: "Fake",
+      type: "custom",
+      command: `${process.execPath} ${agentScript}`,
+    });
+    const ticket = await post(`${baseUrl}/api/tickets`, {
+      projectId: project.project.id,
+      title: "Open a PR",
+      assigneeAgentId: agent.agent.id,
+    });
+    assert.equal(ticket.run.status, "running");
+
+    const state = await waitForState(baseUrl, (next) => {
+      const updated = next.tickets.find((item) => item.id === ticket.ticket.id);
+      return updated?.status === "pr_review";
+    });
+    const updated = state.tickets.find((item) => item.id === ticket.ticket.id);
+    assert.equal(updated.prUrl, "https://github.com/example/app/pull/42");
+    assert.match(updated.comments.at(-1).body, /opened a pull request/);
+    assert.equal(detectedCwd, path.join(tmp, "worktrees", "App", "app-1"));
+  }, {
+    findPullRequestUrl: (run) => {
+      detectedCwd = run.cwd;
+      return "https://github.com/example/app/pull/42";
+    },
+  });
+});
+
 test("API syncs merged PR review tickets to done", async () => {
   await withServer(async (baseUrl, tmp) => {
     const repoPath = path.join(tmp, "repo");
-    fs.mkdirSync(repoPath);
+    createGitRepo(repoPath);
     const project = await post(`${baseUrl}/api/projects`, { name: "App", prefix: "APP", repoPath });
     const ticket = await post(`${baseUrl}/api/tickets`, {
       projectId: project.project.id,
@@ -240,7 +356,7 @@ test("done tickets delete comments, activity, worktree, and run logs", async () 
     const repoPath = path.join(tmp, "repo");
     const workspaceRoot = path.join(tmp, "worktrees");
     const runLogRoot = path.join(tmp, "run-logs");
-    fs.mkdirSync(repoPath);
+    createGitRepo(repoPath);
     const project = await post(`${baseUrl}/api/projects`, { name: "App", prefix: "APP", repoPath });
     const ticket = await post(`${baseUrl}/api/tickets`, {
       projectId: project.project.id,
@@ -274,6 +390,42 @@ test("done tickets delete comments, activity, worktree, and run logs", async () 
   }));
 });
 
+test("deleting tickets removes Thomas worktrees but never the project root", async () => {
+  await withServer(async (baseUrl, tmp) => {
+    const repoPath = path.join(tmp, "repo");
+    const workspaceRoot = path.join(tmp, "worktrees");
+    createGitRepo(repoPath);
+    const project = await post(`${baseUrl}/api/projects`, { name: "App", prefix: "APP", repoPath });
+    const worktreeTicket = await post(`${baseUrl}/api/tickets`, {
+      projectId: project.project.id,
+      title: "Delete worktree",
+      status: "human_review",
+      workspaceId: "app-1",
+    });
+    const rootTicket = await post(`${baseUrl}/api/tickets`, {
+      projectId: project.project.id,
+      title: "Delete root fallback",
+      status: "human_review",
+    });
+    await postAsUi(`${baseUrl}/api/tickets/${worktreeTicket.ticket.id}/comments`, { body: "delete me" });
+    const worktreePath = path.join(workspaceRoot, "App", "app-1");
+    createGitRepo(worktreePath);
+
+    const deletedWorktree = await deleteAsUi(`${baseUrl}/api/tickets/${worktreeTicket.ticket.id}`);
+    assert.equal(deletedWorktree.deleted.ticketId, worktreeTicket.ticket.id);
+    assert.equal(fs.existsSync(worktreePath), false);
+    assert.equal(fs.existsSync(repoPath), true);
+    assert.equal(deletedWorktree.state.tickets.some((ticket) => ticket.id === worktreeTicket.ticket.id), false);
+    assert.equal(deletedWorktree.state.comments?.some?.((comment) => comment.ticketId === worktreeTicket.ticket.id) || false, false);
+
+    const deletedRootFallback = await deleteAsUi(`${baseUrl}/api/tickets/${rootTicket.ticket.id}`);
+    assert.equal(deletedRootFallback.deleted.ticketId, rootTicket.ticket.id);
+    assert.equal(deletedRootFallback.deleted.artifacts.worktree, null);
+    assert.equal(fs.existsSync(repoPath), true);
+    assert.equal(deletedRootFallback.state.tickets.some((ticket) => ticket.id === rootTicket.ticket.id), false);
+  }, (tmp) => ({ workspaceRoot: path.join(tmp, "worktrees") }));
+});
+
 test("diff uses ticket worktree when one exists", async () => {
   await withServer(async (baseUrl, tmp) => {
     const repoPath = path.join(tmp, "repo");
@@ -302,7 +454,7 @@ test("diff uses ticket worktree when one exists", async () => {
 });
 
 test("ticket actions open worktree and prepare resume command", async () => {
-  const actions = { openedPath: "", terminalPath: "", clipboard: "" };
+  const actions = { openedPath: "", terminalPath: "", terminal: "", clipboard: "" };
   await withServer(async (baseUrl, tmp) => {
     const repoPath = path.join(tmp, "repo with spaces");
     createGitRepo(repoPath);
@@ -315,19 +467,87 @@ test("ticket actions open worktree and prepare resume command", async () => {
     const ticket = await post(`${baseUrl}/api/tickets`, {
       projectId: project.project.id,
       title: "Open tools",
+      status: "human_review",
       assigneeAgentId: agent.agent.id,
     });
 
     const opened = await post(`${baseUrl}/api/tickets/${ticket.ticket.id}/open-worktree`, {});
-    assert.equal(opened.opened.repoPath, repoPath);
-    assert.equal(actions.openedPath, repoPath);
+    const expectedWorktree = path.join(tmp, "worktrees", "App", "app-1");
+    assert.equal(opened.opened.repoPath, expectedWorktree);
+    assert.equal(opened.opened.workspaceSource, "worktree");
+    assert.equal(actions.openedPath, expectedWorktree);
 
     const terminal = await post(`${baseUrl}/api/tickets/${ticket.ticket.id}/resume-terminal`, {});
-    assert.equal(terminal.opened.repoPath, repoPath);
-    assert.equal(actions.terminalPath, repoPath);
-    assert.equal(actions.clipboard, `cd '${repoPath}' && claude --permission-mode auto --continue`);
+    assert.equal(terminal.opened.repoPath, expectedWorktree);
+    assert.equal(actions.terminalPath, expectedWorktree);
+    assert.equal(actions.terminal, "warp");
+    assert.equal(actions.clipboard, "thomas ticket reply APP-1 <message>");
     assert.equal(terminal.opened.command, actions.clipboard);
+    assert.equal(terminal.opened.terminal, "warp");
+
+    await patchAsUi(`${baseUrl}/api/settings`, { preferredTerminal: "terminal" });
+    const defaultTerminal = await post(`${baseUrl}/api/tickets/${ticket.ticket.id}/resume-terminal`, {});
+    assert.equal(defaultTerminal.opened.terminal, "terminal");
+    assert.equal(actions.terminal, "terminal");
+
+    const oneOffTerminal = await post(`${baseUrl}/api/tickets/${ticket.ticket.id}/resume-terminal`, { terminal: "iterm" });
+    assert.equal(oneOffTerminal.opened.terminal, "iterm");
+    assert.equal(actions.terminal, "iterm");
   }, {
+    systemActions: {
+      openPath: (targetPath) => {
+        actions.openedPath = targetPath;
+      },
+      openTerminal: (targetPath, terminal) => {
+        actions.terminalPath = targetPath;
+        actions.terminal = terminal;
+      },
+      copyToClipboard: (text) => {
+        actions.clipboard = text;
+      },
+    },
+  });
+});
+
+test("ticket workspace actions prefer the active run workspace", async () => {
+  const actions = { openedPath: "", terminalPath: "" };
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "thomas-api-"));
+  const service = createThomasService({
+    store: createStateStore({ dbPath: path.join(tmp, "thomas.db") }),
+  });
+  const repoPath = path.join(tmp, "repo");
+  const runWorkspace = path.join(tmp, "run-workspace");
+  const runs = [];
+  const runner = {
+    dispatch: (ticketId) => {
+      const ticket = service.getState().tickets.find((item) => item.id === ticketId);
+      const run = {
+        id: `run-${ticketId}-1`,
+        ticketId,
+        agentId: ticket.assigneeAgentId,
+        agentName: "Fake",
+        status: "running",
+        command: "fake",
+        cwd: runWorkspace,
+        startedAt: new Date().toISOString(),
+        events: [],
+      };
+      runs.push(run);
+      service.updateTicket(ticketId, { status: "in_progress" }, "agent");
+      return run;
+    },
+    getRuns: () => runs,
+    stop: (ticketId) => {
+      const run = runs.find((item) => item.ticketId === ticketId);
+      run.status = "stopped";
+      service.updateTicket(ticketId, { status: "todo" }, "agent");
+      return run;
+    },
+    cleanupTicketRuns: () => [],
+  };
+  const server = await startServer({
+    service,
+    runner,
     systemActions: {
       openPath: (targetPath) => {
         actions.openedPath = targetPath;
@@ -335,10 +555,73 @@ test("ticket actions open worktree and prepare resume command", async () => {
       openTerminal: (targetPath) => {
         actions.terminalPath = targetPath;
       },
-      copyToClipboard: (text) => {
-        actions.clipboard = text;
-      },
+      copyToClipboard: () => {},
     },
+  });
+  try {
+    createGitRepo(repoPath);
+    createGitRepo(runWorkspace);
+    const project = await post(`${server.baseUrl}/api/projects`, { name: "App", prefix: "APP", repoPath });
+    const agent = await post(`${server.baseUrl}/api/agents`, {
+      name: "Fake",
+      type: "custom",
+      command: "fake",
+    });
+    const ticket = await post(`${server.baseUrl}/api/tickets`, {
+      projectId: project.project.id,
+      title: "Run workspace",
+      assigneeAgentId: agent.agent.id,
+    });
+
+    assert.equal(ticket.run.status, "running");
+
+    const opened = await post(`${server.baseUrl}/api/tickets/${ticket.ticket.id}/open-worktree`, {});
+    assert.equal(opened.opened.repoPath, runWorkspace);
+    assert.equal(opened.opened.workspaceSource, "run");
+    assert.equal(actions.openedPath, runWorkspace);
+
+    const terminal = await post(`${server.baseUrl}/api/tickets/${ticket.ticket.id}/resume-terminal`, {});
+    assert.equal(terminal.opened.repoPath, runWorkspace);
+    assert.equal(terminal.opened.workspaceSource, "run");
+    assert.equal(actions.terminalPath, runWorkspace);
+  } finally {
+    await server.close();
+  }
+});
+
+test("ticket reply CLI posts a human comment and resumes the assigned agent", async () => {
+  await withServer(async (baseUrl, tmp) => {
+    const repoPath = path.join(tmp, "repo");
+    createGitRepo(repoPath);
+    const agentScript = path.join(tmp, "fake-agent.js");
+    fs.writeFileSync(agentScript, "console.log('SUMMARY: resumed from CLI');");
+    const project = await post(`${baseUrl}/api/projects`, { name: "App", prefix: "APP", repoPath });
+    const agent = await post(`${baseUrl}/api/agents`, {
+      name: "Fake",
+      type: "custom",
+      command: `${process.execPath} ${agentScript}`,
+    });
+    const ticket = await post(`${baseUrl}/api/tickets`, {
+      projectId: project.project.id,
+      title: "Needs reply",
+      status: "human_review",
+      assigneeAgentId: agent.agent.id,
+    });
+
+    const result = await runNode([path.join(__dirname, "../../bin/thomas.js"), "ticket", "reply", ticket.ticket.id, "Please continue"], {
+      env: { ...process.env, THOMAS_URL: baseUrl },
+    });
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    assert.match(result.stdout, /APP-1: comment added/);
+    assert.match(result.stdout, /APP-1: resumed Fake/);
+
+    const state = await waitForState(baseUrl, (next) => {
+      const updated = next.tickets.find((item) => item.id === ticket.ticket.id);
+      return updated?.comments.some((item) => item.author === "you" && item.body === "Please continue")
+        && updated?.comments.some((item) => item.author === "agent" && item.body.includes("resumed from CLI"));
+    });
+    const updated = state.tickets.find((item) => item.id === ticket.ticket.id);
+    assert.equal(updated.status, "human_review");
   });
 });
 
@@ -353,11 +636,50 @@ async function post(url, body) {
   return data;
 }
 
+async function runNode(args, options = {}) {
+  return new Promise((resolve) => {
+    const child = spawn(process.execPath, args, {
+      ...options,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk;
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk;
+    });
+    child.on("close", (status) => resolve({ status, stdout, stderr }));
+  });
+}
+
 async function postAsUi(url, body) {
   const response = await fetch(url, {
     method: "POST",
     headers: { "content-type": "application/json", "x-thomas-actor": "ui" },
     body: JSON.stringify(body),
+  });
+  const data = await response.json();
+  assert.equal(response.status < 400, true, data.error);
+  return data;
+}
+
+async function patchAsUi(url, body) {
+  const response = await fetch(url, {
+    method: "PATCH",
+    headers: { "content-type": "application/json", "x-thomas-actor": "ui" },
+    body: JSON.stringify(body),
+  });
+  const data = await response.json();
+  assert.equal(response.status < 400, true, data.error);
+  return data;
+}
+
+async function deleteAsUi(url) {
+  const response = await fetch(url, {
+    method: "DELETE",
+    headers: { "content-type": "application/json", "x-thomas-actor": "ui" },
   });
   const data = await response.json();
   assert.equal(response.status < 400, true, data.error);
@@ -379,6 +701,12 @@ function createGitRepo(repoPath) {
   fs.mkdirSync(repoPath, { recursive: true });
   const result = spawnSync("git", ["init"], { cwd: repoPath, encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
+  assert.equal(spawnSync("git", ["config", "user.email", "thomas@example.test"], { cwd: repoPath, encoding: "utf8" }).status, 0);
+  assert.equal(spawnSync("git", ["config", "user.name", "Thomas Test"], { cwd: repoPath, encoding: "utf8" }).status, 0);
+  fs.writeFileSync(path.join(repoPath, "README.md"), "# Test\n");
+  assert.equal(spawnSync("git", ["add", "README.md"], { cwd: repoPath, encoding: "utf8" }).status, 0);
+  const commit = spawnSync("git", ["commit", "-m", "initial"], { cwd: repoPath, encoding: "utf8" });
+  assert.equal(commit.status, 0, commit.stderr || commit.stdout);
 }
 
 async function waitForState(baseUrl, predicate) {

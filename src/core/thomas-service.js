@@ -59,6 +59,7 @@ function createThomasService(options = {}) {
           ...(input.theme !== undefined ? { theme: normalizeTheme(input.theme) } : {}),
           ...(input.notifyHumanReview !== undefined ? { notifyHumanReview: input.notifyHumanReview === true } : {}),
           ...(input.showLiveAgentActivity !== undefined ? { showLiveAgentActivity: input.showLiveAgentActivity !== false } : {}),
+          ...(input.preferredTerminal !== undefined ? { preferredTerminal: normalizeTerminal(input.preferredTerminal) } : {}),
         };
         return { value: state.settings, activityDetails: { changed: changedKeys(before, state.settings) } };
       });
@@ -77,6 +78,7 @@ function createThomasService(options = {}) {
           prefix: normalizePrefix(input.prefix || name),
           repoPath: input.repoPath || "",
           description: input.description || "",
+          setupScript: input.setupScript || "",
           nextTicketNumber: 1,
           createdAt: now,
           updatedAt: now,
@@ -187,6 +189,22 @@ function createThomasService(options = {}) {
           activityDetails: { ticketId: ticket.id, changed: changedKeys(before, ticket) },
           skipActivity: ticket.status === "done" || statusChangedToDone,
         };
+      });
+    },
+
+    deleteTicket(ticketId, actor = "api") {
+      return mutate(actor, "ticket.deleted", ticketId, (state) => {
+        const ticket = requireTicket(state, ticketId);
+        state.tickets = state.tickets.filter((item) => item.id !== ticket.id);
+        state.comments = state.comments.filter((comment) => comment.ticketId !== ticket.id);
+        state.activity = state.activity.filter((event) => event.subject !== ticket.id && event.details?.ticketId !== ticket.id);
+        for (const other of state.tickets) {
+          if (other.parentTicketId === ticket.id) other.parentTicketId = null;
+          if (Array.isArray(other.blockedByTicketIds)) {
+            other.blockedByTicketIds = other.blockedByTicketIds.filter((id) => id !== ticket.id);
+          }
+        }
+        return { value: ticket, skipActivity: true };
       });
     },
 
@@ -339,6 +357,12 @@ function normalizePriority(priority) {
 function normalizeTheme(theme) {
   const normalized = String(theme || "").trim().toLowerCase();
   if (!["system", "dark", "light"].includes(normalized)) throw httpError(400, `Unknown theme: ${theme}`);
+  return normalized;
+}
+
+function normalizeTerminal(terminal) {
+  const normalized = String(terminal || "").trim().toLowerCase();
+  if (!["warp", "terminal", "iterm", "system"].includes(normalized)) throw httpError(400, `Unknown terminal: ${terminal}`);
   return normalized;
 }
 

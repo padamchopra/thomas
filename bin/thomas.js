@@ -14,6 +14,10 @@ async function main(args) {
     printHelp();
     return;
   }
+  if (command === "ticket") {
+    await handleTicketCommand(args.slice(1));
+    return;
+  }
   if (command !== "serve" && command !== "server" && command !== "dashboard") {
     throw new Error(`Unknown command: ${command}`);
   }
@@ -40,11 +44,43 @@ function parseServeArgs(args) {
   return options;
 }
 
+async function handleTicketCommand(args) {
+  const command = args[0];
+  if (command !== "reply") {
+    throw new Error(`Unknown ticket command: ${command || ""}`.trim());
+  }
+  const ticketId = args[1];
+  const message = args.slice(2).join(" ").trim();
+  if (!ticketId || !message) {
+    const error = new Error("Usage: thomas ticket reply <ticket-id> <message>");
+    error.status = 2;
+    throw error;
+  }
+  const baseUrl = String(process.env.THOMAS_URL || process.env.THOMAS_SERVER_URL || "http://127.0.0.1:4567").replace(/\/+$/, "");
+  const response = await fetch(`${baseUrl}/api/tickets/${encodeURIComponent(ticketId)}/comments`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-thomas-actor": "ui",
+    },
+    body: JSON.stringify({ body: message }),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok || data.ok === false) {
+    const error = new Error(data.error || `Thomas server returned ${response.status}`);
+    error.status = response.status < 500 ? response.status : 1;
+    throw error;
+  }
+  console.log(`${data.comment?.ticketId || ticketId}: comment added.`);
+  if (data.run) console.log(`${data.comment?.ticketId || ticketId}: resumed ${data.run.agentName || "assigned agent"}.`);
+}
+
 function printHelp() {
   console.log(`Thomas
 
 Usage:
   thomas serve [--host 127.0.0.1] [--port 4567]
+  thomas ticket reply <ticket-id> <message>
 
 Thomas is now API-first. Agents should use the HTTP API instead of CLI
 subcommands:

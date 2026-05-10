@@ -38,6 +38,12 @@ export async function updateTicket(ticketId, payload) {
   });
 }
 
+export async function deleteTicket(ticketId) {
+  return request(`/api/tickets/${encodeURIComponent(ticketId)}`, {
+    method: "DELETE",
+  });
+}
+
 export async function dispatchTicket(ticketId, payload = {}) {
   return request(`/api/tickets/${encodeURIComponent(ticketId)}/dispatch`, {
     method: "POST",
@@ -78,10 +84,10 @@ export async function openTicketWorktree(ticketId) {
   });
 }
 
-export async function resumeTicketTerminal(ticketId) {
+export async function resumeTicketTerminal(ticketId, terminal) {
   return request(`/api/tickets/${encodeURIComponent(ticketId)}/resume-terminal`, {
     method: "POST",
-    body: JSON.stringify({}),
+    body: JSON.stringify(terminal ? { terminal } : {}),
   });
 }
 

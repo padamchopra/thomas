@@ -23,15 +23,17 @@ import {
   Settings,
   Tag,
   Terminal,
+  Trash2,
   UsersRound,
   UserRound,
   FileDiff,
   FileText,
 } from "lucide-react";
-import { addComment, chooseProjectFolder, createAgent, createProject, createTicket, fetchState, fetchTicketDiff, openTicketFile, openTicketWorktree, resumeTicketTerminal, stopTicketRun, updateSettings, updateTicket } from "./lib/api";
+import { addComment, chooseProjectFolder, createAgent, createProject, createTicket, deleteTicket, fetchState, fetchTicketDiff, openTicketFile, openTicketWorktree, resumeTicketTerminal, stopTicketRun, updateSettings, updateTicket } from "./lib/api";
 import {
   IssueRow,
   KanbanBoard,
+  RunningElapsed,
   SidebarNavItem,
   SidebarSection,
   StatusIcon,
@@ -42,6 +44,12 @@ import "./styles.css";
 const BOARD_STATUSES = ["backlog", "todo", "in_progress", "blocked", "human_review", "pr_review", "done"];
 const ROUTE_VIEWS = new Set(["dashboard", "inbox", "tickets", "projects", "agents", "activity", "settings"]);
 const RESERVED_TOP_LEVEL = new Set([...ROUTE_VIEWS, "board", "list"]);
+const TERMINAL_OPTIONS = [
+  { value: "warp", label: "Warp" },
+  { value: "terminal", label: "Terminal" },
+  { value: "iterm", label: "iTerm" },
+  { value: "system", label: "System" },
+];
 
 function projectPrefixFromTicketId(ticketId) {
   const parts = String(ticketId || "").split("-");
@@ -153,11 +161,14 @@ function App() {
   };
 
   const openTicket = (ticketId, options = {}) => {
+    const ticket = options.ticket || state?.tickets.find((item) => item.id === ticketId) || null;
     setSelectedTicketId(ticketId);
     setSelectedAgentId(null);
-    const ticket = state?.tickets.find((item) => item.id === ticketId);
     const project = ticket ? state?.projects.find((item) => item.id === ticket.projectId) : null;
     pushPath(pathForTicket(ticketId, project), options);
+    setSelectedProjectId(ticket?.projectId || null);
+    setPendingProjectPrefix(null);
+    if (ticket) setView("projects");
   };
 
   const openAgent = (agentId, options = {}) => {
@@ -170,13 +181,13 @@ function App() {
   };
 
   const openProject = (projectId, options = {}) => {
+    const project = findProjectByIdentifier(state?.projects || [], projectId) || { id: projectId };
     setSelectedTicketId(null);
     setSelectedAgentId(null);
-    setSelectedProjectId(projectId);
+    setSelectedProjectId(project.id);
     setPendingProjectPrefix(null);
     setView("projects");
-    const project = state?.projects.find((item) => item.id === projectId);
-    pushPath(pathForProject(project) || `/projects/${encodeURIComponent(projectId)}`, options);
+    pushPath(pathForProject(project), options);
   };
 
   const closeTicket = () => {
@@ -246,7 +257,7 @@ function App() {
     [state, selectedAgentId],
   );
   const selectedProject = useMemo(
-    () => state?.projects.find((project) => project.id === selectedProjectId) || null,
+    () => findProjectByIdentifier(state?.projects || [], selectedProjectId),
     [state, selectedProjectId],
   );
   const openTicketCount = state?.tickets.filter((ticket) => !["done", "cancelled"].includes(ticket.status)).length || 0;
@@ -302,14 +313,16 @@ function App() {
 
   const handleCreateProject = async (event) => {
     event.preventDefault();
+    const target = event.currentTarget;
     try {
-      const form = new FormData(event.currentTarget);
+      const form = new FormData(target);
       await createProject({
         name: form.get("name"),
         prefix: form.get("prefix"),
         repoPath: form.get("repoPath"),
+        setupScript: form.get("setupScript"),
       });
-      event.currentTarget.reset();
+      target.reset();
       openView("tickets");
       await refresh();
     } catch (err) {
@@ -319,8 +332,9 @@ function App() {
 
   const handleCreateTicket = async (event) => {
     event.preventDefault();
+    const target = event.currentTarget;
     try {
-      const form = new FormData(event.currentTarget);
+      const form = new FormData(target);
       const assigneeAgentId = form.get("assigneeAgentId") || null;
       const response = await createTicket({
         projectId: form.get("projectId"),
@@ -329,10 +343,10 @@ function App() {
         assigneeAgentId,
         parentTicketId: form.get("parentTicketId") || null,
       });
-      event.currentTarget.reset();
+      target.reset();
       await refresh();
       closeNewTicket();
-      openTicket(response.ticket.id);
+      openTicket(response.ticket.id, { ticket: response.ticket });
     } catch (err) {
       setError(err.message);
     }
@@ -340,15 +354,16 @@ function App() {
 
   const handleCreateAgent = async (event) => {
     event.preventDefault();
+    const target = event.currentTarget;
     try {
-      const form = new FormData(event.currentTarget);
+      const form = new FormData(target);
       await createAgent({
         name: form.get("name"),
         type: form.get("type"),
         command: form.get("command"),
         status: form.get("status"),
       });
-      event.currentTarget.reset();
+      target.reset();
       await refresh();
     } catch (err) {
       setError(err.message);
@@ -358,6 +373,18 @@ function App() {
   const handleTicketPatch = async (ticketId, patch) => {
     await updateTicket(ticketId, patch);
     await refresh();
+  };
+
+  const handleDeleteTicket = async (ticketId) => {
+    const confirmed = window.confirm(`Delete ${ticketId}? This removes the ticket, comments, run logs, and any Thomas-owned worktree.`);
+    if (!confirmed) return;
+    try {
+      await deleteTicket(ticketId);
+      openView("tickets", { replace: true });
+      await refresh();
+    } catch (err) {
+      setError(err.message);
+    }
   };
 
   const handleStopTicketRun = async (ticketId) => {
@@ -377,9 +404,9 @@ function App() {
     }
   };
 
-  const handleResumeTicketTerminal = async (ticketId) => {
+  const handleResumeTicketTerminal = async (ticketId, terminal) => {
     try {
-      await resumeTicketTerminal(ticketId);
+      await resumeTicketTerminal(ticketId, terminal);
     } catch (err) {
       setError(err.message);
     }
@@ -419,7 +446,7 @@ function App() {
             <SidebarNavItem active={view === "projects" && !selectedProjectId} onClick={() => openView("projects")} icon={FolderGit2} label="All Projects" />
             {state.projects.map((project) => (
               <button
-                className={view === "projects" && selectedProjectId === project.id ? "teammate-row active" : "teammate-row"}
+                className={view === "projects" && selectedProject?.id === project.id ? "teammate-row active" : "teammate-row"}
                 key={project.id}
                 onClick={() => openProject(project.id)}
               >
@@ -480,6 +507,7 @@ function App() {
             onOpenTicket={openTicket}
             onOpenProject={openProject}
             onPatch={handleTicketPatch}
+            onDelete={handleDeleteTicket}
             onStopRun={handleStopTicketRun}
             onOpenWorktree={handleOpenTicketWorktree}
             onResumeTerminal={handleResumeTicketTerminal}
@@ -494,7 +522,7 @@ function App() {
           />
         ) : (
           <>
-            {view === "projects" && <ProjectsView state={state} selectedProjectId={selectedProjectId} onSelectProject={openProject} onBack={() => openView("projects")} onCreateProject={handleCreateProject} onOpenTicket={openTicket} />}
+            {view === "projects" && <ProjectsView state={state} selectedProjectId={selectedProjectId} onSelectProject={openProject} onBack={() => openView("projects")} onCreateProject={handleCreateProject} onOpenTicket={openTicket} onNewTicket={openNewTicket} />}
             {view === "agents" && <AgentsView state={state} selectedAgentId={selectedAgentId} onSelectAgent={openAgent} onBack={() => openView("agents")} onCreateAgent={handleCreateAgent} onOpenTicket={openTicket} />}
             {view === "activity" && <ActivityView state={state} />}
             {view === "settings" && <SettingsView state={state} onUpdateSettings={handleSettingsPatch} />}
@@ -524,7 +552,7 @@ function App() {
                 {view === "dashboard" && <Dashboard state={state} onOpenTicket={openTicket} />}
                 {view === "inbox" && <InboxView state={state} onOpenTicket={openTicket} />}
                 {view === "tickets" && ticketLayout === "board" && <Board state={state} tickets={filteredTickets} onOpenTicket={openTicket} />}
-                {view === "tickets" && ticketLayout === "list" && <TicketList tickets={filteredTickets} groupBy={groupBy} onOpenTicket={openTicket} />}
+                {view === "tickets" && ticketLayout === "list" && <TicketList tickets={filteredTickets} runs={state.runs || []} groupBy={groupBy} onOpenTicket={openTicket} />}
               </>
             )}
           </>
@@ -599,6 +627,10 @@ function ProjectForm({ onSubmit }) {
           <input name="repoPath" value={repoPath} onChange={(event) => setRepoPath(event.target.value)} placeholder="/Users/you/code/project" />
           <button type="button" className="quiet-button" onClick={browse} disabled={busy}><FolderOpen /> {busy ? "Browsing" : "Browse"}</button>
         </div>
+      </label>
+      <label className="entry-row entry-row-wide">
+        <span><strong>Setup script</strong><small>Runs in each new ticket worktree before the agent starts.</small></span>
+        <textarea name="setupScript" placeholder="pnpm install&#10;cp .env.example .env" />
       </label>
       <div className="entry-actions">
         <span className="subtle-copy">Projects define ticket IDs and the workspace root.</span>
@@ -784,8 +816,8 @@ function IssueControls({
   );
 }
 
-function ProjectsView({ state, selectedProjectId, onSelectProject, onBack, onCreateProject, onOpenTicket }) {
-  const selectedProject = state.projects.find((project) => project.id === selectedProjectId) || null;
+function ProjectsView({ state, selectedProjectId, onSelectProject, onBack, onCreateProject, onOpenTicket, onNewTicket }) {
+  const selectedProject = findProjectByIdentifier(state.projects, selectedProjectId);
   if (selectedProjectId) {
     return (
       <ProjectDetail
@@ -793,6 +825,7 @@ function ProjectsView({ state, selectedProjectId, onSelectProject, onBack, onCre
         project={selectedProject}
         onBack={onBack}
         onOpenTicket={onOpenTicket}
+        onNewTicket={onNewTicket}
       />
     );
   }
@@ -832,7 +865,7 @@ function ProjectsView({ state, selectedProjectId, onSelectProject, onBack, onCre
   );
 }
 
-function ProjectDetail({ state, project, onBack, onOpenTicket }) {
+function ProjectDetail({ state, project, onBack, onOpenTicket, onNewTicket }) {
   if (!project) {
     return (
       <section className="project-detail-layout">
@@ -846,7 +879,8 @@ function ProjectDetail({ state, project, onBack, onOpenTicket }) {
   const unassigned = open.filter((ticket) => !ticket.assigneeAgentId);
   const blocked = tickets.filter((ticket) => ticket.status === "blocked");
   const done = tickets.filter((ticket) => ticket.status === "done");
-  const recent = [...tickets].sort((a, b) => dateValue(b.createdAt) - dateValue(a.createdAt));
+  const projectTickets = [...tickets].sort((a, b) => dateValue(b.createdAt) - dateValue(a.createdAt));
+  const defaultAssigneeAgentId = preferredProjectAssigneeId(state, open);
   const statusRows = BOARD_STATUSES.map((status) => ({
     status,
     label: state.statuses.find((item) => item.value === status)?.label || titleCase(status),
@@ -873,11 +907,22 @@ function ProjectDetail({ state, project, onBack, onOpenTicket }) {
               <h2>Tickets</h2>
               <p>{project.prefix} · {project.repoPath || "No repository path"}</p>
             </div>
-            <span className="panel-count">{tickets.length}</span>
+            <div className="section-actions">
+              <span className="panel-count">{tickets.length}</span>
+              <button
+                type="button"
+                className="quiet-button icon-action"
+                onClick={() => onNewTicket({ projectId: project.id, assigneeAgentId: defaultAssigneeAgentId })}
+                title="New ticket"
+                aria-label="New ticket"
+              >
+                <Plus />
+              </button>
+            </div>
           </div>
           <div className="row-stack">
-            {recent.length ? recent.map((ticket) => (
-              <DashboardTicketRow key={ticket.id} ticket={ticket} onOpenTicket={onOpenTicket} />
+            {projectTickets.length ? projectTickets.map((ticket) => (
+              <DashboardTicketRow key={ticket.id} ticket={ticket} run={runningRunForTicket(state.runs || [], ticket.id)} onOpenTicket={onOpenTicket} />
             )) : <EmptyPanel message="No tickets for this project." />}
           </div>
         </div>
@@ -984,7 +1029,7 @@ function AgentsView({ state, selectedAgentId, onSelectAgent, onBack, onCreateAge
               <div className="section-titlebar"><h2>Recently Solved</h2></div>
               <div className="row-stack">
                 {solvedTickets.length ? solvedTickets.map((ticket) => (
-                  <DashboardTicketRow key={ticket.id} ticket={ticket} onOpenTicket={onOpenTicket} />
+                  <DashboardTicketRow key={ticket.id} ticket={ticket} run={runningRunForTicket(state.runs || [], ticket.id)} onOpenTicket={onOpenTicket} />
                 )) : <EmptyPanel message="No solved tickets yet." />}
               </div>
             </div>
@@ -992,7 +1037,7 @@ function AgentsView({ state, selectedAgentId, onSelectAgent, onBack, onCreateAge
               <div className="section-titlebar"><h2>Recent Work</h2></div>
               <div className="row-stack">
                 {recentTickets.length ? recentTickets.map((ticket) => (
-                  <DashboardTicketRow key={ticket.id} ticket={ticket} onOpenTicket={onOpenTicket} />
+                  <DashboardTicketRow key={ticket.id} ticket={ticket} run={runningRunForTicket(state.runs || [], ticket.id)} onOpenTicket={onOpenTicket} />
                 )) : <EmptyPanel message="No assigned tickets yet." />}
               </div>
             </div>
@@ -1106,6 +1151,12 @@ function SettingsView({ state, onUpdateSettings }) {
             </select>
           </label>
           <label className="setting-row">
+            <span><strong>Default terminal</strong><small>Used by the ticket resume button.</small></span>
+            <select value={settings.preferredTerminal || "warp"} onChange={(event) => onUpdateSettings({ preferredTerminal: event.target.value })}>
+              {TERMINAL_OPTIONS.map((terminal) => <option key={terminal.value} value={terminal.value}>{terminal.label}</option>)}
+            </select>
+          </label>
+          <label className="setting-row">
             <span><strong>Notify on Human Review</strong><small>Only alert when an agent leaves a ticket ready for review.</small></span>
             <span className="setting-inline-control">
               <input type="checkbox" checked={settings.notifyHumanReview === true} onChange={(event) => onUpdateSettings({ notifyHumanReview: event.target.checked })} />
@@ -1192,7 +1243,7 @@ function Dashboard({ state, onOpenTicket }) {
             <span className="panel-count">{attention.length}</span>
           </div>
           <div className="row-stack">
-            {attention.length ? attention.map((ticket) => <DashboardTicketRow key={ticket.id} ticket={ticket} onOpenTicket={onOpenTicket} />) : <EmptyPanel message="No blocked or unassigned to-do tickets." />}
+            {attention.length ? attention.map((ticket) => <DashboardTicketRow key={ticket.id} ticket={ticket} run={runningRunForTicket(state.runs || [], ticket.id)} onOpenTicket={onOpenTicket} />) : <EmptyPanel message="No blocked or unassigned to-do tickets." />}
           </div>
         </div>
         <div className="data-panel ops-panel">
@@ -1203,7 +1254,7 @@ function Dashboard({ state, onOpenTicket }) {
             <span className="panel-count">{active.length}</span>
           </div>
           <div className="row-stack">
-            {active.length ? active.map((ticket) => <DashboardTicketRow key={ticket.id} ticket={ticket} onOpenTicket={onOpenTicket} />) : <EmptyPanel message="No in-progress or review tickets." />}
+            {active.length ? active.map((ticket) => <DashboardTicketRow key={ticket.id} ticket={ticket} run={runningRunForTicket(state.runs || [], ticket.id)} onOpenTicket={onOpenTicket} />) : <EmptyPanel message="No in-progress or review tickets." />}
           </div>
         </div>
         <div className="data-panel ops-panel">
@@ -1213,7 +1264,7 @@ function Dashboard({ state, onOpenTicket }) {
             </div>
           </div>
           <div className="row-stack">
-            {recent.length ? recent.map((ticket) => <DashboardTicketRow key={ticket.id} ticket={ticket} onOpenTicket={onOpenTicket} />) : <EmptyPanel message="No tickets yet." />}
+            {recent.length ? recent.map((ticket) => <DashboardTicketRow key={ticket.id} ticket={ticket} run={runningRunForTicket(state.runs || [], ticket.id)} onOpenTicket={onOpenTicket} />) : <EmptyPanel message="No tickets yet." />}
           </div>
         </div>
       </div>
@@ -1302,23 +1353,23 @@ function InboxView({ state, onOpenTicket }) {
   return (
     <section className="dashboard-groups">
       <div className="split-columns">
-        <InboxPanel title="Blocked" tickets={blocked} empty="No blocked tickets." onOpenTicket={onOpenTicket} />
-        <InboxPanel title="Unassigned To-do" tickets={unassigned} empty="No unassigned to-do tickets." onOpenTicket={onOpenTicket} />
+        <InboxPanel title="Blocked" tickets={blocked} runs={state.runs || []} empty="No blocked tickets." onOpenTicket={onOpenTicket} />
+        <InboxPanel title="Unassigned To-do" tickets={unassigned} runs={state.runs || []} empty="No unassigned to-do tickets." onOpenTicket={onOpenTicket} />
       </div>
       <div className="split-columns">
-        <InboxPanel title="Human Review" tickets={review} empty="No human review tickets." onOpenTicket={onOpenTicket} />
-        <InboxPanel title="PR Review" tickets={prReview} empty="No PR review tickets." onOpenTicket={onOpenTicket} />
+        <InboxPanel title="Human Review" tickets={review} runs={state.runs || []} empty="No human review tickets." onOpenTicket={onOpenTicket} />
+        <InboxPanel title="PR Review" tickets={prReview} runs={state.runs || []} empty="No PR review tickets." onOpenTicket={onOpenTicket} />
       </div>
     </section>
   );
 }
 
-function InboxPanel({ title, tickets, empty, onOpenTicket }) {
+function InboxPanel({ title, tickets, runs = [], empty, onOpenTicket }) {
   return (
     <div className="data-panel">
       <div className="section-titlebar"><h2>{title}</h2></div>
       <div className="row-stack">
-        {tickets.length ? tickets.map((ticket) => <TicketRow key={ticket.id} ticket={ticket} onOpenTicket={onOpenTicket} />) : <EmptyPanel message={empty} />}
+        {tickets.length ? tickets.map((ticket) => <TicketRow key={ticket.id} ticket={ticket} run={runningRunForTicket(runs, ticket.id)} onOpenTicket={onOpenTicket} />) : <EmptyPanel message={empty} />}
       </div>
     </div>
   );
@@ -1330,13 +1381,14 @@ function Board({ state, tickets, onOpenTicket }) {
     <KanbanBoard
       statuses={BOARD_STATUSES}
       tickets={tickets}
+      runs={state.runs || []}
       statusLabel={labelFor}
       onOpenTicket={onOpenTicket}
     />
   );
 }
 
-function TicketList({ tickets, groupBy, onOpenTicket }) {
+function TicketList({ tickets, runs = [], groupBy, onOpenTicket }) {
   const groups = groupTickets(tickets, groupBy);
   const [collapsedGroups, setCollapsedGroups] = useState(() => new Set());
   const toggleGroup = (groupKey) => {
@@ -1366,7 +1418,7 @@ function TicketList({ tickets, groupBy, onOpenTicket }) {
               </button>
             ) : null}
             {!collapsedGroups.has(group.key) && group.tickets.map((ticket) => (
-                <IssueRow key={ticket.id} ticket={ticket} onOpenTicket={onOpenTicket} />
+                <IssueRow key={ticket.id} ticket={ticket} run={runningRunForTicket(runs, ticket.id)} onOpenTicket={onOpenTicket} />
               ))}
           </div>
         ))}
@@ -1403,11 +1455,11 @@ function groupRank(key, groupBy) {
   return 0;
 }
 
-function TicketRow({ ticket, onOpenTicket }) {
-  return <IssueRow ticket={ticket} onOpenTicket={onOpenTicket} compact />;
+function TicketRow({ ticket, run = null, onOpenTicket }) {
+  return <IssueRow ticket={ticket} run={run} onOpenTicket={onOpenTicket} compact />;
 }
 
-function DashboardTicketRow({ ticket, onOpenTicket }) {
+function DashboardTicketRow({ ticket, run = null, onOpenTicket }) {
   return (
     <button className="dashboard-ticket-row" onClick={() => onOpenTicket(ticket.id)}>
       <span className="dashboard-ticket-main">
@@ -1415,14 +1467,18 @@ function DashboardTicketRow({ ticket, onOpenTicket }) {
         <strong>{ticket.id}</strong>
         <span>{ticket.title}</span>
       </span>
-      <time>{timeAgo(ticket.updatedAt)}</time>
+      <span className="dashboard-ticket-time">
+        <RunningElapsed run={run} compact />
+        <time>{timeAgo(ticket.updatedAt)}</time>
+      </span>
     </button>
   );
 }
 
-function TicketDetail({ state, ticket, onClose, onOpenTicket, onOpenProject, onPatch, onStopRun, onOpenWorktree, onResumeTerminal, onComment, onCreateSubIssue }) {
+function TicketDetail({ state, ticket, onClose, onOpenTicket, onOpenProject, onPatch, onDelete, onStopRun, onOpenWorktree, onResumeTerminal, onComment, onCreateSubIssue }) {
   const [detailTab, setDetailTab] = useState("conversation");
   const [comment, setComment] = useState("");
+  const [terminalMenuOpen, setTerminalMenuOpen] = useState(false);
   const [diff, setDiff] = useState(null);
   const [diffError, setDiffError] = useState("");
   const [diffBusy, setDiffBusy] = useState(false);
@@ -1439,6 +1495,7 @@ function TicketDetail({ state, ticket, onClose, onOpenTicket, onOpenProject, onP
   const handoffLines = buildHandoffLines(ticket, latestComment);
   const ticketRun = state.runs?.find((run) => run.ticketId === ticket.id && ["running", "finished", "failed", "interrupted"].includes(run.status)) || null;
   const runningTicketRun = state.runs?.find((run) => run.ticketId === ticket.id && run.status === "running") || null;
+  const defaultTerminal = state.settings?.preferredTerminal || "warp";
 
   useEffect(() => {
     setBlockers(ticket.blockedByTicketIds.join(", "));
@@ -1455,6 +1512,7 @@ function TicketDetail({ state, ticket, onClose, onOpenTicket, onOpenProject, onP
     setAutoLoadedDiffTicketId(null);
     setReviewTarget(null);
     setReviewComment("");
+    setTerminalMenuOpen(false);
   }, [ticket.id]);
 
   const loadDiff = async () => {
@@ -1495,10 +1553,31 @@ function TicketDetail({ state, ticket, onClose, onOpenTicket, onOpenProject, onP
           <div className="detail-topline">
             <button className="close-action" onClick={onClose}>Back</button>
             <button className="quiet-button icon-action" onClick={() => onOpenWorktree(ticket.id)} title="Open worktree in Finder" aria-label="Open worktree in Finder"><FolderOpen /></button>
-            <button className="quiet-button icon-action" onClick={() => onResumeTerminal(ticket.id)} title="Open Terminal and copy resume command" aria-label="Open Terminal and copy resume command"><Terminal /></button>
+            <div className="terminal-split-action">
+              <button className="quiet-button icon-action terminal-main-action" onClick={() => onResumeTerminal(ticket.id, defaultTerminal)} title={`Open ${terminalLabel(defaultTerminal)} and copy resume command`} aria-label={`Open ${terminalLabel(defaultTerminal)} and copy resume command`}><Terminal /></button>
+              <button className="quiet-button icon-action terminal-menu-action" onClick={() => setTerminalMenuOpen((open) => !open)} title="Choose terminal" aria-label="Choose terminal"><ChevronDown /></button>
+              {terminalMenuOpen ? (
+                <div className="terminal-menu">
+                  {TERMINAL_OPTIONS.map((terminal) => (
+                    <button
+                      key={terminal.value}
+                      type="button"
+                      className={terminal.value === defaultTerminal ? "active" : ""}
+                      onClick={() => {
+                        setTerminalMenuOpen(false);
+                        onResumeTerminal(ticket.id, terminal.value);
+                      }}
+                    >
+                      {terminal.label}
+                    </button>
+                  ))}
+                </div>
+              ) : null}
+            </div>
             {runningTicketRun ? (
               <button className="quiet-button danger-button" onClick={() => onStopRun(ticket.id)}>Stop</button>
             ) : null}
+            <button className="quiet-button danger-button icon-action" onClick={() => onDelete(ticket.id)} title="Delete ticket" aria-label="Delete ticket"><Trash2 /></button>
             {ticket.prUrl ? (
               <a className="icon-link" href={ticket.prUrl} title={ticket.prUrl} aria-label="Open pull request">
                 <GitPullRequest />
@@ -1508,6 +1587,7 @@ function TicketDetail({ state, ticket, onClose, onOpenTicket, onOpenProject, onP
           <div className="detail-kicker">
             <span className={`status-chip state-${ticket.status}`}>{ticket.statusLabel}</span>
             <span className="reference-chip">{ticket.project?.name || "Unknown project"}</span>
+            <RunningElapsed run={runningTicketRun} />
           </div>
           <h2>{ticket.title}</h2>
           <p>{ticket.id} · updated {timeAgo(ticket.updatedAt)}</p>
@@ -1761,6 +1841,7 @@ function LiveActivity({ run }) {
       </div>
       <div className="live-run-meta">
         <span>{run.agentName}</span>
+        <RunningElapsed run={run} compact />
       </div>
       <div className="live-event-stack">
         {run.events?.length ? run.events.slice(-30).map((event) => (
@@ -2069,12 +2150,41 @@ function compareTickets(a, b, sortBy) {
   return dateValue(b.updatedAt) - dateValue(a.updatedAt);
 }
 
+function projectIdentifier(project) {
+  return project?.id || "";
+}
+
+function findProjectByIdentifier(projects, identifier) {
+  if (!identifier) return null;
+  const input = String(identifier).toLowerCase();
+  return projects.find((project) =>
+    project.id === identifier ||
+    project.prefix?.toLowerCase() === input ||
+    project.name?.toLowerCase() === input
+  ) || null;
+}
+
+function preferredProjectAssigneeId(state, openTickets) {
+  if (!state.agents.length) return "";
+  const projectAssignee = openTickets.find((ticket) => ticket.assigneeAgentId)?.assigneeAgentId;
+  if (projectAssignee) return projectAssignee;
+  return state.agents[0].id;
+}
+
 function statusRank(status) {
   return BOARD_STATUSES.concat("cancelled").indexOf(status);
 }
 
 function ticketNumber(ticket) {
   return Number(ticket.number || String(ticket.id || "").match(/-(\d+)$/)?.[1] || 0);
+}
+
+function runningRunForTicket(runs, ticketId) {
+  return runs.find((run) => run.ticketId === ticketId && run.status === "running") || null;
+}
+
+function terminalLabel(value) {
+  return TERMINAL_OPTIONS.find((terminal) => terminal.value === value)?.label || "Warp";
 }
 
 function dateValue(value) {

@@ -7,14 +7,18 @@ const { spawnSync } = require("node:child_process");
 const { URL } = require("node:url");
 const { createThomasService } = require("../core/thomas-service");
 const { createAgentRunner } = require("./agent-runner");
-const { defaultRunLogRoot, defaultWorktreeRoot, isGitRoot, resolveTicketWorkspace } = require("./workspace");
+const { defaultRunLogRoot, defaultWorktreeRoot, ensureTicketWorkspace, isGitRoot, resolveTicketWorkspace } = require("./workspace");
 const PACKAGE = require("../../package.json");
 
 function createApp(options = {}) {
   const service = options.service || createThomasService(options);
   const workspaceRoot = options.workspaceRoot;
   const runLogRoot = options.runLogRoot;
-  const runner = options.runner || createAgentRunner(service, { workspaceRoot, runLogRoot });
+  const runner = options.runner || createAgentRunner(service, {
+    workspaceRoot,
+    runLogRoot,
+    findPullRequestUrl: options.findPullRequestUrl,
+  });
   const prSyncer = createPrSyncer(service, runner, options);
   const systemActions = options.systemActions || {};
   const uiDist = options.uiDist || path.resolve(__dirname, "..", "..", "ui", "dist");
@@ -58,13 +62,25 @@ async function handleApi(service, runner, req, res, requestUrl, options = {}) {
 
   if (method === "POST" && parts.length === 1 && parts[0] === "tickets") {
     const ticket = service.createTicket(await readJson(req), actor);
-    sendJson(res, 201, { ok: true, ticket, state: stateWithRuns(service, runner, options) });
+    const run = autoDispatchTodoTicket(ticket, runner);
+    const state = stateWithRuns(service, runner, options);
+    sendJson(res, 201, { ok: true, ticket: findVisibleTicket(state, ticket.id) || ticket, run: sanitizeRun(run), state });
     return;
   }
 
   if (method === "PATCH" && parts.length === 2 && parts[0] === "tickets") {
-    const ticket = updateTicketAndCleanup(service, runner, parts[1], await readJson(req), actor, options);
-    sendJson(res, 200, { ok: true, ticket, state: stateWithRuns(service, runner, options) });
+    const beforeTicket = service.getState().tickets.find((item) => item.id === parts[1]);
+    const body = await readJson(req);
+    const ticket = updateTicketAndCleanup(service, runner, parts[1], body, actor, options);
+    const run = autoDispatchAfterAssignment(beforeTicket, ticket, body, runner);
+    const state = stateWithRuns(service, runner, options);
+    sendJson(res, 200, { ok: true, ticket: findVisibleTicket(state, ticket.id) || ticket, run: sanitizeRun(run), state });
+    return;
+  }
+
+  if (method === "DELETE" && parts.length === 2 && parts[0] === "tickets") {
+    const deleted = deleteTicketAndCleanup(service, runner, parts[1], actor, options);
+    sendJson(res, 200, { ok: true, deleted, state: stateWithRuns(service, runner, options) });
     return;
   }
 
@@ -104,19 +120,23 @@ async function handleApi(service, runner, req, res, requestUrl, options = {}) {
   }
 
   if (method === "POST" && parts.length === 3 && parts[0] === "tickets" && parts[2] === "open-worktree") {
-    sendJson(res, 200, { ok: true, opened: openTicketWorktree(service, parts[1], options) });
+    sendJson(res, 200, { ok: true, opened: openTicketWorktree(service, runner, parts[1], options) });
     return;
   }
 
   if (method === "POST" && parts.length === 3 && parts[0] === "tickets" && parts[2] === "resume-terminal") {
-    sendJson(res, 200, { ok: true, opened: openResumeTerminal(service, parts[1], options) });
+    const body = await readJson(req);
+    sendJson(res, 200, { ok: true, opened: openResumeTerminal(service, runner, parts[1], body, options) });
     return;
   }
 
   if (method === "POST" && parts.length === 3 && parts[0] === "tickets" && parts[2] === "assign") {
     const body = await readJson(req);
+    const beforeTicket = service.getState().tickets.find((item) => item.id === parts[1]);
     const ticket = service.assignTicket(parts[1], body.assigneeAgentId || body.agentId || null, actor);
-    sendJson(res, 200, { ok: true, ticket, state: stateWithRuns(service, runner, options) });
+    const run = autoDispatchAfterAssignment(beforeTicket, ticket, { assigneeAgentId: body.assigneeAgentId || body.agentId || null }, runner);
+    const state = stateWithRuns(service, runner, options);
+    sendJson(res, 200, { ok: true, ticket: findVisibleTicket(state, ticket.id) || ticket, run: sanitizeRun(run), state });
     return;
   }
 
@@ -261,6 +281,26 @@ function updateTicketAndCleanup(service, runner, ticketId, input, actor, options
   return ticket;
 }
 
+function deleteTicketAndCleanup(service, runner, ticketId, actor, options = {}) {
+  const before = service.getState().tickets.find((item) => item.id === ticketId);
+  if (!before) {
+    const error = new Error(`Unknown ticket: ${ticketId}`);
+    error.status = 404;
+    throw error;
+  }
+  const running = runner.getRuns().find((run) => run.ticketId === ticketId && run.status === "running");
+  if (running) {
+    try {
+      runner.stop(ticketId);
+    } catch {
+      // Cleanup below should still remove Thomas-owned metadata and artifacts.
+    }
+  }
+  const artifacts = cleanupDoneTicketArtifacts(before, runner, options);
+  const ticket = service.deleteTicket(ticketId, actor);
+  return { ticketId: ticket.id, artifacts };
+}
+
 function cleanupDoneTicketArtifacts(ticket, runner, options = {}) {
   if (!ticket) return { worktree: null, logs: [] };
   const deleted = { worktree: null, logs: [] };
@@ -339,11 +379,27 @@ function pruneEmptyParents(start, stop) {
 }
 
 function shouldDispatchAfterComment(ticket, body, actor, runner) {
-  if (!ticket || !["human_review", "pr_review"].includes(ticket.status)) return false;
+  if (!ticket || ["in_progress", "done"].includes(ticket.status)) return false;
   if (!ticket.assigneeAgentId) return false;
   const author = String(body?.author || actor || "").trim().toLowerCase();
   if (!["ui", "you", "human"].includes(author)) return false;
   return !runner.getRuns().some((run) => run.ticketId === ticket.id && run.status === "running");
+}
+
+function autoDispatchAfterAssignment(beforeTicket, ticket, input, runner) {
+  if (!Object.prototype.hasOwnProperty.call(input || {}, "assigneeAgentId")) return null;
+  if (beforeTicket?.assigneeAgentId === ticket.assigneeAgentId) return null;
+  return autoDispatchTodoTicket(ticket, runner);
+}
+
+function autoDispatchTodoTicket(ticket, runner) {
+  if (!ticket || ticket.status !== "todo" || !ticket.assigneeAgentId) return null;
+  if (runner.getRuns().some((run) => run.ticketId === ticket.id && run.status === "running")) return null;
+  return runner.dispatch(ticket.id);
+}
+
+function findVisibleTicket(state, ticketId) {
+  return state.tickets.find((item) => item.id === ticketId) || null;
 }
 
 function sanitizeRun(run) {
@@ -544,24 +600,43 @@ function openProjectFile(service, ticketId, filePath, options = {}) {
   return { filePath: relativePath };
 }
 
-function openTicketWorktree(service, ticketId, options = {}) {
-  const { repoPath, workspaceSource } = ticketRepository(service, ticketId, options);
+function openTicketWorktree(service, runner, ticketId, options = {}) {
+  const { repoPath, workspaceSource } = ticketRepositoryForWorkspaceAction(service, runner, ticketId, options);
   openPath(repoPath, options);
   return { repoPath, workspaceSource };
 }
 
-function openResumeTerminal(service, ticketId, options = {}) {
-  const { ticket, repoPath, workspaceSource } = ticketRepository(service, ticketId, options);
+function openResumeTerminal(service, runner, ticketId, input = {}, options = {}) {
+  const { ticket, repoPath, workspaceSource } = ticketRepositoryForWorkspaceAction(service, runner, ticketId, options);
   const agent = ticket.assigneeAgentId ? service.getState().agents.find((item) => item.id === ticket.assigneeAgentId) : null;
   if (!agent) {
     const error = new Error("Assign an agent before resuming a session.");
     error.status = 400;
     throw error;
   }
-  const command = buildResumeCommand(agent, repoPath);
+  const command = buildResumeCommand(ticket);
+  const terminal = normalizeTerminal(input.terminal || service.getState().settings?.preferredTerminal || "warp");
   copyToClipboard(command, options);
-  openTerminal(repoPath, options);
-  return { repoPath, workspaceSource, command };
+  openTerminal(repoPath, terminal, options);
+  return { repoPath, workspaceSource, command, terminal };
+}
+
+function ticketRepositoryForWorkspaceAction(service, runner, ticketId, options = {}) {
+  const base = ticketRepository(service, ticketId, options);
+  const runRepoPath = latestRunRepoPath(runner, ticketId, base.repoPath);
+  if (runRepoPath) return { ...base, repoPath: runRepoPath, workspaceSource: "run" };
+  const ensured = ensureTicketWorkspace(base.ticket, options);
+  return { ...base, repoPath: ensured.path, workspaceSource: ensured.source };
+}
+
+function latestRunRepoPath(runner, ticketId, projectPath) {
+  const run = runner.getRuns()
+    .filter((item) => item.ticketId === ticketId && item.cwd)
+    .sort((a, b) => String(b.startedAt || "").localeCompare(String(a.startedAt || "")))[0];
+  if (!run) return "";
+  const repoPath = path.resolve(run.cwd);
+  if (projectPath && repoPath === path.resolve(projectPath)) return "";
+  return isGitRoot(repoPath) ? repoPath : "";
 }
 
 function openPath(targetPath, options = {}) {
@@ -576,18 +651,34 @@ function openPath(targetPath, options = {}) {
   }
 }
 
-function openTerminal(repoPath, options = {}) {
-  if (options.systemActions?.openTerminal) return options.systemActions.openTerminal(repoPath);
+function openTerminal(repoPath, terminal = "warp", options = {}) {
+  const normalizedTerminal = normalizeTerminal(terminal);
+  if (options.systemActions?.openTerminal) return options.systemActions.openTerminal(repoPath, normalizedTerminal);
   if (process.platform !== "darwin") {
     openPath(repoPath, options);
     return;
   }
-  const result = spawnSync("open", ["-a", "Terminal", repoPath], { encoding: "utf8", timeout: 10000 });
+  const appName = terminalAppName(normalizedTerminal);
+  const result = spawnSync("open", ["-a", appName, repoPath], { encoding: "utf8", timeout: 10000 });
   if (result.status !== 0) {
-    const error = new Error(result.stderr.trim() || result.stdout.trim() || `Could not open Terminal for: ${repoPath}`);
+    const error = new Error(result.stderr.trim() || result.stdout.trim() || `Could not open ${appName} for: ${repoPath}`);
     error.status = 500;
     throw error;
   }
+}
+
+function terminalAppName(terminal) {
+  if (terminal === "warp") return "Warp";
+  if (terminal === "iterm") return "iTerm";
+  return "Terminal";
+}
+
+function normalizeTerminal(terminal) {
+  const normalized = String(terminal || "").trim().toLowerCase();
+  if (["warp", "terminal", "iterm", "system"].includes(normalized)) return normalized;
+  const error = new Error(`Unknown terminal: ${terminal}`);
+  error.status = 400;
+  throw error;
 }
 
 function copyToClipboard(text, options = {}) {
@@ -601,33 +692,8 @@ function copyToClipboard(text, options = {}) {
   }
 }
 
-function buildResumeCommand(agent, repoPath) {
-  const base = shellWords(agent.command || defaultAgentCommand(agent.type));
-  const executable = base[0] || defaultAgentCommand(agent.type);
-  const presetArgs = base.slice(1);
-  const type = String(agent.type || "").toLowerCase();
-  const executableName = path.basename(executable).toLowerCase();
-  let command;
-  if (type === "codex" || executableName.includes("codex")) {
-    command = [executable, ...presetArgs, "resume", "--last"];
-  } else if (type === "claude" || executableName.includes("claude")) {
-    command = [executable, ...presetArgs, "--continue"];
-  } else {
-    command = base.length ? base : [executable];
-  }
-  return `cd ${shellQuote(repoPath)} && ${command.map(shellQuote).join(" ")}`;
-}
-
-function defaultAgentCommand(type) {
-  return String(type || "").toLowerCase() === "codex" ? "codex" : "claude";
-}
-
-function shellWords(input) {
-  const words = [];
-  const re = /"([^"]*)"|'([^']*)'|(\S+)/g;
-  let match;
-  while ((match = re.exec(String(input || "")))) words.push(match[1] ?? match[2] ?? match[3]);
-  return words;
+function buildResumeCommand(ticket) {
+  return `thomas ticket reply ${shellQuote(ticket.id)} <message>`;
 }
 
 function shellQuote(value) {

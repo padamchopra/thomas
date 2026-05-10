@@ -72,6 +72,7 @@ function defaultState() {
       theme: "system",
       notifyHumanReview: false,
       showLiveAgentActivity: true,
+      preferredTerminal: "warp",
     },
   };
 }
@@ -90,6 +91,7 @@ function ensureStateDb(dbPath) {
     return;
   }
   createSchema(dbPath);
+  ensureColumn(dbPath, "projects", "setup_script", "TEXT NOT NULL DEFAULT ''");
   ensureColumn(dbPath, "comments", "metadata", "TEXT NOT NULL DEFAULT '{}'");
 }
 
@@ -110,6 +112,7 @@ CREATE TABLE IF NOT EXISTS projects (
   prefix TEXT NOT NULL,
   repo_path TEXT NOT NULL DEFAULT '',
   description TEXT NOT NULL DEFAULT '',
+  setup_script TEXT NOT NULL DEFAULT '',
   next_ticket_number INTEGER NOT NULL DEFAULT 1,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
@@ -193,6 +196,7 @@ SELECT
   prefix,
   repo_path AS repoPath,
   description,
+  setup_script AS setupScript,
   next_ticket_number AS nextTicketNumber,
   created_at AS createdAt,
   updated_at AS updatedAt
@@ -312,13 +316,14 @@ function writeState(dbPath, state, options = {}) {
 
   for (const project of state.projects) {
     statements.push(`INSERT INTO projects (
-      id, name, prefix, repo_path, description, next_ticket_number, created_at, updated_at
+      id, name, prefix, repo_path, description, setup_script, next_ticket_number, created_at, updated_at
     ) VALUES (
       ${sqlValue(project.id)},
       ${sqlValue(project.name)},
       ${sqlValue(project.prefix)},
       ${sqlValue(project.repoPath || "")},
       ${sqlValue(project.description || "")},
+      ${sqlValue(project.setupScript || "")},
       ${sqlNumber(project.nextTicketNumber || 1)},
       ${sqlValue(project.createdAt)},
       ${sqlValue(project.updatedAt)}
@@ -430,6 +435,7 @@ function readLegacyState(dbPath) {
       prefix: normalizePrefix(legacy.identifier || row.name),
       repoPath: legacy.repoPath || "",
       description: "",
+      setupScript: legacy.setupScript?.content || legacy.setupScript || "",
       nextTicketNumber: Math.max(Number.parseInt(legacy.kanbanNextNumber || "1", 10) || 1, 1),
       createdAt: legacy.createdAt || now,
       updatedAt: legacy.updatedAt || legacy.createdAt || now,
@@ -604,6 +610,7 @@ function normalizeState(state) {
       .replace(/^[0-9]/, "P$&") || "PROJ";
     project.repoPath = project.repoPath || "";
     project.description = project.description || "";
+    project.setupScript = project.setupScript || "";
     project.nextTicketNumber = Math.max(Number(project.nextTicketNumber || 1), 1);
   }
 
@@ -630,10 +637,12 @@ function normalizeState(state) {
 
 function normalizeSettings(settings) {
   const theme = ["system", "dark", "light"].includes(settings.theme) ? settings.theme : "system";
+  const preferredTerminal = ["warp", "terminal", "iterm", "system"].includes(settings.preferredTerminal) ? settings.preferredTerminal : "warp";
   return {
     theme,
     notifyHumanReview: settings.notifyHumanReview === true,
     showLiveAgentActivity: settings.showLiveAgentActivity !== false,
+    preferredTerminal,
   };
 }
 

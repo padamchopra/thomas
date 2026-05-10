@@ -352,6 +352,11 @@ h3 { font-size: 13px; font-weight: 650; }
   padding: 10px 12px;
   border-bottom: 1px solid var(--border);
 }
+.section-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
 .entry-form,
 .field-grid {
   display: grid;
@@ -938,6 +943,13 @@ button {
   font-weight: 600;
   white-space: nowrap;
 }
+.dashboard-ticket-time {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  min-width: 0;
+}
 .issue-row-compact {
   display: grid;
   justify-content: stretch;
@@ -1138,6 +1150,33 @@ button {
   align-items: center;
   flex-wrap: wrap;
   gap: 6px;
+}
+.card-head {
+  justify-content: space-between;
+}
+.elapsed-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  width: max-content;
+  max-width: 100%;
+  padding: 2px 6px;
+  border: 1px solid color-mix(in srgb, var(--green) 28%, var(--border));
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--green) 9%, transparent);
+  color: color-mix(in srgb, var(--green) 74%, var(--foreground));
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+.elapsed-pill svg {
+  width: 12px;
+  height: 12px;
+}
+.elapsed-pill-compact {
+  margin-left: 4px;
+  padding: 1px 5px;
 }
 .card-head {
   justify-content: flex-start;
@@ -1504,6 +1543,46 @@ button {
   align-items: center;
   justify-content: flex-start;
   gap: 10px;
+}
+.terminal-split-action {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+.terminal-split-action .icon-action {
+  border-radius: 0;
+}
+.terminal-split-action .terminal-main-action {
+  border-radius: 5px 0 0 5px;
+}
+.terminal-split-action .terminal-menu-action {
+  width: 24px;
+  border-left: 0;
+  border-radius: 0 5px 5px 0;
+}
+.terminal-menu {
+  position: absolute;
+  z-index: 20;
+  top: calc(100% + 6px);
+  left: 0;
+  display: grid;
+  min-width: 136px;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--card);
+  box-shadow: var(--shadow);
+}
+.terminal-menu button {
+  justify-content: flex-start;
+  width: 100%;
+  border: 0;
+  background: transparent;
+  color: var(--foreground);
+}
+.terminal-menu button:hover,
+.terminal-menu button.active {
+  background: var(--accent);
 }
 .detail-kicker {
   display: flex;

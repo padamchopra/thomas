@@ -1,9 +1,9 @@
 "use strict";
 
 const fs = require("node:fs");
-const { spawn } = require("node:child_process");
+const { spawn, spawnSync } = require("node:child_process");
 const path = require("node:path");
-const { defaultRunLogRoot, resolveTicketWorkspace } = require("./workspace");
+const { defaultRunLogRoot, ensureTicketWorkspace } = require("./workspace");
 
 function createAgentRunner(service, runnerOptions = {}) {
   const runs = new Map();
@@ -21,7 +21,7 @@ function createAgentRunner(service, runnerOptions = {}) {
     if (agent.status === "paused" || agent.status === "offline") throw httpError(400, `${agent.name} is ${agent.status}.`);
     if (!ticket.project?.repoPath) throw httpError(400, "Ticket project has no repository folder configured.");
 
-    const cwd = resolveTicketWorkspace(ticket, runnerOptions).path;
+    const cwd = ensureTicketWorkspace(ticket, runnerOptions).path;
     const runId = `run-${ticket.id}-${Date.now()}`;
     const liveActivity = state.settings?.showLiveAgentActivity !== false;
     const prompt = buildPrompt(ticket, options.message || "");
@@ -91,7 +91,7 @@ function createAgentRunner(service, runnerOptions = {}) {
 
   function getRuns() {
     const hydrated = hydrateRuns(runLogRoot, runs);
-    for (const run of hydrated) refreshRun(run, service);
+    for (const run of hydrated) refreshRun(run, service, runnerOptions);
     const state = service.getState();
     const ticketStatuses = new Map(state.tickets.map((ticket) => [ticket.id, ticket.status]));
     return hydrated.map((run) => {
@@ -162,7 +162,7 @@ function createAgentRunner(service, runnerOptions = {}) {
     saveRunMeta(run);
     const summary = run.stopped ? `${agentName} was stopped by the user.` : cleanSummary(run.summary) || errorMessage || `${agentName} finished with exit code ${exitCode}.`;
     addRunEvent(run, run.status, summary);
-    service.updateTicket(ticketId, { status: run.stopped ? "todo" : "human_review" }, "agent");
+    updateTicketAfterRun(service, ticketId, run, summary, runnerOptions);
     if (!run.stopped) {
       service.addComment(ticketId, {
         author: "agent",
@@ -202,7 +202,7 @@ function sanitizeRun(run) {
   };
 }
 
-function refreshRun(run, service) {
+function refreshRun(run, service, runnerOptions = {}) {
   if (run.status !== "running") return;
   parseRunOutput(run, true);
   if (run.pid && isProcessAlive(run.pid)) {
@@ -219,7 +219,8 @@ function refreshRun(run, service) {
       const state = service.getState();
       const ticket = state.tickets.find((item) => item.id === run.ticketId);
       if (ticket?.status === "in_progress") {
-        service.updateTicket(run.ticketId, { status: "human_review" }, "agent");
+        const prUrl = ticket.prUrl || findPullRequestUrl(run, summary, runnerOptions);
+        service.updateTicket(run.ticketId, prUrl ? { status: "pr_review", prUrl } : { status: "human_review" }, "agent");
         service.addComment(run.ticketId, {
           author: "agent",
           body: summary,
@@ -237,6 +238,49 @@ function refreshRun(run, service) {
       // Keep transcript hydration best-effort; state reads should not fail on recovery.
     }
     saveRunMeta(run);
+  }
+}
+
+function updateTicketAfterRun(service, ticketId, run, summary, runnerOptions = {}) {
+  const state = service.getState();
+  const ticket = state.tickets.find((item) => item.id === ticketId);
+  if (ticket?.status === "done") return;
+  if (run.stopped) {
+    service.updateTicket(ticketId, { status: "human_review" }, "agent");
+    return;
+  }
+  const prUrl = ticket?.prUrl || findPullRequestUrl(run, summary, runnerOptions);
+  if (ticket?.status === "pr_review" || prUrl) {
+    service.updateTicket(ticketId, prUrl ? { status: "pr_review", prUrl } : { status: "pr_review" }, "agent");
+    return;
+  }
+  service.updateTicket(ticketId, { status: "human_review" }, "agent");
+}
+
+function findPullRequestUrl(run, summary, runnerOptions = {}) {
+  if (runnerOptions.findPullRequestUrl) {
+    return String(runnerOptions.findPullRequestUrl(run, summary) || "").trim();
+  }
+  return findPullRequestUrlWithGh(run?.cwd);
+}
+
+function findPullRequestUrlWithGh(cwd) {
+  if (!cwd || !fs.existsSync(cwd)) return "";
+  const result = spawnSync("gh", ["pr", "view", "--json", "url"], {
+    cwd,
+    encoding: "utf8",
+    timeout: 15000,
+    env: {
+      ...process.env,
+      GH_PROMPT_DISABLED: "1",
+    },
+  });
+  if (result.status !== 0) return "";
+  try {
+    const parsed = JSON.parse(result.stdout || "{}");
+    return String(parsed.url || "").trim();
+  } catch {
+    return "";
   }
 }
 
@@ -536,7 +580,8 @@ function buildPrompt(ticket, message) {
     "Work non-interactively in this repository.",
     "Make only the changes needed for this ticket.",
     "Do not switch branches or create unrelated worktrees.",
-    "Use the Thomas HTTP API for ticket updates/comments if you need to communicate state.",
+    "Do not update Thomas ticket status directly.",
+    "If you open a pull request, use gh on the current branch; Thomas will detect it after the run.",
     "Run the smallest relevant validation you can reasonably run.",
     "",
     "Completion:",
