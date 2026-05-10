@@ -1521,6 +1521,11 @@ button {
   color: var(--muted-foreground);
   font-size: 13px;
 }
+.detail-overview-always {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
 .detail-tabs {
   display: inline-flex;
   justify-self: start;
@@ -1816,6 +1821,20 @@ button {
 }
 .property-link:hover {
   text-decoration: underline;
+}
+button.link-button {
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-weight: inherit;
+  text-align: left;
+  justify-content: flex-start;
+}
+button.link-button:hover {
+  background: transparent;
 }
 .dependency-editor,
 .note-form {
