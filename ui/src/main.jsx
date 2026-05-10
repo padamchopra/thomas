@@ -1,0 +1,2025 @@
+import React, { useEffect, useMemo, useState } from "react";
+import { createRoot } from "react-dom/client";
+import {
+  ChevronDown,
+  CheckCircle2,
+  CircleDot,
+  ClipboardList,
+  Columns3,
+  FolderGit2,
+  FolderOpen,
+  GitPullRequest,
+  ExternalLink,
+  History,
+  Inbox,
+  LayoutDashboard,
+  List,
+  MessageSquare,
+  Plus,
+  Search,
+  ShieldAlert,
+  SlidersHorizontal,
+  SquarePen,
+  Settings,
+  Tag,
+  Terminal,
+  UsersRound,
+  UserRound,
+  FileDiff,
+  FileText,
+} from "lucide-react";
+import { addComment, chooseProjectFolder, createAgent, createProject, createTicket, fetchState, fetchTicketDiff, openTicketFile, openTicketWorktree, resumeTicketTerminal, stopTicketRun, updateSettings, updateTicket } from "./lib/api";
+import {
+  IssueRow,
+  KanbanBoard,
+  SidebarNavItem,
+  SidebarSection,
+  StatusIcon,
+  timeAgo,
+} from "./components/primitives";
+import "./styles.css";
+
+const BOARD_STATUSES = ["backlog", "todo", "in_progress", "blocked", "human_review", "pr_review", "done"];
+const ROUTE_VIEWS = new Set(["dashboard", "inbox", "tickets", "projects", "agents", "activity", "settings"]);
+
+function readRoute() {
+  if (typeof window === "undefined") return { view: "dashboard", ticketId: null, agentId: null, projectId: null, layout: "board" };
+  const parts = window.location.pathname.split("/").filter(Boolean);
+  if (parts[0] === "tickets" && parts[1]) {
+    return { view: "tickets", ticketId: decodeURIComponent(parts[1]), agentId: null, projectId: null, layout: "board" };
+  }
+  if (parts[0] === "tickets") {
+    const layout = new URLSearchParams(window.location.search).get("layout") === "list" ? "list" : "board";
+    return { view: "tickets", ticketId: null, agentId: null, projectId: null, layout };
+  }
+  if (parts[0] === "projects" && parts[1]) {
+    return { view: "projects", ticketId: null, agentId: null, projectId: decodeURIComponent(parts[1]), layout: "board" };
+  }
+  if (parts[0] === "agents" && parts[1]) {
+    return { view: "agents", ticketId: null, agentId: decodeURIComponent(parts[1]), projectId: null, layout: "board" };
+  }
+  if (parts[0] === "board" || parts[0] === "list") {
+    return { view: "tickets", ticketId: null, agentId: null, projectId: null, layout: parts[0] };
+  }
+  if (ROUTE_VIEWS.has(parts[0])) {
+    return { view: parts[0], ticketId: null, agentId: null, projectId: null, layout: "board" };
+  }
+  return { view: "dashboard", ticketId: null, agentId: null, projectId: null, layout: "board" };
+}
+
+function pathForView(view, layout = "board") {
+  if (view === "dashboard") return "/";
+  if (view === "tickets") return `/tickets?layout=${layout === "list" ? "list" : "board"}`;
+  return `/${ROUTE_VIEWS.has(view) ? view : ""}`;
+}
+
+function pushPath(path, { replace = false } = {}) {
+  if (typeof window === "undefined") return;
+  if (`${window.location.pathname}${window.location.search}` === path) return;
+  const method = replace ? "replaceState" : "pushState";
+  window.history[method]({}, "", path);
+}
+
+function App() {
+  const initialRoute = useMemo(readRoute, []);
+  const [state, setState] = useState(null);
+  const [error, setError] = useState("");
+  const [view, setView] = useState(initialRoute.view);
+  const [query, setQuery] = useState("");
+  const [sortBy, setSortBy] = useState("updated");
+  const [groupBy, setGroupBy] = useState("status");
+  const [ticketLayout, setTicketLayout] = useState(initialRoute.layout || "board");
+  const [statusFilter, setStatusFilter] = useState("all");
+  const [projectFilter, setProjectFilter] = useState("all");
+  const [assigneeFilter, setAssigneeFilter] = useState("all");
+  const [selectedTicketId, setSelectedTicketId] = useState(initialRoute.ticketId);
+  const [selectedAgentId, setSelectedAgentId] = useState(initialRoute.agentId);
+  const [selectedProjectId, setSelectedProjectId] = useState(initialRoute.projectId);
+  const [newTicketOpen, setNewTicketOpen] = useState(false);
+  const [ticketDraftDefaults, setTicketDraftDefaults] = useState({});
+
+  const openNewTicket = (defaults = {}) => {
+    setTicketDraftDefaults(defaults);
+    setNewTicketOpen(true);
+  };
+
+  const closeNewTicket = () => {
+    setNewTicketOpen(false);
+    setTicketDraftDefaults({});
+  };
+
+  const openView = (nextView, options = {}) => {
+    setSelectedTicketId(null);
+    setSelectedAgentId(null);
+    setSelectedProjectId(null);
+    setView(nextView);
+    pushPath(pathForView(nextView, ticketLayout), options);
+  };
+
+  const changeTicketLayout = (layout) => {
+    setTicketLayout(layout);
+    if (view === "tickets" && !selectedTicketId) {
+      pushPath(pathForView("tickets", layout));
+    }
+  };
+
+  const openTicket = (ticketId, options = {}) => {
+    setSelectedTicketId(ticketId);
+    setSelectedProjectId(null);
+    pushPath(`/tickets/${encodeURIComponent(ticketId)}`, options);
+  };
+
+  const openAgent = (agentId, options = {}) => {
+    setSelectedTicketId(null);
+    setSelectedAgentId(agentId);
+    setSelectedProjectId(null);
+    setView("agents");
+    pushPath(`/agents/${encodeURIComponent(agentId)}`, options);
+  };
+
+  const openProject = (projectId, options = {}) => {
+    setSelectedTicketId(null);
+    setSelectedAgentId(null);
+    setSelectedProjectId(projectId);
+    setView("projects");
+    pushPath(`/projects/${encodeURIComponent(projectId)}`, options);
+  };
+
+  const refresh = async () => {
+    try {
+      setState(await fetchState());
+      setError("");
+    } catch (err) {
+      setError(err.message);
+    }
+  };
+
+  useEffect(() => {
+    if (window.location.pathname === "/dashboard") {
+      pushPath("/", { replace: true });
+    }
+    refresh();
+    const timer = window.setInterval(refresh, 2000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  useEffect(() => {
+    const onPopState = () => {
+      const route = readRoute();
+      setView(route.view);
+      setSelectedTicketId(route.ticketId);
+      setSelectedAgentId(route.agentId);
+      setSelectedProjectId(route.projectId);
+      setTicketLayout(route.layout || "board");
+    };
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
+  }, []);
+
+  const selectedTicket = useMemo(
+    () => state?.tickets.find((ticket) => ticket.id === selectedTicketId) || null,
+    [state, selectedTicketId],
+  );
+  const selectedAgent = useMemo(
+    () => state?.agents.find((agent) => agent.id === selectedAgentId) || null,
+    [state, selectedAgentId],
+  );
+  const selectedProject = useMemo(
+    () => state?.projects.find((project) => project.id === selectedProjectId) || null,
+    [state, selectedProjectId],
+  );
+  const openTicketCount = state?.tickets.filter((ticket) => !["done", "cancelled"].includes(ticket.status)).length || 0;
+  const inboxCount = state?.tickets.filter((ticket) =>
+    ticket.status === "blocked" ||
+    ["human_review", "pr_review"].includes(ticket.status) ||
+    (ticket.status === "todo" && !ticket.assigneeAgentId),
+  ).length || 0;
+  const activeBoardCount = state?.tickets.filter((ticket) => ["todo", "in_progress", "blocked", "human_review", "pr_review"].includes(ticket.status)).length || 0;
+  const agentOpenCounts = useMemo(() => {
+    const counts = new Map();
+    for (const ticket of state?.tickets || []) {
+      if (!ticket.assigneeAgentId || ["done", "cancelled"].includes(ticket.status)) continue;
+      counts.set(ticket.assigneeAgentId, (counts.get(ticket.assigneeAgentId) || 0) + 1);
+    }
+    return counts;
+  }, [state]);
+  const projectOpenCounts = useMemo(() => {
+    const counts = new Map();
+    for (const ticket of state?.tickets || []) {
+      if (["done", "cancelled"].includes(ticket.status)) continue;
+      counts.set(ticket.projectId, (counts.get(ticket.projectId) || 0) + 1);
+    }
+    return counts;
+  }, [state]);
+  const headerTitle = selectedTicket ? selectedTicket.id : selectedAgent && view === "agents" ? selectedAgent.name : selectedProject && view === "projects" ? selectedProject.name : viewTitle(view);
+  const headerSubtitle = selectedTicket
+    ? `${selectedTicket.statusLabel} · ${selectedTicket.project?.name || "Unknown project"} · updated ${timeAgo(selectedTicket.updatedAt)}`
+    : selectedAgent && view === "agents"
+      ? `${selectedAgent.type} · ${selectedAgent.status} · ${agentOpenCounts.get(selectedAgent.id) || 0} open tickets`
+    : selectedProject && view === "projects"
+      ? `${projectOpenCounts.get(selectedProject.id) || 0} open tickets · ${selectedProject.prefix}`
+    : `${state?.stats.openTickets || 0} open tickets · ${state?.stats.activeAgents || 0} agents · ${state?.stats.unassignedTodo || 0} unassigned to-do`;
+
+  const filteredTickets = useMemo(() => {
+    const needle = query.trim().toLowerCase();
+    let tickets = state?.tickets || [];
+    if (statusFilter !== "all") tickets = tickets.filter((ticket) => ticket.status === statusFilter);
+    if (projectFilter !== "all") tickets = tickets.filter((ticket) => ticket.projectId === projectFilter);
+    if (assigneeFilter === "unassigned") tickets = tickets.filter((ticket) => !ticket.assigneeAgentId);
+    if (assigneeFilter !== "all" && assigneeFilter !== "unassigned") {
+      tickets = tickets.filter((ticket) => ticket.assigneeAgentId === assigneeFilter);
+    }
+    if (needle) {
+      tickets = tickets.filter((ticket) =>
+        [ticket.id, ticket.title, ticket.description, ticket.project?.name, ticket.assignee?.name, ticket.statusLabel]
+        .filter(Boolean)
+        .some((value) => String(value).toLowerCase().includes(needle)),
+      );
+    }
+    return [...tickets].sort((a, b) => compareTickets(a, b, sortBy));
+  }, [state, query, sortBy, statusFilter, projectFilter, assigneeFilter]);
+
+  const handleCreateProject = async (event) => {
+    event.preventDefault();
+    try {
+      const form = new FormData(event.currentTarget);
+      await createProject({
+        name: form.get("name"),
+        prefix: form.get("prefix"),
+        repoPath: form.get("repoPath"),
+      });
+      event.currentTarget.reset();
+      openView("tickets");
+      await refresh();
+    } catch (err) {
+      setError(err.message);
+    }
+  };
+
+  const handleCreateTicket = async (event) => {
+    event.preventDefault();
+    try {
+      const form = new FormData(event.currentTarget);
+      const assigneeAgentId = form.get("assigneeAgentId") || null;
+      const response = await createTicket({
+        projectId: form.get("projectId"),
+        title: form.get("title"),
+        description: form.get("description"),
+        assigneeAgentId,
+        parentTicketId: form.get("parentTicketId") || null,
+      });
+      event.currentTarget.reset();
+      await refresh();
+      closeNewTicket();
+      openTicket(response.ticket.id);
+    } catch (err) {
+      setError(err.message);
+    }
+  };
+
+  const handleCreateAgent = async (event) => {
+    event.preventDefault();
+    try {
+      const form = new FormData(event.currentTarget);
+      await createAgent({
+        name: form.get("name"),
+        type: form.get("type"),
+        command: form.get("command"),
+        status: form.get("status"),
+      });
+      event.currentTarget.reset();
+      await refresh();
+    } catch (err) {
+      setError(err.message);
+    }
+  };
+
+  const handleTicketPatch = async (ticketId, patch) => {
+    await updateTicket(ticketId, patch);
+    await refresh();
+  };
+
+  const handleStopTicketRun = async (ticketId) => {
+    try {
+      await stopTicketRun(ticketId);
+      await refresh();
+    } catch (err) {
+      setError(err.message);
+    }
+  };
+
+  const handleOpenTicketWorktree = async (ticketId) => {
+    try {
+      await openTicketWorktree(ticketId);
+    } catch (err) {
+      setError(err.message);
+    }
+  };
+
+  const handleResumeTicketTerminal = async (ticketId) => {
+    try {
+      await resumeTicketTerminal(ticketId);
+    } catch (err) {
+      setError(err.message);
+    }
+  };
+
+  const handleSettingsPatch = async (patch) => {
+    try {
+      await updateSettings(patch);
+      await refresh();
+    } catch (err) {
+      setError(err.message);
+    }
+  };
+
+  if (!state) {
+    return <Shell error={error}><div className="notice-loading">Loading Thomas...</div></Shell>;
+  }
+
+  return (
+    <Shell error={error} theme={state.settings?.theme || "system"}>
+      <aside className="side-pane">
+        <div className="instance-header">
+          <div className="instance-mark">T</div>
+          <div>
+            <strong>Thomas</strong>
+            <span>Local control plane</span>
+          </div>
+        </div>
+        <nav className="command-nav">
+          <button className="create-ticket-link" onClick={() => state.projects.length > 0 ? openNewTicket() : openView("projects")}><SquarePen /> New Ticket</button>
+          <SidebarSection label="Work">
+            <SidebarNavItem active={view === "dashboard"} onClick={() => openView("dashboard")} icon={LayoutDashboard} label="Dashboard" />
+            <SidebarNavItem active={view === "inbox"} onClick={() => openView("inbox")} icon={Inbox} label="Inbox" badge={inboxCount || null} />
+            <SidebarNavItem active={view === "tickets"} onClick={() => openView("tickets")} icon={Columns3} label="Tickets" />
+          </SidebarSection>
+          <SidebarSection label="Projects">
+            <SidebarNavItem active={view === "projects" && !selectedProjectId} onClick={() => openView("projects")} icon={FolderGit2} label="All Projects" />
+            {state.projects.map((project) => (
+              <button
+                className={view === "projects" && selectedProjectId === project.id ? "teammate-row active" : "teammate-row"}
+                key={project.id}
+                onClick={() => openProject(project.id)}
+              >
+                <span className="project-initial">{project.name.slice(0, 1).toUpperCase()}</span>
+                <span>{project.name}</span>
+                {(projectOpenCounts.get(project.id) || 0) > 0 ? <span className="sidebar-count">{projectOpenCounts.get(project.id)}</span> : null}
+              </button>
+            ))}
+          </SidebarSection>
+          <SidebarSection label="Team">
+            <SidebarNavItem active={view === "agents" && !selectedAgentId} onClick={() => openView("agents")} icon={UsersRound} label="Agents" />
+            {state.agents.map((agent) => (
+              <button
+                className={view === "agents" && selectedAgentId === agent.id ? "teammate-row active" : "teammate-row"}
+                key={agent.id}
+                onClick={() => openAgent(agent.id)}
+              >
+                <span className={`presence-dot agent-${agent.status}`} />
+                <span>{agent.name}</span>
+                {(agentOpenCounts.get(agent.id) || 0) > 0 ? <span className="sidebar-count">{agentOpenCounts.get(agent.id)}</span> : null}
+              </button>
+            ))}
+          </SidebarSection>
+          <SidebarSection label="Instance">
+            <SidebarNavItem active={view === "activity"} onClick={() => openView("activity")} icon={History} label="Activity" />
+            <SidebarNavItem active={view === "settings"} onClick={() => openView("settings")} icon={Settings} label="Settings" />
+          </SidebarSection>
+        </nav>
+      </aside>
+
+      <main className="content-stage">
+        <header className={selectedTicket ? "page-header page-header-detail" : "page-header"}>
+          <div>
+            <h1>{headerTitle}</h1>
+            <p>{headerSubtitle}</p>
+          </div>
+          <div className="header-actions">
+            {!selectedTicket && state.projects.length > 0 && ["dashboard", "inbox", "tickets"].includes(view) ? (
+              <button onClick={() => openNewTicket()}><SquarePen /> New Ticket</button>
+            ) : null}
+            {!selectedTicket && <div className="view-switch">
+              <button className={view === "dashboard" ? "active" : ""} onClick={() => openView("dashboard")} title="Dashboard"><LayoutDashboard /></button>
+              <button className={view === "inbox" ? "active" : ""} onClick={() => openView("inbox")} title="Inbox"><Inbox /></button>
+              <button className={view === "tickets" ? "active" : ""} onClick={() => openView("tickets")} title="Tickets"><Columns3 /></button>
+            </div>}
+            <label className="find-box">
+              <Search />
+              <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search tickets" />
+            </label>
+          </div>
+        </header>
+
+        {selectedTicket ? (
+          <TicketDetail
+            state={state}
+            ticket={selectedTicket}
+            onClose={() => openView(view)}
+            onOpenTicket={openTicket}
+            onPatch={handleTicketPatch}
+            onStopRun={handleStopTicketRun}
+            onOpenWorktree={handleOpenTicketWorktree}
+            onResumeTerminal={handleResumeTicketTerminal}
+            onComment={async (body, metadata = {}) => {
+              await addComment(selectedTicket.id, { body, metadata });
+              await refresh();
+            }}
+            onCreateSubIssue={() => openNewTicket({
+              projectId: selectedTicket.projectId,
+              parentTicketId: selectedTicket.id,
+            })}
+          />
+        ) : (
+          <>
+            {view === "projects" && <ProjectsView state={state} selectedProjectId={selectedProjectId} onSelectProject={openProject} onBack={() => openView("projects")} onCreateProject={handleCreateProject} onOpenTicket={openTicket} />}
+            {view === "agents" && <AgentsView state={state} selectedAgentId={selectedAgentId} onSelectAgent={openAgent} onBack={() => openView("agents")} onCreateAgent={handleCreateAgent} onOpenTicket={openTicket} />}
+            {view === "activity" && <ActivityView state={state} />}
+            {view === "settings" && <SettingsView state={state} onUpdateSettings={handleSettingsPatch} />}
+            {["dashboard", "inbox", "tickets"].includes(view) && state.projects.length === 0 && (
+              <Onboarding onCreateProject={handleCreateProject} />
+            )}
+            {["dashboard", "inbox", "tickets"].includes(view) && state.projects.length > 0 && (
+              <>
+                {view === "tickets" && (
+                  <IssueControls
+                    state={state}
+                    sortBy={sortBy}
+                    layout={ticketLayout}
+                    statusFilter={statusFilter}
+                    projectFilter={projectFilter}
+                    assigneeFilter={assigneeFilter}
+                    onSortBy={setSortBy}
+                    onLayout={changeTicketLayout}
+                    onStatusFilter={setStatusFilter}
+                    onProjectFilter={setProjectFilter}
+                    onAssigneeFilter={setAssigneeFilter}
+                    groupBy={groupBy}
+                    onGroupBy={setGroupBy}
+                    resultCount={filteredTickets.length}
+                  />
+                )}
+                {view === "dashboard" && <Dashboard state={state} onOpenTicket={openTicket} />}
+                {view === "inbox" && <InboxView state={state} onOpenTicket={openTicket} />}
+                {view === "tickets" && ticketLayout === "board" && <Board state={state} tickets={filteredTickets} onOpenTicket={openTicket} />}
+                {view === "tickets" && ticketLayout === "list" && <TicketList tickets={filteredTickets} groupBy={groupBy} onOpenTicket={openTicket} />}
+              </>
+            )}
+          </>
+        )}
+      </main>
+      {newTicketOpen && (
+        <Modal title={ticketDraftDefaults.parentTicketId ? "New Sub-issue" : "New Ticket"} onClose={closeNewTicket}>
+          <CreateTicket state={state} onSubmit={handleCreateTicket} compact defaults={ticketDraftDefaults} />
+        </Modal>
+      )}
+    </Shell>
+  );
+}
+
+function Shell({ children, error, theme = "system" }) {
+  return (
+    <div className="workspace-shell" data-theme={theme}>
+      {children}
+      {error ? <div className="error-toast">{error}</div> : null}
+    </div>
+  );
+}
+
+function Stats({ stats }) {
+  return (
+    <section className="compact-stats" aria-label="Ticket stats">
+      <span><CircleDot /> <strong>{stats.openTickets}</strong> open</span>
+      <span><UserRound /> <strong>{stats.unassignedTodo}</strong> unassigned</span>
+      <span><ShieldAlert /> <strong>{stats.blocked}</strong> blocked</span>
+      <span><CheckCircle2 /> <strong>{stats.done}</strong> done</span>
+    </section>
+  );
+}
+
+function Onboarding({ onCreateProject }) {
+  return (
+    <section className="setup-card">
+      <div>
+        <h2>Create a project</h2>
+        <p>Tickets are project-scoped. Workspaces can be attached later when an agent starts work.</p>
+      </div>
+      <ProjectForm onSubmit={onCreateProject} />
+    </section>
+  );
+}
+
+function ProjectForm({ onSubmit }) {
+  const [repoPath, setRepoPath] = useState("");
+  const [busy, setBusy] = useState(false);
+  const browse = async () => {
+    setBusy(true);
+    try {
+      const result = await chooseProjectFolder();
+      setRepoPath(result.repoPath || "");
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <form className="entry-form" onSubmit={onSubmit}>
+      <label className="entry-row">
+        <span><strong>Project name</strong><small>The repository or product area tickets belong to.</small></span>
+        <input name="name" placeholder="jupiter-mobile" required />
+      </label>
+      <label className="entry-row">
+        <span><strong>Ticket key</strong><small>Short uppercase prefix used for issue IDs.</small></span>
+        <input name="prefix" placeholder="JMOBILE" />
+      </label>
+      <label className="entry-row entry-row-wide">
+        <span><strong>Repository folder</strong><small>Local folder agents should use for this project.</small></span>
+        <div className="path-picker">
+          <input name="repoPath" value={repoPath} onChange={(event) => setRepoPath(event.target.value)} placeholder="/Users/you/code/project" />
+          <button type="button" className="quiet-button" onClick={browse} disabled={busy}><FolderOpen /> {busy ? "Browsing" : "Browse"}</button>
+        </div>
+      </label>
+      <div className="entry-actions">
+        <span className="subtle-copy">Projects define ticket IDs and the workspace root.</span>
+        <button><Plus /> Create project</button>
+      </div>
+    </form>
+  );
+}
+
+function CreateTicket({ state, onSubmit, compact = false, defaults = {} }) {
+  if (compact) {
+    return (
+      <form className="ticket-compose" onSubmit={onSubmit}>
+        <div className="compose-body">
+          <input className="compose-title" id="quickCreateTitle" name="title" placeholder="Issue title" required />
+          <textarea className="compose-description" name="description" placeholder="Describe the work, acceptance criteria, links, or context for the agent." />
+        </div>
+        <div className="compose-meta">
+          <label>
+            Project
+            <select name="projectId" required defaultValue={defaults.projectId || ""}>
+              <option value="" disabled>Select project</option>
+              {state.projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}
+            </select>
+          </label>
+          <label>
+            Assignee
+            <select name="assigneeAgentId" defaultValue={defaults.assigneeAgentId || ""}>
+              <option value="">No assignee</option>
+              {state.agents.map((agent) => <option key={agent.id} value={agent.id}>{agent.name}</option>)}
+            </select>
+          </label>
+          <label>
+            Parent
+            <select name="parentTicketId" defaultValue={defaults.parentTicketId || ""}>
+              <option value="">No parent</option>
+              {state.tickets.map((ticket) => <option key={ticket.id} value={ticket.id}>{ticket.id} · {ticket.title}</option>)}
+            </select>
+          </label>
+        </div>
+        <div className="compose-footer">
+          <span className="subtle-copy">Unassigned to-do tickets stay ready for triage.</span>
+          <button><Plus /> Create ticket</button>
+        </div>
+      </form>
+    );
+  }
+  return (
+    <section className="ticket-draft">
+      <div className="section-titlebar">
+        <div>
+          <h2>Quick Create</h2>
+          <p>To-do tickets can stay unassigned until someone claims them.</p>
+        </div>
+      </div>
+      <form className="field-grid" onSubmit={onSubmit}>
+        <select name="projectId" required defaultValue={defaults.projectId || ""}>
+          <option value="" disabled>Select project</option>
+          {state.projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}
+        </select>
+        <input id="quickCreateTitle" name="title" placeholder="Title" required />
+        <select name="assigneeAgentId" defaultValue={defaults.assigneeAgentId || ""}>
+          <option value="">No assignee</option>
+          {state.agents.map((agent) => <option key={agent.id} value={agent.id}>{agent.name}</option>)}
+        </select>
+        <select name="parentTicketId" defaultValue={defaults.parentTicketId || ""}>
+          <option value="">No parent</option>
+          {state.tickets.map((ticket) => <option key={ticket.id} value={ticket.id}>{ticket.id} · {ticket.title}</option>)}
+        </select>
+        <textarea name="description" placeholder="Description" />
+        <button><Plus /> Add ticket</button>
+      </form>
+    </section>
+  );
+}
+
+function Modal({ title, children, onClose }) {
+  return (
+    <div className="dialog-backdrop" onMouseDown={onClose}>
+      <section className="dialog" onMouseDown={(event) => event.stopPropagation()}>
+        <div className="dialog-header">
+          <div className="dialog-crumb">
+            <span className="instance-mark">T</span>
+            <span>{title}</span>
+          </div>
+          <button className="close-action" onClick={onClose}>Close</button>
+        </div>
+        {children}
+      </section>
+    </div>
+  );
+}
+
+function IssueControls({
+  state,
+  sortBy,
+  layout,
+  statusFilter,
+  projectFilter,
+  assigneeFilter,
+  onSortBy,
+  onLayout,
+  onStatusFilter,
+  onProjectFilter,
+  onAssigneeFilter,
+  groupBy,
+  onGroupBy,
+  resultCount,
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const activeFilterCount = [
+    statusFilter !== "all",
+    projectFilter !== "all",
+    assigneeFilter !== "all",
+  ].filter(Boolean).length;
+  const clearFilters = () => {
+    onStatusFilter("all");
+    onProjectFilter("all");
+    onAssigneeFilter("all");
+  };
+  return (
+    <section className="filter-bar">
+      <div className="filter-summary">
+        <span><SlidersHorizontal /> {resultCount} ticket{resultCount === 1 ? "" : "s"}</span>
+        <span className={activeFilterCount ? "filter-count active" : "filter-count"}>{activeFilterCount} filters</span>
+      </div>
+      <div className="quick-filters">
+        <div className="layout-toggle" aria-label="Ticket layout">
+          <button className={layout === "board" ? "active" : ""} onClick={() => onLayout("board")} title="Board layout"><Columns3 /></button>
+          <button className={layout === "list" ? "active" : ""} onClick={() => onLayout("list")} title="List layout"><List /></button>
+        </div>
+        <button className={statusFilter === "all" && assigneeFilter === "all" ? "active" : ""} onClick={clearFilters}>All</button>
+        <button className={statusFilter === "human_review" ? "active" : ""} onClick={() => onStatusFilter("human_review")}>Human review</button>
+        <button className={statusFilter === "pr_review" ? "active" : ""} onClick={() => onStatusFilter("pr_review")}>PR review</button>
+        <button className={assigneeFilter === "unassigned" ? "active" : ""} onClick={() => onAssigneeFilter("unassigned")}>Unassigned</button>
+        {activeFilterCount ? <button onClick={clearFilters}>Clear</button> : null}
+        <button className={expanded ? "active" : ""} onClick={() => setExpanded((value) => !value)}><SlidersHorizontal /> Filters</button>
+      </div>
+      {(expanded || activeFilterCount > 0) && <div className="filter-selects">
+        <label>
+          Status
+          <select value={statusFilter} onChange={(event) => onStatusFilter(event.target.value)}>
+            <option value="all">All statuses</option>
+            {state.statuses.map((status) => <option key={status.value} value={status.value}>{status.label}</option>)}
+          </select>
+        </label>
+        <label>
+          Project
+          <select value={projectFilter} onChange={(event) => onProjectFilter(event.target.value)}>
+            <option value="all">All projects</option>
+            {state.projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}
+          </select>
+        </label>
+        <label>
+          Assignee
+          <select value={assigneeFilter} onChange={(event) => onAssigneeFilter(event.target.value)}>
+            <option value="all">All assignees</option>
+            <option value="unassigned">Unassigned</option>
+            {state.agents.map((agent) => <option key={agent.id} value={agent.id}>{agent.name}</option>)}
+          </select>
+        </label>
+        <label>
+          Group
+          <select value={groupBy} onChange={(event) => onGroupBy(event.target.value)}>
+            <option value="status">Status</option>
+            <option value="assignee">Assignee</option>
+            <option value="project">Project</option>
+            <option value="none">None</option>
+          </select>
+        </label>
+        <label>
+          Sort
+          <select value={sortBy} onChange={(event) => onSortBy(event.target.value)}>
+            <option value="updated">Recently updated</option>
+            <option value="created">Recently created</option>
+            <option value="status">Status</option>
+            <option value="id">Ticket ID</option>
+            <option value="title">Title</option>
+          </select>
+        </label>
+      </div>}
+    </section>
+  );
+}
+
+function ProjectsView({ state, selectedProjectId, onSelectProject, onBack, onCreateProject, onOpenTicket }) {
+  const selectedProject = state.projects.find((project) => project.id === selectedProjectId) || null;
+  if (selectedProjectId) {
+    return (
+      <ProjectDetail
+        state={state}
+        project={selectedProject}
+        onBack={onBack}
+        onOpenTicket={onOpenTicket}
+      />
+    );
+  }
+  return (
+    <section className="projects-layout">
+      <div className="data-panel">
+        <div className="section-titlebar">
+          <div>
+            <h2>Projects</h2>
+            <p>Registered repositories that can own tickets.</p>
+          </div>
+        </div>
+        <div className="record-list">
+          {state.projects.length ? state.projects.map((project) => (
+            <button className="record-row" key={project.id} onClick={() => onSelectProject(project.id)}>
+              <div>
+                <strong>{project.name}</strong>
+                <span>{project.prefix} · next ticket {project.nextTicketNumber}</span>
+              </div>
+              <code>{project.repoPath || "No repository path"}</code>
+            </button>
+          )) : <EmptyPanel message="No projects yet." />}
+        </div>
+      </div>
+      <div className="data-panel project-create-panel">
+        <div className="section-titlebar">
+          <div>
+            <h2>Add Project</h2>
+            <p>Create a project and attach its local repository folder.</p>
+          </div>
+        </div>
+        <div className="data-panel-content">
+          <ProjectForm onSubmit={onCreateProject} />
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function ProjectDetail({ state, project, onBack, onOpenTicket }) {
+  if (!project) {
+    return (
+      <section className="project-detail-layout">
+        <button className="close-action" onClick={onBack}>Back to projects</button>
+        <EmptyPanel message="Project not found." />
+      </section>
+    );
+  }
+  const tickets = state.tickets.filter((ticket) => ticket.projectId === project.id);
+  const open = tickets.filter((ticket) => !["done", "cancelled"].includes(ticket.status));
+  const unassigned = open.filter((ticket) => !ticket.assigneeAgentId);
+  const blocked = tickets.filter((ticket) => ticket.status === "blocked");
+  const done = tickets.filter((ticket) => ticket.status === "done");
+  const recent = [...tickets].sort((a, b) => dateValue(b.updatedAt) - dateValue(a.updatedAt)).slice(0, 10);
+  const statusRows = BOARD_STATUSES.map((status) => ({
+    status,
+    label: state.statuses.find((item) => item.value === status)?.label || titleCase(status),
+    count: tickets.filter((ticket) => ticket.status === status).length,
+  })).filter((row) => row.count > 0);
+  const agents = state.agents.map((agent) => ({
+    agent,
+    count: open.filter((ticket) => ticket.assigneeAgentId === agent.id).length,
+  })).filter((row) => row.count > 0);
+
+  return (
+    <section className="project-detail-layout">
+      <button className="close-action" onClick={onBack}>Back to projects</button>
+      <div className="project-summary-strip">
+        <span><strong>{open.length}</strong> open</span>
+        <span><strong>{unassigned.length}</strong> unassigned</span>
+        <span><strong>{blocked.length}</strong> blocked</span>
+        <span><strong>{done.length}</strong> done</span>
+      </div>
+      <div className="project-detail-grid">
+        <div className="data-panel">
+          <div className="section-titlebar">
+            <div>
+              <h2>Tickets</h2>
+              <p>{project.prefix} · {project.repoPath || "No repository path"}</p>
+            </div>
+            <span className="panel-count">{tickets.length}</span>
+          </div>
+          <div className="row-stack">
+            {recent.length ? recent.map((ticket) => (
+              <DashboardTicketRow key={ticket.id} ticket={ticket} onOpenTicket={onOpenTicket} />
+            )) : <EmptyPanel message="No tickets for this project." />}
+          </div>
+        </div>
+        <aside className="project-rail">
+          <div className="data-panel">
+            <div className="section-titlebar"><h2>Status</h2></div>
+            <div className="status-list">
+              {statusRows.length ? statusRows.map((row) => (
+                <div className="status-row" key={row.status}>
+                  <span><StatusIcon status={row.status} /> {row.label}</span>
+                  <strong>{row.count}</strong>
+                </div>
+              )) : <EmptyPanel message="No status data." />}
+            </div>
+          </div>
+          <div className="data-panel">
+            <div className="section-titlebar"><h2>Agents</h2></div>
+            <div className="status-list">
+              {agents.length ? agents.map((row) => (
+                <div className="status-row" key={row.agent.id}>
+                  <span><span className={`presence-dot agent-${row.agent.status}`} /> {row.agent.name}</span>
+                  <strong>{row.count}</strong>
+                </div>
+              )) : <EmptyPanel message="No assigned open work." />}
+            </div>
+          </div>
+        </aside>
+      </div>
+    </section>
+  );
+}
+
+function usageLinkForAgent(agent) {
+  const text = `${agent.type || ""} ${agent.command || ""} ${agent.name || ""}`.toLowerCase();
+  if (text.includes("codex") || text.includes("openai")) {
+    return {
+      provider: "OpenAI",
+      href: "https://platform.openai.com/usage",
+      description: "Open the OpenAI usage dashboard for API and organization activity.",
+    };
+  }
+  if (text.includes("claude") || text.includes("anthropic")) {
+    return {
+      provider: "Anthropic",
+      href: "https://console.anthropic.com/settings/usage",
+      description: "Open the Anthropic Console usage report for API usage and cost.",
+    };
+  }
+  return null;
+}
+
+function AgentsView({ state, selectedAgentId, onSelectAgent, onBack, onCreateAgent, onOpenTicket }) {
+  const selectedAgent = state.agents.find((agent) => agent.id === selectedAgentId) || null;
+  const usageLink = selectedAgent ? usageLinkForAgent(selectedAgent) : null;
+  const assignedTickets = selectedAgent
+    ? state.tickets.filter((ticket) => ticket.assigneeAgentId === selectedAgent.id)
+    : [];
+  const openTickets = assignedTickets.filter((ticket) => !["done", "cancelled"].includes(ticket.status));
+  const reviewTickets = assignedTickets.filter((ticket) => ["human_review", "pr_review"].includes(ticket.status));
+  const blockedTickets = assignedTickets.filter((ticket) => ticket.status === "blocked");
+  const completedTickets = assignedTickets.filter((ticket) => ticket.status === "done");
+  const recentTickets = [...assignedTickets].sort((a, b) => dateValue(b.updatedAt) - dateValue(a.updatedAt)).slice(0, 8);
+  const solvedTickets = [...completedTickets].sort((a, b) => dateValue(b.updatedAt) - dateValue(a.updatedAt)).slice(0, 6);
+
+  if (selectedAgentId) {
+    return (
+      <section className="agent-profile-layout">
+        <button className="close-action" onClick={onBack}>Back to agents</button>
+        {selectedAgent ? (
+          <div className="agent-profile-grid">
+            <div className="data-panel agent-profile-main">
+              <div className="section-titlebar">
+                <div>
+                  <h2>{selectedAgent.name}</h2>
+                  <p>{selectedAgent.type} · {selectedAgent.status}</p>
+                </div>
+                <span className={`presence-dot agent-${selectedAgent.status}`} />
+              </div>
+              <div className="agent-metrics">
+                <span><strong>{openTickets.length}</strong> open</span>
+                <span><strong>{reviewTickets.length}</strong> review</span>
+                <span><strong>{blockedTickets.length}</strong> blocked</span>
+                <span><strong>{completedTickets.length}</strong> done</span>
+              </div>
+              <div className="usage-card">
+                <div>
+                  <h3>Usage</h3>
+                  <span>{usageLink ? usageLink.provider : "custom"}</span>
+                </div>
+                <p>{usageLink ? usageLink.description : "No provider usage page is configured for this custom agent."}</p>
+                {usageLink ? (
+                  <a className="usage-link" href={usageLink.href} target="_blank" rel="noreferrer">
+                    <ExternalLink /> Open usage
+                  </a>
+                ) : null}
+              </div>
+              <div className="fact-list compact-facts">
+                <div><span>Command</span><code>{selectedAgent.command || "No command configured"}</code></div>
+                <div><span>Type</span><strong>{selectedAgent.type}</strong></div>
+                <div><span>Status</span><strong>{selectedAgent.status}</strong></div>
+              </div>
+            </div>
+            <div className="data-panel">
+              <div className="section-titlebar"><h2>Recently Solved</h2></div>
+              <div className="row-stack">
+                {solvedTickets.length ? solvedTickets.map((ticket) => (
+                  <DashboardTicketRow key={ticket.id} ticket={ticket} onOpenTicket={onOpenTicket} />
+                )) : <EmptyPanel message="No solved tickets yet." />}
+              </div>
+            </div>
+            <div className="data-panel">
+              <div className="section-titlebar"><h2>Recent Work</h2></div>
+              <div className="row-stack">
+                {recentTickets.length ? recentTickets.map((ticket) => (
+                  <DashboardTicketRow key={ticket.id} ticket={ticket} onOpenTicket={onOpenTicket} />
+                )) : <EmptyPanel message="No assigned tickets yet." />}
+              </div>
+            </div>
+          </div>
+        ) : <EmptyPanel message="Agent not found." />}
+      </section>
+    );
+  }
+
+  return (
+    <section className="settings-layout">
+      <div className="data-panel">
+        <div className="section-titlebar">
+          <div>
+            <h2>Agents</h2>
+            <p>Agent profiles available for assignment.</p>
+          </div>
+        </div>
+        <div className="record-list">
+          {state.agents.map((agent) => (
+            <button className="record-row agent-record" key={agent.id} onClick={() => onSelectAgent(agent.id)}>
+              <div>
+                <strong><span className={`presence-dot agent-${agent.status}`} /> {agent.name}</strong>
+                <span>{agent.type} · {agent.status}</span>
+              </div>
+              <code>{state.tickets.filter((ticket) => ticket.assigneeAgentId === agent.id && !["done", "cancelled"].includes(ticket.status)).length} open · {agent.command || "No command configured"}</code>
+            </button>
+          ))}
+        </div>
+      </div>
+      <div className="data-panel add-agent-panel">
+        <div className="section-titlebar">
+          <div>
+            <h2>Add Agent</h2>
+            <p>Register a local agent command that tickets can be assigned to.</p>
+          </div>
+        </div>
+        <div className="data-panel-content">
+          <form className="entry-form agent-entry-form" onSubmit={onCreateAgent}>
+            <label className="entry-row">
+              <span><strong>Name</strong><small>Display name used in tickets and workload.</small></span>
+              <input name="name" placeholder="Codex" required />
+            </label>
+            <label className="entry-row">
+              <span><strong>Type</strong><small>Provider profile for account and usage lookup.</small></span>
+              <select name="type" defaultValue="codex">
+                <option value="codex">codex</option>
+                <option value="claude">claude</option>
+                <option value="custom">custom</option>
+              </select>
+            </label>
+            <label className="entry-row">
+              <span><strong>Command</strong><small>Executable agents can run locally.</small></span>
+              <input name="command" placeholder="codex" />
+            </label>
+            <label className="entry-row">
+              <span><strong>Status</strong><small>Paused agents remain visible but are not active.</small></span>
+              <select name="status" defaultValue="available">
+                <option value="available">available</option>
+                <option value="paused">paused</option>
+              </select>
+            </label>
+            <div className="entry-actions">
+              <span className="subtle-copy">Usage details come from known local provider state when available.</span>
+              <button><Plus /> Add agent</button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function SettingsView({ state, onUpdateSettings }) {
+  const settings = state.settings || {};
+  const testNotification = async () => {
+    if (!("Notification" in window)) return;
+    let permission = Notification.permission;
+    if (permission === "default") permission = await Notification.requestPermission();
+    if (permission === "granted") {
+      new Notification("Thomas", {
+        body: "Test notification: Human Review alerts are available.",
+      });
+    }
+  };
+  return (
+    <section className="settings-layout">
+      <div className="data-panel">
+        <div className="section-titlebar">
+          <div>
+            <h2>Settings</h2>
+            <p>Controls that affect Thomas and dispatched agents.</p>
+          </div>
+        </div>
+        <div className="settings-stack">
+          <label className="setting-row">
+            <span><strong>Theme</strong><small>Applies to this local UI.</small></span>
+            <select value={settings.theme || "system"} onChange={(event) => onUpdateSettings({ theme: event.target.value })}>
+              <option value="system">System</option>
+              <option value="dark">Dark</option>
+              <option value="light">Light</option>
+            </select>
+          </label>
+          <label className="setting-row">
+            <span><strong>Notify on Human Review</strong><small>Only alert when an agent leaves a ticket ready for review.</small></span>
+            <span className="setting-inline-control">
+              <input type="checkbox" checked={settings.notifyHumanReview === true} onChange={(event) => onUpdateSettings({ notifyHumanReview: event.target.checked })} />
+              <button type="button" className="quiet-button" onClick={testNotification}>Test</button>
+            </span>
+          </label>
+          <label className="setting-row">
+            <span><strong>Show live agent activity</strong><small>Streams transient activity while a dispatched ticket is running.</small></span>
+            <input type="checkbox" checked={settings.showLiveAgentActivity !== false} onChange={(event) => onUpdateSettings({ showLiveAgentActivity: event.target.checked })} />
+          </label>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function ActivityView({ state }) {
+  return (
+    <section className="data-panel">
+      <div className="section-titlebar">
+        <div>
+          <h2>Activity</h2>
+          <p>Recent local API, ticket, project, and agent events.</p>
+        </div>
+      </div>
+      <div className="activity-table">
+        <div className="activity-table-head"><span>Event</span><span>Actor</span><span>Subject</span><span>When</span></div>
+        {state.activity.length ? state.activity.map((event) => (
+          <div className="activity-row" key={event.id}>
+            <div>
+              <strong>{event.type}</strong>
+              <code>{event.id}</code>
+            </div>
+            <span>{event.actor || "api"}</span>
+            <span>{event.subject || event.details?.ticketId || event.details?.projectId || event.details?.agentId || "system"}</span>
+            <time>{timeAgo(event.createdAt)}</time>
+          </div>
+        )) : <EmptyPanel message="No activity yet." />}
+      </div>
+    </section>
+  );
+}
+
+function Dashboard({ state, onOpenTicket }) {
+  const recent = [...state.tickets].sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt)).slice(0, 8);
+  const attention = state.tickets
+    .filter((ticket) => ticket.status === "blocked" || (ticket.status === "todo" && !ticket.assigneeAgentId))
+    .sort((a, b) => dateValue(b.updatedAt) - dateValue(a.updatedAt))
+    .slice(0, 8);
+  const active = state.tickets
+    .filter((ticket) => ["in_progress", "human_review", "pr_review"].includes(ticket.status))
+    .sort((a, b) => dateValue(b.updatedAt) - dateValue(a.updatedAt))
+    .slice(0, 8);
+  const openTickets = state.tickets.filter((ticket) => !["done", "cancelled"].includes(ticket.status));
+  const agentWorkload = state.agents.map((agent) => {
+    const assigned = openTickets.filter((ticket) => ticket.assigneeAgentId === agent.id);
+    return {
+      agent,
+      assigned,
+      review: assigned.filter((ticket) => ["human_review", "pr_review"].includes(ticket.status)).length,
+      blocked: assigned.filter((ticket) => ticket.status === "blocked").length,
+    };
+  });
+  const unassigned = openTickets.filter((ticket) => !ticket.assigneeAgentId);
+  const statusRows = BOARD_STATUSES.map((status) => ({
+    status,
+    label: state.statuses.find((item) => item.value === status)?.label || titleCase(status),
+    count: state.stats.byStatus[status] || 0,
+  })).filter((row) => row.count > 0);
+  const projectRows = state.projects.map((project) => ({
+    project,
+    open: openTickets.filter((ticket) => ticket.projectId === project.id).length,
+    review: openTickets.filter((ticket) => ticket.projectId === project.id && ["human_review", "pr_review"].includes(ticket.status)).length,
+  })).filter((row) => row.open > 0 || row.review > 0);
+  return (
+    <section className="operations-dashboard">
+      <div className="ops-main">
+        <Stats stats={state.stats} />
+        <div className="data-panel ops-panel">
+          <div className="section-titlebar">
+            <div>
+              <h2>Needs Attention</h2>
+            </div>
+            <span className="panel-count">{attention.length}</span>
+          </div>
+          <div className="row-stack">
+            {attention.length ? attention.map((ticket) => <DashboardTicketRow key={ticket.id} ticket={ticket} onOpenTicket={onOpenTicket} />) : <EmptyPanel message="No blocked or unassigned to-do tickets." />}
+          </div>
+        </div>
+        <div className="data-panel ops-panel">
+          <div className="section-titlebar">
+            <div>
+              <h2>Active Review</h2>
+            </div>
+            <span className="panel-count">{active.length}</span>
+          </div>
+          <div className="row-stack">
+            {active.length ? active.map((ticket) => <DashboardTicketRow key={ticket.id} ticket={ticket} onOpenTicket={onOpenTicket} />) : <EmptyPanel message="No in-progress or review tickets." />}
+          </div>
+        </div>
+        <div className="data-panel ops-panel">
+          <div className="section-titlebar">
+            <div>
+              <h2>Recent Tickets</h2>
+            </div>
+          </div>
+          <div className="row-stack">
+            {recent.length ? recent.map((ticket) => <DashboardTicketRow key={ticket.id} ticket={ticket} onOpenTicket={onOpenTicket} />) : <EmptyPanel message="No tickets yet." />}
+          </div>
+        </div>
+      </div>
+      <aside className="ops-rail">
+        <div className="data-panel ops-panel">
+          <div className="section-titlebar"><h2>Agent Workload</h2></div>
+          <div className="workload-list">
+            {agentWorkload.map((row) => (
+              <div className="workload-row" key={row.agent.id}>
+                <div className="workload-identity">
+                  <span className="presence-dot" />
+                  <strong>{row.agent.name}</strong>
+                </div>
+                <span className="rail-count">{row.assigned.length}</span>
+              </div>
+            ))}
+            <div className="workload-row workload-unassigned">
+              <div className="workload-identity">
+                <span className="presence-dot presence-muted" />
+                <strong>Unassigned</strong>
+              </div>
+              <span className="rail-count">{unassigned.length}</span>
+            </div>
+          </div>
+        </div>
+
+        <div className="data-panel ops-panel">
+          <div className="section-titlebar"><h2>Status Mix</h2></div>
+          <div className="status-list">
+            {statusRows.map((row) => (
+              <div className="status-row" key={row.status}>
+                <span><StatusIcon status={row.status} /> {row.label}</span>
+                <strong>{row.count}</strong>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div className="data-panel ops-panel">
+          <div className="section-titlebar"><h2>Project Queues</h2></div>
+          <div className="status-list">
+            {projectRows.length ? projectRows.map((row) => (
+              <div className="status-row" key={row.project.id}>
+                <span>{row.project.name}</span>
+                <strong>{row.open}</strong>
+              </div>
+            )) : <EmptyPanel message="No open project work." />}
+          </div>
+        </div>
+
+        <div className="data-panel ops-panel">
+          <div className="section-titlebar"><h2>Activity</h2></div>
+          <div className="event-log">
+            {state.activity.length ? state.activity.slice(0, 8).map((event) => (
+              <div className="event-row" key={event.id}>
+                <span>{event.type}</span>
+                <strong>{event.subject || "system"}</strong>
+                <time>{timeAgo(event.createdAt)}</time>
+              </div>
+            )) : <EmptyPanel message="No activity yet." />}
+          </div>
+        </div>
+      </aside>
+    </section>
+  );
+}
+
+function EmptyPanel({ message }) {
+  return <div className="blank-row">{message}</div>;
+}
+
+function InboxView({ state, onOpenTicket }) {
+  const blocked = state.tickets
+    .filter((ticket) => ticket.status === "blocked")
+    .sort((a, b) => dateValue(b.updatedAt) - dateValue(a.updatedAt));
+  const unassigned = state.tickets
+    .filter((ticket) => ticket.status === "todo" && !ticket.assigneeAgentId)
+    .sort((a, b) => dateValue(b.updatedAt) - dateValue(a.updatedAt));
+  const review = state.tickets
+    .filter((ticket) => ticket.status === "human_review")
+    .sort((a, b) => dateValue(b.updatedAt) - dateValue(a.updatedAt));
+  const prReview = state.tickets
+    .filter((ticket) => ticket.status === "pr_review")
+    .sort((a, b) => dateValue(b.updatedAt) - dateValue(a.updatedAt));
+
+  return (
+    <section className="dashboard-groups">
+      <div className="split-columns">
+        <InboxPanel title="Blocked" tickets={blocked} empty="No blocked tickets." onOpenTicket={onOpenTicket} />
+        <InboxPanel title="Unassigned To-do" tickets={unassigned} empty="No unassigned to-do tickets." onOpenTicket={onOpenTicket} />
+      </div>
+      <div className="split-columns">
+        <InboxPanel title="Human Review" tickets={review} empty="No human review tickets." onOpenTicket={onOpenTicket} />
+        <InboxPanel title="PR Review" tickets={prReview} empty="No PR review tickets." onOpenTicket={onOpenTicket} />
+      </div>
+    </section>
+  );
+}
+
+function InboxPanel({ title, tickets, empty, onOpenTicket }) {
+  return (
+    <div className="data-panel">
+      <div className="section-titlebar"><h2>{title}</h2></div>
+      <div className="row-stack">
+        {tickets.length ? tickets.map((ticket) => <TicketRow key={ticket.id} ticket={ticket} onOpenTicket={onOpenTicket} />) : <EmptyPanel message={empty} />}
+      </div>
+    </div>
+  );
+}
+
+function Board({ state, tickets, onOpenTicket }) {
+  const labelFor = (status) => state.statuses.find((item) => item.value === status)?.label || status;
+  return (
+    <KanbanBoard
+      statuses={BOARD_STATUSES}
+      tickets={tickets}
+      statusLabel={labelFor}
+      onOpenTicket={onOpenTicket}
+    />
+  );
+}
+
+function TicketList({ tickets, groupBy, onOpenTicket }) {
+  const groups = groupTickets(tickets, groupBy);
+  const [collapsedGroups, setCollapsedGroups] = useState(() => new Set());
+  const toggleGroup = (groupKey) => {
+    setCollapsedGroups((current) => {
+      const next = new Set(current);
+      if (next.has(groupKey)) {
+        next.delete(groupKey);
+      } else {
+        next.add(groupKey);
+      }
+      return next;
+    });
+  };
+  return (
+    <section className="data-panel">
+      <div className="issue-table">
+        <div className="issue-table-head"><span>Ticket</span><span>Assignee</span><span>Project</span><span>Updated</span></div>
+        {groups.map((group) => (
+          <div className="issue-group" key={group.key}>
+            {groupBy !== "none" ? (
+              <button
+                className={`issue-group-header${collapsedGroups.has(group.key) ? " collapsed" : ""}`}
+                onClick={() => toggleGroup(group.key)}
+              >
+                <span><ChevronDown className="group-caret" /> {group.label}</span>
+                <small>{group.tickets.length} ticket{group.tickets.length === 1 ? "" : "s"} <Plus /></small>
+              </button>
+            ) : null}
+            {!collapsedGroups.has(group.key) && group.tickets.map((ticket) => (
+                <IssueRow key={ticket.id} ticket={ticket} onOpenTicket={onOpenTicket} />
+              ))}
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function groupTickets(tickets, groupBy) {
+  if (groupBy === "none") return [{ key: "all", label: "All", tickets }];
+  const groups = new Map();
+  for (const ticket of tickets) {
+    const key = groupKey(ticket, groupBy);
+    if (!groups.has(key)) groups.set(key, { key, label: groupLabel(ticket, groupBy), tickets: [] });
+    groups.get(key).tickets.push(ticket);
+  }
+  return Array.from(groups.values()).sort((a, b) => groupRank(a.key, groupBy) - groupRank(b.key, groupBy) || a.label.localeCompare(b.label));
+}
+
+function groupKey(ticket, groupBy) {
+  if (groupBy === "assignee") return ticket.assignee?.name || "Unassigned";
+  if (groupBy === "project") return ticket.project?.name || "Unknown";
+  return ticket.status || "none";
+}
+
+function groupLabel(ticket, groupBy) {
+  if (groupBy === "assignee") return ticket.assignee?.name || "Unassigned";
+  if (groupBy === "project") return ticket.project?.name || "Unknown";
+  return ticket.statusLabel || titleCase(ticket.status || "none");
+}
+
+function groupRank(key, groupBy) {
+  if (groupBy === "status") return statusRank(key);
+  return 0;
+}
+
+function TicketRow({ ticket, onOpenTicket }) {
+  return <IssueRow ticket={ticket} onOpenTicket={onOpenTicket} compact />;
+}
+
+function DashboardTicketRow({ ticket, onOpenTicket }) {
+  return (
+    <button className="dashboard-ticket-row" onClick={() => onOpenTicket(ticket.id)}>
+      <span className="dashboard-ticket-main">
+        <StatusIcon status={ticket.status} />
+        <strong>{ticket.id}</strong>
+        <span>{ticket.title}</span>
+      </span>
+      <time>{timeAgo(ticket.updatedAt)}</time>
+    </button>
+  );
+}
+
+function TicketDetail({ state, ticket, onClose, onOpenTicket, onPatch, onStopRun, onOpenWorktree, onResumeTerminal, onComment, onCreateSubIssue }) {
+  const [detailTab, setDetailTab] = useState("conversation");
+  const [comment, setComment] = useState("");
+  const [diff, setDiff] = useState(null);
+  const [diffError, setDiffError] = useState("");
+  const [diffBusy, setDiffBusy] = useState(false);
+  const [autoLoadedDiffTicketId, setAutoLoadedDiffTicketId] = useState(null);
+  const [reviewTarget, setReviewTarget] = useState(null);
+  const [reviewComment, setReviewComment] = useState("");
+  const [blockers, setBlockers] = useState(ticket.blockedByTicketIds.join(", "));
+  const [labels, setLabels] = useState(ticket.labels.join(", "));
+  const ticketEvents = state.activity
+    .filter((event) => event.subject === ticket.id || event.details?.ticketId === ticket.id)
+    .slice(0, 6);
+  const latestComment = ticket.comments.slice().sort((a, b) => dateValue(b.createdAt) - dateValue(a.createdAt))[0];
+  const orderedComments = ticket.comments.slice().sort((a, b) => dateValue(a.createdAt) - dateValue(b.createdAt));
+  const handoffLines = buildHandoffLines(ticket, latestComment);
+  const ticketRun = state.runs?.find((run) => run.ticketId === ticket.id && ["running", "finished", "failed", "interrupted"].includes(run.status)) || null;
+  const runningTicketRun = state.runs?.find((run) => run.ticketId === ticket.id && run.status === "running") || null;
+
+  useEffect(() => {
+    setBlockers(ticket.blockedByTicketIds.join(", "));
+  }, [ticket.id, ticket.blockedByTicketIds]);
+
+  useEffect(() => {
+    setLabels(ticket.labels.join(", "));
+  }, [ticket.id, ticket.labels]);
+
+  useEffect(() => {
+    setDetailTab("conversation");
+    setDiff(null);
+    setDiffError("");
+    setAutoLoadedDiffTicketId(null);
+    setReviewTarget(null);
+    setReviewComment("");
+  }, [ticket.id]);
+
+  const loadDiff = async () => {
+    setDiffBusy(true);
+    setDiffError("");
+    try {
+      setDiff(await fetchTicketDiff(ticket.id));
+    } catch (err) {
+      setDiffError(err.message);
+    } finally {
+      setDiffBusy(false);
+    }
+  };
+
+  useEffect(() => {
+    if (detailTab !== "review" || ticket.status !== "human_review" || diff || diffBusy || autoLoadedDiffTicketId === ticket.id) return;
+    setAutoLoadedDiffTicketId(ticket.id);
+    loadDiff();
+  }, [detailTab, ticket.id, ticket.status, diff, diffBusy, autoLoadedDiffTicketId]);
+
+  const submitReviewComment = async (event) => {
+    event.preventDefault();
+    if (!reviewTarget || !reviewComment.trim()) return;
+    await onComment(reviewComment, {
+      type: "diff_review",
+      filePath: reviewTarget.filePath,
+      line: reviewTarget.line,
+      side: reviewTarget.side,
+    });
+    setReviewComment("");
+    setReviewTarget(null);
+  };
+
+  return (
+    <section className="detail-page">
+      <div className="detail-shell">
+        <div className="detail-heading">
+          <div className="detail-topline">
+            <button className="close-action" onClick={onClose}>Back</button>
+            <button className="quiet-button icon-action" onClick={() => onOpenWorktree(ticket.id)} title="Open worktree in Finder" aria-label="Open worktree in Finder"><FolderOpen /></button>
+            <button className="quiet-button icon-action" onClick={() => onResumeTerminal(ticket.id)} title="Open Terminal and copy resume command" aria-label="Open Terminal and copy resume command"><Terminal /></button>
+            {runningTicketRun ? (
+              <button className="quiet-button danger-button" onClick={() => onStopRun(ticket.id)}>Stop</button>
+            ) : null}
+            {ticket.prUrl ? (
+              <a className="icon-link" href={ticket.prUrl} title={ticket.prUrl} aria-label="Open pull request">
+                <GitPullRequest />
+              </a>
+            ) : null}
+          </div>
+          <div className="detail-kicker">
+            <span className={`status-chip state-${ticket.status}`}>{ticket.statusLabel}</span>
+            <span className="reference-chip">{ticket.project?.name || "Unknown project"}</span>
+          </div>
+          <h2>{ticket.title}</h2>
+          <p>{ticket.id} · updated {timeAgo(ticket.updatedAt)}</p>
+        </div>
+        <div className="detail-tabs" role="tablist" aria-label="Ticket detail sections">
+          <button className={detailTab === "conversation" ? "active" : ""} onClick={() => setDetailTab("conversation")}>Conversation</button>
+          <button className={detailTab === "overview" ? "active" : ""} onClick={() => setDetailTab("overview")}>Overview</button>
+          {ticket.status === "human_review" ? <button className={detailTab === "review" ? "active" : ""} onClick={() => setDetailTab("review")}>Review diff</button> : null}
+          <button className={detailTab === "activity" ? "active" : ""} onClick={() => setDetailTab("activity")}>Activity</button>
+          <button className={detailTab === "dependencies" ? "active" : ""} onClick={() => setDetailTab("dependencies")}>Dependencies</button>
+        </div>
+        <div className="detail-layout">
+          <div className="detail-primary">
+            {detailTab === "conversation" && (
+              <section className="detail-tab-panel">
+                <div className="comment-stack">
+                  {orderedComments.length ? orderedComments.map((item) => (
+                    <article className={`note note-${commentAuthorClass(item.author)}`} key={item.id}>
+                      <div className="note-header">
+                        <strong>{displayCommentAuthor(item.author)}</strong>
+                        <time>{timeAgo(item.createdAt)}</time>
+                      </div>
+                      {item.metadata?.type === "diff_review" ? (
+                        <div className="review-metadata">
+                          <FileDiff />
+                          <span>{item.metadata.filePath}:{item.metadata.line || "?"}</span>
+                        </div>
+                      ) : null}
+                      <MarkdownText value={item.body} />
+                    </article>
+                  )) : <EmptyPanel message="No comments yet." />}
+                </div>
+                <form className="note-form note-form-primary" onSubmit={async (event) => {
+                  event.preventDefault();
+                  if (!comment.trim()) return;
+                  await onComment(comment);
+                  setComment("");
+                }}>
+                  <textarea value={comment} onChange={(event) => setComment(event.target.value)} placeholder="Add a comment or handoff note" />
+                  <button><MessageSquare /> Comment</button>
+                </form>
+              </section>
+            )}
+
+            {detailTab === "review" && (
+              <section className="detail-tab-panel diff-review-panel">
+                <div className="section-heading-row">
+                  <h3><FileDiff /> Review local diff</h3>
+                  <button className="quiet-button" onClick={loadDiff} disabled={diffBusy}>{diffBusy ? "Loading" : diff ? "Refresh" : "Load diff"}</button>
+                </div>
+                {diffError ? <div className="blank-row">{diffError}</div> : null}
+                {diff ? (
+                  <DiffViewer
+                    ticketId={ticket.id}
+                    diff={diff}
+                    reviewTarget={reviewTarget}
+                    reviewComment={reviewComment}
+                    onSelectTarget={setReviewTarget}
+                    onCommentChange={setReviewComment}
+                    onSubmit={submitReviewComment}
+                  />
+                ) : <EmptyPanel message="Load the current local diff when this ticket is ready for human review." />}
+              </section>
+            )}
+
+            {detailTab === "overview" && (
+              <section className="detail-tab-panel">
+                <section className="detail-section detail-description">
+                  <h3>Description</h3>
+                  <MarkdownText value={ticket.description || "No description yet."} className="detail-copy" />
+                </section>
+
+                <section className="handoff-card">
+                  <div className="section-heading-row">
+                    <h3><ClipboardList /> Continuation handoff</h3>
+                    <span>{timeAgo(ticket.updatedAt)}</span>
+                  </div>
+                  <div className="handoff-copy">
+                    {handoffLines.map((line) => <p key={line}>{line}</p>)}
+                  </div>
+                </section>
+
+              </section>
+            )}
+
+            {detailTab === "activity" && (
+              <section className="detail-tab-panel">
+                {ticketRun ? <LiveActivity run={ticketRun} /> : null}
+                <div className="section-heading-row">
+                  <h3><History /> Run ledger</h3>
+                  <span>{ticketEvents.length || 1} event{ticketEvents.length === 1 ? "" : "s"}</span>
+                </div>
+                <div className="run-ledger">
+                  {(ticketEvents.length ? ticketEvents : [syntheticTicketEvent(ticket)]).map((event) => (
+                    <div className="run-row" key={event.id}>
+                      <div>
+                        <strong>{event.type}</strong>
+                        <span>by {event.actor || "api"}</span>
+                      </div>
+                      <span>{event.details?.changed?.length ? event.details.changed.join(", ") : event.subject || ticket.id}</span>
+                      <time>{timeAgo(event.createdAt)}</time>
+                    </div>
+                  ))}
+                </div>
+              </section>
+            )}
+
+            {detailTab === "dependencies" && (
+              <section className="detail-tab-panel dependency-tab">
+                <section className="dependency-card">
+                  <h3>Blocked by</h3>
+                  <div className="dependency-editor">
+                    <input value={blockers} onChange={(event) => setBlockers(event.target.value)} placeholder="APP-1, APP-2" />
+                    <button onClick={() => onPatch(ticket.id, { blockedByTicketIds: blockers.split(",").map((item) => item.trim()).filter(Boolean) })}>Save</button>
+                  </div>
+                  {ticket.blockedBy.length ? ticket.blockedBy.map((item) => (
+                    <button className="mini-link" key={item.id} onClick={() => onOpenTicket(item.id)}>
+                      <StatusIcon status={item.status} />
+                      <span className="task-key">{item.id}</span>
+                      <span>{item.title}</span>
+                    </button>
+                  )) : <p className="subtle-copy">No blockers.</p>}
+                </section>
+
+                <section className="dependency-card">
+                  <h3>Blocking</h3>
+                  {ticket.blocks.length ? ticket.blocks.map((item) => (
+                    <button className="mini-link" key={item.id} onClick={() => onOpenTicket(item.id)}>
+                      <StatusIcon status={item.status} />
+                      <span className="task-key">{item.id}</span>
+                      <span>{item.title}</span>
+                    </button>
+                  )) : <p className="subtle-copy">Not blocking other tickets.</p>}
+                </section>
+
+                <section className="dependency-card">
+                  <h3>Sub-issues</h3>
+                  {ticket.children.length ? ticket.children.map((child) => (
+                    <button className="mini-link" key={child.id} onClick={() => onOpenTicket(child.id)}>
+                      <span className="task-key">{child.id}</span>
+                      <span>{child.title}</span>
+                    </button>
+                  )) : <p className="subtle-copy">No sub-issues.</p>}
+                  <button className="quiet-button inline-action" onClick={onCreateSubIssue}><Plus /> Add sub-issue</button>
+                </section>
+              </section>
+            )}
+          </div>
+
+          <aside className="property-panel">
+            <PropertyRow label="Status"><span className={`status-chip state-${ticket.status}`}>{ticket.statusLabel}</span></PropertyRow>
+            <PropertyRow label="Assignee">
+              <select value={ticket.assigneeAgentId || ""} onChange={(event) => onPatch(ticket.id, { assigneeAgentId: event.target.value || null })}>
+                <option value="">No assignee</option>
+                {state.agents.map((agent) => <option key={agent.id} value={agent.id}>{agent.name}</option>)}
+              </select>
+            </PropertyRow>
+            <PropertyRow label="Project"><span>{ticket.project?.name || "Unknown"}</span></PropertyRow>
+            <PropertyRow label="Parent"><span>{ticket.parentTicketId || "No parent"}</span></PropertyRow>
+            <PropertyRow label="PR">
+              {ticket.prUrl ? <a className="property-link property-link-compact" href={ticket.prUrl} title={ticket.prUrl}><GitPullRequest /> <span>Open</span></a> : <span>None</span>}
+            </PropertyRow>
+            <PropertyRow label="Updated"><span>{timeAgo(ticket.updatedAt)}</span></PropertyRow>
+
+            <section className="property-group">
+              <h3><Tag /> Labels</h3>
+              <div className="dependency-editor">
+                <input value={labels} onChange={(event) => setLabels(event.target.value)} placeholder="ui, api, review" />
+                <button onClick={() => onPatch(ticket.id, { labels: labels.split(",").map((item) => item.trim()).filter(Boolean) })}>Save</button>
+              </div>
+              {ticket.labels.length ? (
+                <div className="chip-list">
+                  {ticket.labels.map((label) => <span className="metadata-chip" key={label}>{label}</span>)}
+                </div>
+              ) : <p className="subtle-copy">No labels.</p>}
+            </section>
+
+          </aside>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function buildHandoffLines(ticket, latestComment) {
+  const lines = [
+    `Current state: ${ticket.statusLabel.toLowerCase()} ticket assigned to ${ticket.assignee?.name || "no one"}.`,
+  ];
+  if (ticket.blockedBy.length) {
+    lines.push(`Blocked by: ${ticket.blockedBy.map((item) => item.id).join(", ")}.`);
+  } else if (ticket.status === "todo" && !ticket.assigneeAgentId) {
+    lines.push("Next action: triage and assign when an agent is ready to claim it.");
+  } else if (["human_review", "pr_review"].includes(ticket.status)) {
+    lines.push("Next action: review the latest agent output, then move the ticket forward or comment with corrections.");
+  } else if (ticket.status === "done") {
+    lines.push("Next action: no active handoff; keep this available as completed context.");
+  } else {
+    lines.push("Next action: continue from the latest workspace state and leave a comment with any handoff notes.");
+  }
+  if (latestComment) {
+    lines.push(`Latest note from ${displayCommentAuthor(latestComment.author)}: ${summarizeCommentForHandoff(latestComment.body)}`);
+  }
+  return lines;
+}
+
+function displayCommentAuthor(author) {
+  const normalized = String(author || "").trim().toLowerCase();
+  if (normalized === "agent" || normalized === "assistant" || normalized === "bot") return "Agent";
+  return "You";
+}
+
+function commentAuthorClass(author) {
+  return displayCommentAuthor(author).toLowerCase();
+}
+
+function summarizeCommentForHandoff(body) {
+  const text = String(body || "");
+  if (text.includes('"type":"stream_event"') || text.includes('"session_id"') || text.includes("parent_tool_use_id")) {
+    return "Agent transcript captured; review the comments below for the full handoff context.";
+  }
+  return truncateText(text, 180);
+}
+
+function syntheticTicketEvent(ticket) {
+  return {
+    id: `${ticket.id}-summary`,
+    type: "ticket.snapshot",
+    actor: ticket.assignee?.name || "api",
+    subject: ticket.id,
+    details: {},
+    createdAt: ticket.updatedAt,
+  };
+}
+
+function PropertyRow({ label, children }) {
+  return (
+    <div className="property-row">
+      <span>{label}</span>
+      <div>{children}</div>
+    </div>
+  );
+}
+
+function LiveActivity({ run }) {
+  return (
+    <section className="live-activity">
+      <div className="section-heading-row">
+        <h3><CircleDot /> Agent activity</h3>
+        <span className={`status-chip state-${run.status === "running" ? "in_progress" : run.status === "failed" || run.status === "interrupted" ? "blocked" : "human_review"}`}>{run.status}</span>
+      </div>
+      <div className="live-run-meta">
+        <span>{run.agentName}</span>
+      </div>
+      <div className="live-event-stack">
+        {run.events?.length ? run.events.slice(-30).map((event) => (
+          <div className={`live-event live-event-${event.kind}`} key={event.id}>
+            <span>{displayLiveEventKind(event.kind)}</span>
+            <p>{event.text}</p>
+          </div>
+        )) : <EmptyPanel message="Waiting for agent activity." />}
+      </div>
+    </section>
+  );
+}
+
+function displayLiveEventKind(kind) {
+  if (kind === "assistant") return "Agent";
+  if (kind === "thinking") return "Thinking";
+  if (kind === "tool") return "Tool";
+  if (kind === "stderr") return "Error";
+  if (kind === "stdout") return "Output";
+  return titleCase(kind || "status");
+}
+
+function DiffViewer({ ticketId, diff, reviewTarget, reviewComment, onSelectTarget, onCommentChange, onSubmit }) {
+  const [openError, setOpenError] = useState("");
+  const [treeQuery, setTreeQuery] = useState("");
+  const [expandedTree, setExpandedTree] = useState(() => new Set());
+  const filteredTreeRows = useMemo(() => {
+    return buildTreeRows(diff.tree?.files || [], diff.tree?.dirs || [], expandedTree, treeQuery).slice(0, 900);
+  }, [diff.tree, expandedTree, treeQuery]);
+  const treeFileCount = diff.tree?.files?.length || 0;
+  const visibleFileCount = filteredTreeRows.filter((row) => row.type === "file").length;
+
+  const toggleDir = (dirPath) => {
+    setExpandedTree((current) => {
+      const next = new Set(current);
+      if (next.has(dirPath)) {
+        next.delete(dirPath);
+      } else {
+        next.add(dirPath);
+      }
+      return next;
+    });
+  };
+
+  const openFile = async (filePath) => {
+    setOpenError("");
+    try {
+      await openTicketFile(ticketId, filePath);
+    } catch (err) {
+      setOpenError(err.message);
+    }
+  };
+
+  return (
+    <div className="diff-review-layout">
+      <aside className="project-tree-panel">
+        <div className="project-tree-header">
+          <div>
+            <strong>{diff.tree?.rootName || "Project"}</strong>
+            <span>{visibleFileCount} shown · {treeFileCount} file{treeFileCount === 1 ? "" : "s"}</span>
+          </div>
+          {diff.tree?.truncated ? <span className="tree-badge">truncated</span> : null}
+        </div>
+        <label className="tree-filter">
+          <Search />
+          <input value={treeQuery} onChange={(event) => setTreeQuery(event.target.value)} placeholder="Find file" />
+        </label>
+        {openError ? <div className="tree-error">{openError}</div> : null}
+        <div className="project-tree">
+          {filteredTreeRows.length ? filteredTreeRows.map((row) => (
+            <button
+              className={row.type === "dir" ? "tree-row tree-dir" : row.type === "empty" ? "tree-row tree-empty" : "tree-row tree-file"}
+              key={`${row.type}-${row.path}`}
+              onClick={() => row.type === "file" ? openFile(row.path) : row.type === "dir" ? toggleDir(row.path) : null}
+              disabled={row.type === "empty"}
+              title={row.path}
+              style={{ "--depth": row.depth }}
+              aria-expanded={row.type === "dir" ? row.expanded : undefined}
+            >
+              {row.type === "dir" ? <><ChevronDown className="tree-caret" /> <FolderOpen /></> : row.type === "empty" ? <><span className="tree-caret-spacer" /> <span className="tree-empty-mark" /></> : <><span className="tree-caret-spacer" /> <FileText /></>}
+              <span>{row.name}</span>
+            </button>
+          )) : <EmptyPanel message={treeFileCount ? "No matching files." : "No project files found."} />}
+        </div>
+      </aside>
+
+      <div className="diff-viewer">
+        {diff.files.length ? diff.files.map((file) => {
+          const filePath = file.newPath || file.oldPath;
+          return (
+            <section className="diff-file" key={filePath}>
+              <div className="diff-file-header">
+                <FileDiff />
+                <strong>{filePath}</strong>
+                <button className="quiet-button diff-open-file" onClick={() => openFile(filePath)}>Open</button>
+              </div>
+              {file.hunks.map((hunk) => (
+                <div className="diff-hunk" key={`${filePath}-${hunk.header}`}>
+                  <div className="diff-hunk-header">{hunk.header}</div>
+                  {hunk.lines.map((line, index) => {
+                    const lineNumber = line.newLine || line.oldLine;
+                    const side = line.type === "remove" ? "old" : "new";
+                    const selected = reviewTarget?.filePath === filePath && reviewTarget?.line === lineNumber && reviewTarget?.side === side;
+                    return (
+                      <div className={`diff-line diff-${line.type}${selected ? " selected" : ""}`} key={`${hunk.header}-${index}`}>
+                        <button
+                          className="diff-comment-target"
+                          onClick={() => onSelectTarget({ filePath, line: lineNumber, side })}
+                          title="Comment on this line"
+                        >
+                          +
+                        </button>
+                        <code>{line.oldLine || ""}</code>
+                        <code>{line.newLine || ""}</code>
+                        <pre>{line.content || " "}</pre>
+                      </div>
+                    );
+                  })}
+                </div>
+              ))}
+            </section>
+          );
+        }) : <EmptyPanel message="No local changes found in this project." />}
+        {reviewTarget ? (
+          <form className="diff-comment-form" onSubmit={onSubmit}>
+            <span>{reviewTarget.filePath}:{reviewTarget.line}</span>
+            <textarea value={reviewComment} onChange={(event) => onCommentChange(event.target.value)} placeholder="Leave review feedback for the agent" />
+            <button><MessageSquare /> Add review comment</button>
+          </form>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+function buildTreeRows(files, dirs, expandedDirs, queryValue = "") {
+  const root = { dirs: new Map(), files: new Map() };
+  for (const dirPath of dirs) {
+    const parts = String(dirPath || "").split("/").filter(Boolean);
+    if (!parts.length) continue;
+    let node = root;
+    for (const part of parts) {
+      if (!node.dirs.has(part)) node.dirs.set(part, { dirs: new Map(), files: new Map() });
+      node = node.dirs.get(part);
+    }
+  }
+  for (const filePath of files) {
+    const parts = String(filePath || "").split("/").filter(Boolean);
+    if (!parts.length) continue;
+    let node = root;
+    for (const part of parts.slice(0, -1)) {
+      if (!node.dirs.has(part)) node.dirs.set(part, { dirs: new Map(), files: new Map() });
+      node = node.dirs.get(part);
+    }
+    node.files.set(parts[parts.length - 1], parts.join("/"));
+  }
+
+  const rows = [];
+  const query = queryValue.trim().toLowerCase();
+  const visit = (node, depth, parentPath = "") => {
+    for (const [name, child] of Array.from(node.dirs.entries()).sort(([a], [b]) => a.localeCompare(b))) {
+      const dirPath = parentPath ? `${parentPath}/${name}` : name;
+      const expanded = Boolean(query) || expandedDirs.has(dirPath);
+      if (!query || dirPath.toLowerCase().includes(query) || subtreeMatches(child, query)) {
+        rows.push({ type: "dir", name, path: dirPath, depth, expanded });
+      }
+      if (expanded) {
+        const before = rows.length;
+        visit(child, depth + 1, dirPath);
+        if (rows.length === before && !query) {
+          rows.push({ type: "empty", name: "Empty folder", path: `${dirPath}/__empty__`, depth: depth + 1 });
+        }
+      }
+    }
+    for (const [name, filePath] of Array.from(node.files.entries()).sort(([a], [b]) => a.localeCompare(b))) {
+      if (!query || filePath.toLowerCase().includes(query)) {
+        rows.push({ type: "file", name, path: filePath, depth });
+      }
+    }
+  };
+  visit(root, 0);
+  return rows;
+}
+
+function subtreeMatches(node, query) {
+  for (const [name, child] of node.dirs) {
+    if (name.toLowerCase().includes(query) || subtreeMatches(child, query)) return true;
+  }
+  for (const [name, filePath] of node.files) {
+    if (name.toLowerCase().includes(query) || filePath.toLowerCase().includes(query)) return true;
+  }
+  return false;
+}
+
+function MarkdownText({ value, className = "" }) {
+  const blocks = parseMarkdownBlocks(value);
+  return (
+    <div className={className ? `markdown-body ${className}` : "markdown-body"}>
+      {blocks.map((block, index) => {
+        const key = `${block.type}-${index}`;
+        if (block.type === "heading") {
+          return <h3 key={key}>{renderInlineMarkdown(block.text)}</h3>;
+        }
+        if (block.type === "code") {
+          return <pre key={key}><code>{block.text}</code></pre>;
+        }
+        if (block.type === "list") {
+          return <ul key={key}>{block.items.map((item, itemIndex) => <li key={`${key}-${itemIndex}`}>{renderInlineMarkdown(item)}</li>)}</ul>;
+        }
+        return <p key={key}>{renderInlineMarkdown(block.text)}</p>;
+      })}
+    </div>
+  );
+}
+
+function parseMarkdownBlocks(value) {
+  const lines = String(value || "").replace(/\r\n/g, "\n").split("\n");
+  const blocks = [];
+  let paragraph = [];
+  let list = [];
+  let code = [];
+  let inCode = false;
+  const flushParagraph = () => {
+    if (!paragraph.length) return;
+    blocks.push({ type: "paragraph", text: paragraph.join(" ") });
+    paragraph = [];
+  };
+  const flushList = () => {
+    if (!list.length) return;
+    blocks.push({ type: "list", items: list });
+    list = [];
+  };
+  for (const line of lines) {
+    if (line.trim().startsWith("```")) {
+      if (inCode) {
+        blocks.push({ type: "code", text: code.join("\n") });
+        code = [];
+        inCode = false;
+      } else {
+        flushParagraph();
+        flushList();
+        inCode = true;
+      }
+      continue;
+    }
+    if (inCode) {
+      code.push(line);
+      continue;
+    }
+    if (!line.trim()) {
+      flushParagraph();
+      flushList();
+      continue;
+    }
+    const heading = line.match(/^#{1,3}\s+(.+)$/);
+    if (heading) {
+      flushParagraph();
+      flushList();
+      blocks.push({ type: "heading", text: heading[1] });
+      continue;
+    }
+    const listItem = line.match(/^\s*[-*]\s+(.+)$/);
+    if (listItem) {
+      flushParagraph();
+      list.push(listItem[1]);
+      continue;
+    }
+    flushList();
+    paragraph.push(line.trim());
+  }
+  if (inCode) blocks.push({ type: "code", text: code.join("\n") });
+  flushParagraph();
+  flushList();
+  return blocks.length ? blocks : [{ type: "paragraph", text: "" }];
+}
+
+function renderInlineMarkdown(text) {
+  const parts = String(text || "").split(/(`[^`]+`|\*\*[^*]+\*\*|\[[^\]]+\]\([^)]+\))/g).filter(Boolean);
+  return parts.map((part, index) => {
+    if (part.startsWith("`") && part.endsWith("`")) return <code key={index}>{part.slice(1, -1)}</code>;
+    if (part.startsWith("**") && part.endsWith("**")) return <strong key={index}>{part.slice(2, -2)}</strong>;
+    const link = part.match(/^\[([^\]]+)\]\(([^)]+)\)$/);
+    if (link && /^https?:\/\//.test(link[2])) {
+      return <a key={index} href={link[2]} target="_blank" rel="noreferrer">{link[1]}</a>;
+    }
+    return part;
+  });
+}
+
+function viewTitle(view) {
+  if (view === "dashboard") return "Dashboard";
+  if (view === "inbox") return "Inbox";
+  if (view === "tickets") return "Tickets";
+  if (view === "projects") return "Projects";
+  if (view === "agents") return "Agents";
+  if (view === "activity") return "Activity";
+  if (view === "settings") return "Settings";
+  return "Dashboard";
+}
+
+function compareTickets(a, b, sortBy) {
+  if (sortBy === "created") return dateValue(b.createdAt) - dateValue(a.createdAt);
+  if (sortBy === "status") return statusRank(a.status) - statusRank(b.status) || ticketNumber(a) - ticketNumber(b);
+  if (sortBy === "id") return ticketNumber(a) - ticketNumber(b);
+  if (sortBy === "title") return String(a.title || "").localeCompare(String(b.title || ""));
+  return dateValue(b.updatedAt) - dateValue(a.updatedAt);
+}
+
+function statusRank(status) {
+  return BOARD_STATUSES.concat("cancelled").indexOf(status);
+}
+
+function ticketNumber(ticket) {
+  return Number(ticket.number || String(ticket.id || "").match(/-(\d+)$/)?.[1] || 0);
+}
+
+function dateValue(value) {
+  const parsed = new Date(value).getTime();
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function truncateText(value, limit) {
+  const text = String(value || "").replace(/\s+/g, " ").trim();
+  if (text.length <= limit) return text;
+  return `${text.slice(0, limit - 1).trim()}...`;
+}
+
+function titleCase(value) {
+  return String(value || "")
+    .replaceAll("_", " ")
+    .replace(/\b\w/g, (match) => match.toUpperCase());
+}
+
+createRoot(document.getElementById("root")).render(<App />);

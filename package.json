@@ -1,16 +1,30 @@
 {
   "name": "thomas",
-  "version": "0.0.1",
-  "description": "A local-first CLI for managing agent workspaces with git worktrees.",
+  "version": "0.1.0",
+  "description": "A local-first Node.js server and React UI for agent work orchestration.",
   "bin": {
     "thomas": "./bin/thomas.js"
   },
   "scripts": {
-    "check": "node --check bin/thomas.js",
+    "check": "node --check bin/thomas.js && node --check src/server/index.js && node --check src/server/app.js && node --check src/server/agent-runner.js && node --check src/core/state-store.js && node --check src/core/thomas-service.js",
+    "dev": "npm run dev:server",
+    "dev:server": "node bin/thomas.js serve",
+    "dev:ui": "vite --host 127.0.0.1 --config ui/vite.config.js",
+    "build": "vite build --config ui/vite.config.js",
+    "start": "node bin/thomas.js serve",
     "test": "node --test"
   },
   "license": "MIT",
   "engines": {
-    "node": ">=18"
-  }
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@vitejs/plugin-react": "^4.3.4",
+    "vite": "^6.1.0",
+    "typescript": "^5.7.3",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "lucide-react": "^0.574.0"
+  },
+  "devDependencies": {}
 }
