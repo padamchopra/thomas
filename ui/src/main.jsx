@@ -41,36 +41,63 @@ import "./styles.css";
 
 const BOARD_STATUSES = ["backlog", "todo", "in_progress", "blocked", "human_review", "pr_review", "done"];
 const ROUTE_VIEWS = new Set(["dashboard", "inbox", "tickets", "projects", "agents", "activity", "settings"]);
+const RESERVED_TOP_LEVEL = new Set([...ROUTE_VIEWS, "board", "list"]);
+
+function projectPrefixFromTicketId(ticketId) {
+  const parts = String(ticketId || "").split("-");
+  return parts.length >= 2 ? parts.slice(0, -1).join("-") : "";
+}
 
 function readRoute() {
-  if (typeof window === "undefined") return { view: "dashboard", ticketId: null, agentId: null, projectId: null, layout: "board" };
+  if (typeof window === "undefined") return { view: "dashboard", ticketId: null, agentId: null, projectId: null, projectPrefix: null, layout: "board" };
   const parts = window.location.pathname.split("/").filter(Boolean);
   if (parts[0] === "tickets" && parts[1]) {
-    return { view: "tickets", ticketId: decodeURIComponent(parts[1]), agentId: null, projectId: null, layout: "board" };
+    const ticketId = decodeURIComponent(parts[1]);
+    return { view: "projects", ticketId, agentId: null, projectId: null, projectPrefix: projectPrefixFromTicketId(ticketId), layout: "board" };
   }
   if (parts[0] === "tickets") {
     const layout = new URLSearchParams(window.location.search).get("layout") === "list" ? "list" : "board";
-    return { view: "tickets", ticketId: null, agentId: null, projectId: null, layout };
+    return { view: "tickets", ticketId: null, agentId: null, projectId: null, projectPrefix: null, layout };
   }
   if (parts[0] === "projects" && parts[1]) {
-    return { view: "projects", ticketId: null, agentId: null, projectId: decodeURIComponent(parts[1]), layout: "board" };
+    return { view: "projects", ticketId: null, agentId: null, projectId: decodeURIComponent(parts[1]), projectPrefix: null, layout: "board" };
   }
   if (parts[0] === "agents" && parts[1]) {
-    return { view: "agents", ticketId: null, agentId: decodeURIComponent(parts[1]), projectId: null, layout: "board" };
+    return { view: "agents", ticketId: null, agentId: decodeURIComponent(parts[1]), projectId: null, projectPrefix: null, layout: "board" };
   }
   if (parts[0] === "board" || parts[0] === "list") {
-    return { view: "tickets", ticketId: null, agentId: null, projectId: null, layout: parts[0] };
+    return { view: "tickets", ticketId: null, agentId: null, projectId: null, projectPrefix: null, layout: parts[0] };
   }
   if (ROUTE_VIEWS.has(parts[0])) {
-    return { view: parts[0], ticketId: null, agentId: null, projectId: null, layout: "board" };
+    return { view: parts[0], ticketId: null, agentId: null, projectId: null, projectPrefix: null, layout: "board" };
   }
-  return { view: "dashboard", ticketId: null, agentId: null, projectId: null, layout: "board" };
+  if (parts.length >= 1 && !RESERVED_TOP_LEVEL.has(parts[0])) {
+    const prefix = decodeURIComponent(parts[0]);
+    if (parts[1] === "issue" && parts[2]) {
+      return { view: "projects", ticketId: decodeURIComponent(parts[2]), agentId: null, projectId: null, projectPrefix: prefix, layout: "board" };
+    }
+    return { view: "projects", ticketId: null, agentId: null, projectId: null, projectPrefix: prefix, layout: "board" };
+  }
+  return { view: "dashboard", ticketId: null, agentId: null, projectId: null, projectPrefix: null, layout: "board" };
 }
 
 function pathForView(view, layout = "board") {
   if (view === "dashboard") return "/";
   if (view === "tickets") return `/tickets?layout=${layout === "list" ? "list" : "board"}`;
   return `/${ROUTE_VIEWS.has(view) ? view : ""}`;
+}
+
+function pathForProject(project) {
+  if (!project) return "/projects";
+  const prefix = String(project.prefix || project.id || "");
+  if (!prefix) return "/projects";
+  return `/${encodeURIComponent(prefix)}`;
+}
+
+function pathForTicket(ticketId, project) {
+  const prefix = String(project?.prefix || projectPrefixFromTicketId(ticketId));
+  if (!prefix) return `/tickets/${encodeURIComponent(ticketId)}`;
+  return `/${encodeURIComponent(prefix)}/issue/${encodeURIComponent(ticketId)}`;
 }
 
 function pushPath(path, { replace = false } = {}) {
@@ -94,7 +121,8 @@ function App() {
   const [assigneeFilter, setAssigneeFilter] = useState("all");
   const [selectedTicketId, setSelectedTicketId] = useState(initialRoute.ticketId);
   const [selectedAgentId, setSelectedAgentId] = useState(initialRoute.agentId);
-  const [selectedProjectId, setSelectedProjectId] = useState(initialRoute.projectId);
+  const [selectedProjectId, setSelectedProjectId] = useState(initialRoute.projectId || null);
+  const [pendingProjectPrefix, setPendingProjectPrefix] = useState(initialRoute.projectPrefix || null);
   const [newTicketOpen, setNewTicketOpen] = useState(false);
   const [ticketDraftDefaults, setTicketDraftDefaults] = useState({});
 
@@ -112,6 +140,7 @@ function App() {
     setSelectedTicketId(null);
     setSelectedAgentId(null);
     setSelectedProjectId(null);
+    setPendingProjectPrefix(null);
     setView(nextView);
     pushPath(pathForView(nextView, ticketLayout), options);
   };
@@ -125,14 +154,17 @@ function App() {
 
   const openTicket = (ticketId, options = {}) => {
     setSelectedTicketId(ticketId);
-    setSelectedProjectId(null);
-    pushPath(`/tickets/${encodeURIComponent(ticketId)}`, options);
+    setSelectedAgentId(null);
+    const ticket = state?.tickets.find((item) => item.id === ticketId);
+    const project = ticket ? state?.projects.find((item) => item.id === ticket.projectId) : null;
+    pushPath(pathForTicket(ticketId, project), options);
   };
 
   const openAgent = (agentId, options = {}) => {
     setSelectedTicketId(null);
     setSelectedAgentId(agentId);
     setSelectedProjectId(null);
+    setPendingProjectPrefix(null);
     setView("agents");
     pushPath(`/agents/${encodeURIComponent(agentId)}`, options);
   };
@@ -141,8 +173,19 @@ function App() {
     setSelectedTicketId(null);
     setSelectedAgentId(null);
     setSelectedProjectId(projectId);
+    setPendingProjectPrefix(null);
     setView("projects");
-    pushPath(`/projects/${encodeURIComponent(projectId)}`, options);
+    const project = state?.projects.find((item) => item.id === projectId);
+    pushPath(pathForProject(project) || `/projects/${encodeURIComponent(projectId)}`, options);
+  };
+
+  const closeTicket = () => {
+    const ticket = state?.tickets.find((item) => item.id === selectedTicketId);
+    if (ticket) {
+      openProject(ticket.projectId);
+      return;
+    }
+    openView(view === "agents" ? "agents" : "tickets");
   };
 
   const refresh = async () => {
@@ -169,12 +212,30 @@ function App() {
       setView(route.view);
       setSelectedTicketId(route.ticketId);
       setSelectedAgentId(route.agentId);
-      setSelectedProjectId(route.projectId);
       setTicketLayout(route.layout || "board");
+      if (route.projectPrefix) {
+        setPendingProjectPrefix(route.projectPrefix);
+      } else if (route.projectId) {
+        setSelectedProjectId(route.projectId);
+        setPendingProjectPrefix(null);
+      } else {
+        setSelectedProjectId(null);
+        setPendingProjectPrefix(null);
+      }
     };
     window.addEventListener("popstate", onPopState);
     return () => window.removeEventListener("popstate", onPopState);
   }, []);
+
+  useEffect(() => {
+    if (!state || !pendingProjectPrefix) return;
+    const needle = String(pendingProjectPrefix).toLowerCase();
+    const project = state.projects.find((item) => String(item.prefix || "").toLowerCase() === needle);
+    if (project) {
+      setSelectedProjectId(project.id);
+    }
+    setPendingProjectPrefix(null);
+  }, [state, pendingProjectPrefix]);
 
   const selectedTicket = useMemo(
     () => state?.tickets.find((ticket) => ticket.id === selectedTicketId) || null,
@@ -415,8 +476,9 @@ function App() {
           <TicketDetail
             state={state}
             ticket={selectedTicket}
-            onClose={() => openView(view)}
+            onClose={closeTicket}
             onOpenTicket={openTicket}
+            onOpenProject={openProject}
             onPatch={handleTicketPatch}
             onStopRun={handleStopTicketRun}
             onOpenWorktree={handleOpenTicketWorktree}
@@ -784,7 +846,7 @@ function ProjectDetail({ state, project, onBack, onOpenTicket }) {
   const unassigned = open.filter((ticket) => !ticket.assigneeAgentId);
   const blocked = tickets.filter((ticket) => ticket.status === "blocked");
   const done = tickets.filter((ticket) => ticket.status === "done");
-  const recent = [...tickets].sort((a, b) => dateValue(b.updatedAt) - dateValue(a.updatedAt)).slice(0, 10);
+  const recent = [...tickets].sort((a, b) => dateValue(b.createdAt) - dateValue(a.createdAt));
   const statusRows = BOARD_STATUSES.map((status) => ({
     status,
     label: state.statuses.find((item) => item.value === status)?.label || titleCase(status),
@@ -1358,7 +1420,7 @@ function DashboardTicketRow({ ticket, onOpenTicket }) {
   );
 }
 
-function TicketDetail({ state, ticket, onClose, onOpenTicket, onPatch, onStopRun, onOpenWorktree, onResumeTerminal, onComment, onCreateSubIssue }) {
+function TicketDetail({ state, ticket, onClose, onOpenTicket, onOpenProject, onPatch, onStopRun, onOpenWorktree, onResumeTerminal, onComment, onCreateSubIssue }) {
   const [detailTab, setDetailTab] = useState("conversation");
   const [comment, setComment] = useState("");
   const [diff, setDiff] = useState(null);
@@ -1450,9 +1512,24 @@ function TicketDetail({ state, ticket, onClose, onOpenTicket, onPatch, onStopRun
           <h2>{ticket.title}</h2>
           <p>{ticket.id} · updated {timeAgo(ticket.updatedAt)}</p>
         </div>
+        <section className="detail-overview-always">
+          <section className="detail-section detail-description">
+            <h3>Description</h3>
+            <MarkdownText value={ticket.description || "No description yet."} className="detail-copy" />
+          </section>
+
+          <section className="handoff-card">
+            <div className="section-heading-row">
+              <h3><ClipboardList /> Continuation handoff</h3>
+              <span>{timeAgo(ticket.updatedAt)}</span>
+            </div>
+            <div className="handoff-copy">
+              {handoffLines.map((line) => <p key={line}>{line}</p>)}
+            </div>
+          </section>
+        </section>
         <div className="detail-tabs" role="tablist" aria-label="Ticket detail sections">
           <button className={detailTab === "conversation" ? "active" : ""} onClick={() => setDetailTab("conversation")}>Conversation</button>
-          <button className={detailTab === "overview" ? "active" : ""} onClick={() => setDetailTab("overview")}>Overview</button>
           {ticket.status === "human_review" ? <button className={detailTab === "review" ? "active" : ""} onClick={() => setDetailTab("review")}>Review diff</button> : null}
           <button className={detailTab === "activity" ? "active" : ""} onClick={() => setDetailTab("activity")}>Activity</button>
           <button className={detailTab === "dependencies" ? "active" : ""} onClick={() => setDetailTab("dependencies")}>Dependencies</button>
@@ -1508,26 +1585,6 @@ function TicketDetail({ state, ticket, onClose, onOpenTicket, onPatch, onStopRun
                     onSubmit={submitReviewComment}
                   />
                 ) : <EmptyPanel message="Load the current local diff when this ticket is ready for human review." />}
-              </section>
-            )}
-
-            {detailTab === "overview" && (
-              <section className="detail-tab-panel">
-                <section className="detail-section detail-description">
-                  <h3>Description</h3>
-                  <MarkdownText value={ticket.description || "No description yet."} className="detail-copy" />
-                </section>
-
-                <section className="handoff-card">
-                  <div className="section-heading-row">
-                    <h3><ClipboardList /> Continuation handoff</h3>
-                    <span>{timeAgo(ticket.updatedAt)}</span>
-                  </div>
-                  <div className="handoff-copy">
-                    {handoffLines.map((line) => <p key={line}>{line}</p>)}
-                  </div>
-                </section>
-
               </section>
             )}
 
@@ -1603,7 +1660,13 @@ function TicketDetail({ state, ticket, onClose, onOpenTicket, onPatch, onStopRun
                 {state.agents.map((agent) => <option key={agent.id} value={agent.id}>{agent.name}</option>)}
               </select>
             </PropertyRow>
-            <PropertyRow label="Project"><span>{ticket.project?.name || "Unknown"}</span></PropertyRow>
+            <PropertyRow label="Project">
+              {ticket.projectId && onOpenProject ? (
+                <button type="button" className="property-link link-button" onClick={() => onOpenProject(ticket.projectId)}>
+                  {ticket.project?.name || "Unknown"}
+                </button>
+              ) : <span>{ticket.project?.name || "Unknown"}</span>}
+            </PropertyRow>
             <PropertyRow label="Parent"><span>{ticket.parentTicketId || "No parent"}</span></PropertyRow>
             <PropertyRow label="PR">
               {ticket.prUrl ? <a className="property-link property-link-compact" href={ticket.prUrl} title={ticket.prUrl}><GitPullRequest /> <span>Open</span></a> : <span>None</span>}
