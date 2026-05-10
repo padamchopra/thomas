@@ -1590,6 +1590,22 @@ button {
   flex-wrap: wrap;
   gap: 7px;
 }
+.status-refresh-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.status-refresh-button {
+  width: 24px;
+  height: 24px;
+}
+.status-refresh-button svg {
+  width: 13px;
+  height: 13px;
+}
+.status-refresh-button:disabled {
+  opacity: 0.55;
+}
 .detail-heading h2 {
   max-width: 780px;
   font-size: 18px;

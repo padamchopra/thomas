@@ -28,7 +28,13 @@ function createApp(options = {}) {
     try {
       const requestUrl = new URL(req.url || "/", "http://localhost");
       if (requestUrl.pathname.startsWith("/api/")) {
-        await handleApi(service, runner, req, res, requestUrl, { workspaceRoot, systemActions, prSyncer });
+        await handleApi(service, runner, req, res, requestUrl, {
+          workspaceRoot,
+          systemActions,
+          prSyncer,
+          checkPullRequestStatus: options.checkPullRequestStatus,
+          findPullRequestUrl: options.findPullRequestUrl,
+        });
         return;
       }
       await serveUi(req, res, requestUrl, uiDist, uiIndex);
@@ -105,6 +111,12 @@ async function handleApi(service, runner, req, res, requestUrl, options = {}) {
   if (method === "POST" && parts.length === 3 && parts[0] === "tickets" && parts[2] === "stop") {
     const run = runner.stop(parts[1]);
     sendJson(res, 200, { ok: true, run, state: stateWithRuns(service, runner, options) });
+    return;
+  }
+
+  if (method === "POST" && parts.length === 3 && parts[0] === "tickets" && parts[2] === "refresh-status") {
+    const refreshed = refreshTicketStatus(service, runner, parts[1], options);
+    sendJson(res, 200, { ok: true, refreshed, state: stateWithRuns(service, runner, options) });
     return;
   }
 
@@ -269,6 +281,111 @@ function defaultCheckPullRequestStatus(prUrl, repoPath) {
     return JSON.parse(result.stdout || "{}");
   } catch {
     return null;
+  }
+}
+
+function refreshTicketStatus(service, runner, ticketId, options = {}) {
+  const before = service.getState().tickets.find((item) => item.id === ticketId);
+  if (!before) {
+    const error = new Error(`Unknown ticket: ${ticketId}`);
+    error.status = 404;
+    throw error;
+  }
+  const runs = runner.getRuns();
+  const current = service.getState().tickets.find((item) => item.id === ticketId) || before;
+  if (["done", "cancelled"].includes(current.status)) {
+    return refreshResult(before, current, "terminal_status", null);
+  }
+  const running = runs.find((run) => run.ticketId === ticketId && run.status === "running");
+  if (running) {
+    const ticket = current.status === "in_progress"
+      ? current
+      : service.updateTicket(ticketId, { status: "in_progress" }, "agent");
+    return refreshResult(before, ticket, "running_agent", running);
+  }
+  if (current.blockedByTicketIds?.length && current.status !== "done") {
+    const ticket = current.status === "blocked"
+      ? current
+      : service.updateTicket(ticketId, { status: "blocked" }, "agent");
+    return refreshResult(before, ticket, "blocked_by_dependency", null);
+  }
+
+  const repoPath = repoPathForStatusRefresh(current, runner, options);
+  const prUrl = current.prUrl || findPullRequestUrlForStatusRefresh(current, repoPath, options);
+  if (prUrl) {
+    const checkPullRequestStatus = options.checkPullRequestStatus || defaultCheckPullRequestStatus;
+    const pr = checkPullRequestStatus(prUrl, repoPath || current.project?.repoPath || "");
+    const prState = String(pr?.state || "").toUpperCase();
+    if (prState === "MERGED") {
+      const ticket = current.status === "done"
+        ? current
+        : updateTicketAndCleanup(service, runner, ticketId, { status: "done", prUrl }, "agent", options, current);
+      return refreshResult(before, ticket, "merged_pull_request", null);
+    }
+    if (prState === "CLOSED") {
+      const ticket = current.status === "human_review" && current.prUrl === prUrl
+        ? current
+        : service.updateTicket(ticketId, { status: "human_review", prUrl }, "agent");
+      return refreshResult(before, ticket, "closed_pull_request", null);
+    }
+    const ticket = current.status === "pr_review" && current.prUrl === prUrl
+      ? current
+      : service.updateTicket(ticketId, { status: "pr_review", prUrl }, "agent");
+    return refreshResult(before, ticket, "open_pull_request", null);
+  }
+
+  if (current.status === "in_progress" || current.status === "pr_review") {
+    const ticket = service.updateTicket(ticketId, { status: "human_review" }, "agent");
+    return refreshResult(before, ticket, "awaiting_human_review", null);
+  }
+  return refreshResult(before, current, "unchanged", null);
+}
+
+function refreshResult(before, ticket, reason, run) {
+  return {
+    ticketId: ticket.id,
+    previousStatus: before.status,
+    status: ticket.status,
+    changed: before.status !== ticket.status || before.prUrl !== ticket.prUrl,
+    reason,
+    prUrl: ticket.prUrl || null,
+    run: sanitizeRun(run),
+  };
+}
+
+function repoPathForStatusRefresh(ticket, runner, options = {}) {
+  const projectPath = ticket.project?.repoPath || "";
+  const runRepoPath = latestRunRepoPath(runner, ticket.id, projectPath);
+  if (runRepoPath) return runRepoPath;
+  const resolved = resolveTicketWorkspace(ticket, options).path;
+  if (resolved && isGitRoot(resolved)) return resolved;
+  return projectPath;
+}
+
+function findPullRequestUrlForStatusRefresh(ticket, repoPath, options = {}) {
+  if (options.findPullRequestUrl) {
+    return String(options.findPullRequestUrl({ ticketId: ticket.id, ticket, cwd: repoPath }, "") || "").trim();
+  }
+  return findPullRequestUrlWithGh(repoPath);
+}
+
+function findPullRequestUrlWithGh(repoPath) {
+  if (!repoPath || !fs.existsSync(repoPath)) return "";
+  const result = spawnSync("gh", ["pr", "view", "--json", "url"], {
+    cwd: repoPath,
+    encoding: "utf8",
+    timeout: 15000,
+    env: {
+      ...process.env,
+      GH_PROMPT_DISABLED: "1",
+    },
+  });
+  if (result.status !== 0) return "";
+  try {
+    const parsed = JSON.parse(result.stdout || "{}");
+    return String(parsed.url || "").trim();
+  } catch {
+    return "";
   }
 }
 

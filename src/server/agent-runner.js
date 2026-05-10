@@ -24,7 +24,7 @@ function createAgentRunner(service, runnerOptions = {}) {
     const cwd = ensureTicketWorkspace(ticket, runnerOptions).path;
     const runId = `run-${ticket.id}-${Date.now()}`;
     const liveActivity = state.settings?.showLiveAgentActivity !== false;
-    const prompt = buildPrompt(ticket, options.message || "");
+    const prompt = buildPrompt(ticket, options.message || "", { resume: options.resume === true });
     const command = agentCommand(agent, { prompt, liveActivity, resume: options.resume === true });
     const run = {
       id: runId,
@@ -550,43 +550,47 @@ function agentCommand(agent, options) {
   return [executable, ...presetArgs, options.prompt];
 }
 
-function buildPrompt(ticket, message) {
+function buildPrompt(ticket, message, options = {}) {
   const comments = (ticket.comments || [])
     .slice(-8)
     .map((comment) => `${promptCommentAuthor(comment.author)}: ${comment.body}`)
     .join("\n\n");
+  const contextLines = [];
+  if (message) {
+    contextLines.push("Latest human reply:", message, "");
+  }
+  if (!options.resume && comments) {
+    contextLines.push("Recent conversation:", comments, "");
+  }
   return [
-    `You are working on Thomas ticket ${ticket.id}.`,
+    `Ticket: ${ticket.id}`,
     "",
-    "Goal:",
-    "Complete the ticket as described. Treat the title and description as the source of truth.",
+    "Objective:",
+    "Implement the requested change in this repository. Treat the title, description, and any reply/context below as the source of truth.",
     "",
-    `Title: ${ticket.title}`,
+    "Title:",
+    ticket.title,
     "",
     "Description:",
     ticket.description || "none",
     "",
-    "Project context:",
     `Project: ${ticket.project?.name || "unknown"}`,
-    `Repository: ${ticket.project?.repoPath || "unknown"}`,
     "",
-    "Conversation context:",
-    comments || "none",
-    "",
-    message ? "Latest human reply:" : "",
-    message || "",
-    message ? "" : "",
-    "Rules:",
+    ...contextLines,
+    "Constraints:",
     "Work non-interactively in this repository.",
     "Make only the changes needed for this ticket.",
-    "Do not switch branches or create unrelated worktrees.",
-    "Do not update Thomas ticket status directly.",
-    "If you open a pull request, use gh on the current branch; Thomas will detect it after the run.",
-    "Run the smallest relevant validation you can reasonably run.",
+    "Use the current branch and worktree; do not switch branches or create additional worktrees.",
+    "Do not call tracker APIs or change ticket status directly.",
+    "If you open a pull request, use gh on the current branch. The runner will detect the PR after this run.",
+    "Run the smallest relevant validation that gives useful signal.",
     "",
-    "Completion:",
-    "Print SUMMARY: with only what changed during this turn and any validation run.",
-    "If blocked, print BLOCKED: with the specific missing input, failing command, or external dependency.",
+    "Finish:",
+    "Print SUMMARY: followed by a short, conversational teammate-style update.",
+    "Keep it to 2-5 sentences unless critical details require more.",
+    "Mention only what changed, validation run, and anything the human needs to know next.",
+    "Do not paste long logs, full diffs, or exhaustive file lists.",
+    "If blocked, print BLOCKED: followed by a short explanation of the specific missing input, failing command, or external dependency.",
   ].filter(Boolean).join("\n");
 }
 

@@ -67,6 +67,7 @@ test("API auto-dispatches assigned tickets on create and exposes live activity",
     createGitRepo(repoPath);
     const agentScript = path.join(tmp, "fake-agent.js");
     fs.writeFileSync(agentScript, [
+      "require('node:fs').writeFileSync('prompt.txt', process.argv.at(-1));",
       "console.log(JSON.stringify({ type: 'system', subtype: 'init' }));",
       "console.log(JSON.stringify({ type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text: 'Reading ' } } }));",
       "console.log(JSON.stringify({ type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text: 'context' } } }));",
@@ -102,6 +103,14 @@ test("API auto-dispatches assigned tickets on create and exposes live activity",
     const completedRun = state.runs.find((item) => item.ticketId === ticket.ticket.id);
     const expectedWorktree = path.join(tmp, "worktrees", "App", "app-1");
     assert.equal(completedRun.cwd, expectedWorktree);
+    const prompt = fs.readFileSync(path.join(expectedWorktree, "prompt.txt"), "utf8");
+    assert.match(prompt, /Ticket: APP-1/);
+    assert.match(prompt, /Do not call tracker APIs or change ticket status directly/);
+    assert.match(prompt, /Keep it to 2-5 sentences/);
+    assert.doesNotMatch(prompt, /Working context/);
+    assert.doesNotMatch(prompt, /Current worktree/);
+    assert.doesNotMatch(prompt, /Source repository/);
+    assert.doesNotMatch(prompt, /Thomas ticket/);
     assert.equal(fs.readFileSync(path.join(expectedWorktree, "setup-output.txt"), "utf8"), `App/app-1/${expectedWorktree}`);
     assert.equal(completedRun.events.some((event) => event.kind === "status" && event.text === "System"), false);
     assert.equal(completedRun.events.some((event) => event.kind === "assistant" && event.text === "Reading context"), true);
@@ -223,7 +232,10 @@ test("human review comments resume the assigned agent", async () => {
     const repoPath = path.join(tmp, "repo");
     createGitRepo(repoPath);
     const agentScript = path.join(tmp, "review-agent.js");
-    fs.writeFileSync(agentScript, "console.log('SUMMARY: applied review feedback');");
+    fs.writeFileSync(agentScript, [
+      "require('node:fs').writeFileSync('prompt.txt', process.argv.at(-1));",
+      "console.log('SUMMARY: applied review feedback');",
+    ].join("\n"));
 
     const project = await post(`${baseUrl}/api/projects`, { name: "App", prefix: "APP", repoPath });
     const agent = await post(`${baseUrl}/api/agents`, {
@@ -252,6 +264,10 @@ test("human review comments resume the assigned agent", async () => {
     const updated = state.tickets.find((item) => item.id === ticket.ticket.id);
     assert.equal(updated.comments.some((item) => item.author === "you" && item.body.includes("review note")), true);
     assert.match(updated.comments.at(-1).body, /applied review feedback/);
+    const run = state.runs.find((item) => item.ticketId === ticket.ticket.id);
+    const prompt = fs.readFileSync(path.join(run.cwd, "prompt.txt"), "utf8");
+    assert.match(prompt, /Latest human reply:\nPlease address this review note/);
+    assert.doesNotMatch(prompt, /Recent conversation:/);
   });
 });
 
@@ -348,6 +364,56 @@ test("API syncs merged PR review tickets to done", async () => {
   }, {
     prSyncIntervalMs: 0,
     checkPullRequestStatus: () => ({ state: "MERGED", mergedAt: "2026-05-09T16:23:45Z" }),
+  });
+});
+
+test("ticket status refresh corrects stale workflow states", async () => {
+  let detectedCwd = "";
+  await withServer(async (baseUrl, tmp) => {
+    const repoPath = path.join(tmp, "repo");
+    createGitRepo(repoPath);
+    const project = await post(`${baseUrl}/api/projects`, { name: "App", prefix: "APP", repoPath });
+    const staleInProgress = await post(`${baseUrl}/api/tickets`, {
+      projectId: project.project.id,
+      title: "Stale running status",
+      status: "human_review",
+    });
+    await patchAsAgent(`${baseUrl}/api/tickets/${staleInProgress.ticket.id}`, { status: "in_progress" });
+
+    const refreshedStale = await post(`${baseUrl}/api/tickets/${staleInProgress.ticket.id}/refresh-status`, {});
+    assert.equal(refreshedStale.refreshed.previousStatus, "in_progress");
+    assert.equal(refreshedStale.refreshed.status, "human_review");
+    assert.equal(refreshedStale.refreshed.reason, "awaiting_human_review");
+
+    const prTicket = await post(`${baseUrl}/api/tickets`, {
+      projectId: project.project.id,
+      title: "Detect PR",
+      status: "human_review",
+    });
+    const refreshedPr = await post(`${baseUrl}/api/tickets/${prTicket.ticket.id}/refresh-status`, {});
+    assert.equal(refreshedPr.refreshed.status, "pr_review");
+    assert.equal(refreshedPr.refreshed.prUrl, "https://github.com/example/app/pull/77");
+    assert.equal(refreshedPr.state.tickets.find((ticket) => ticket.id === prTicket.ticket.id).status, "pr_review");
+    assert.equal(detectedCwd, repoPath);
+
+    const mergedTicket = await post(`${baseUrl}/api/tickets`, {
+      projectId: project.project.id,
+      title: "Merged PR",
+      status: "pr_review",
+      prUrl: "https://github.com/example/app/pull/88",
+    });
+    const refreshedMerged = await post(`${baseUrl}/api/tickets/${mergedTicket.ticket.id}/refresh-status`, {});
+    assert.equal(refreshedMerged.refreshed.status, "done");
+    assert.equal(refreshedMerged.refreshed.reason, "merged_pull_request");
+  }, {
+    findPullRequestUrl: (run) => {
+      detectedCwd = run.cwd;
+      return run.ticketId === "APP-2" ? "https://github.com/example/app/pull/77" : "";
+    },
+    checkPullRequestStatus: (prUrl) => ({
+      state: prUrl.endsWith("/88") ? "MERGED" : "OPEN",
+      url: prUrl,
+    }),
   });
 });
 

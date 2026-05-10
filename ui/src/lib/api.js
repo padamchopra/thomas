@@ -58,6 +58,13 @@ export async function stopTicketRun(ticketId) {
   });
 }
 
+export async function refreshTicketStatus(ticketId) {
+  return request(`/api/tickets/${encodeURIComponent(ticketId)}/refresh-status`, {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+}
+
 export async function updateSettings(payload) {
   return request("/api/settings", {
     method: "PATCH",

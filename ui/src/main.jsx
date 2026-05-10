@@ -16,6 +16,7 @@ import {
   List,
   MessageSquare,
   Plus,
+  RefreshCw,
   Search,
   ShieldAlert,
   SlidersHorizontal,
@@ -29,7 +30,7 @@ import {
   FileDiff,
   FileText,
 } from "lucide-react";
-import { addComment, chooseProjectFolder, createAgent, createProject, createTicket, deleteTicket, fetchState, fetchTicketDiff, openTicketFile, openTicketWorktree, resumeTicketTerminal, stopTicketRun, updateSettings, updateTicket } from "./lib/api";
+import { addComment, chooseProjectFolder, createAgent, createProject, createTicket, deleteTicket, fetchState, fetchTicketDiff, openTicketFile, openTicketWorktree, refreshTicketStatus, resumeTicketTerminal, stopTicketRun, updateSettings, updateTicket } from "./lib/api";
 import {
   IssueRow,
   KanbanBoard,
@@ -396,6 +397,15 @@ function App() {
     }
   };
 
+  const handleRefreshTicketStatus = async (ticketId) => {
+    try {
+      await refreshTicketStatus(ticketId);
+      await refresh();
+    } catch (err) {
+      setError(err.message);
+    }
+  };
+
   const handleOpenTicketWorktree = async (ticketId) => {
     try {
       await openTicketWorktree(ticketId);
@@ -509,6 +519,7 @@ function App() {
             onPatch={handleTicketPatch}
             onDelete={handleDeleteTicket}
             onStopRun={handleStopTicketRun}
+            onRefreshStatus={handleRefreshTicketStatus}
             onOpenWorktree={handleOpenTicketWorktree}
             onResumeTerminal={handleResumeTicketTerminal}
             onComment={async (body, metadata = {}) => {
@@ -1475,10 +1486,11 @@ function DashboardTicketRow({ ticket, run = null, onOpenTicket }) {
   );
 }
 
-function TicketDetail({ state, ticket, onClose, onOpenTicket, onOpenProject, onPatch, onDelete, onStopRun, onOpenWorktree, onResumeTerminal, onComment, onCreateSubIssue }) {
+function TicketDetail({ state, ticket, onClose, onOpenTicket, onOpenProject, onPatch, onDelete, onStopRun, onRefreshStatus, onOpenWorktree, onResumeTerminal, onComment, onCreateSubIssue }) {
   const [detailTab, setDetailTab] = useState("conversation");
   const [comment, setComment] = useState("");
   const [terminalMenuOpen, setTerminalMenuOpen] = useState(false);
+  const [statusRefreshBusy, setStatusRefreshBusy] = useState(false);
   const [diff, setDiff] = useState(null);
   const [diffError, setDiffError] = useState("");
   const [diffBusy, setDiffBusy] = useState(false);
@@ -1513,7 +1525,17 @@ function TicketDetail({ state, ticket, onClose, onOpenTicket, onOpenProject, onP
     setReviewTarget(null);
     setReviewComment("");
     setTerminalMenuOpen(false);
+    setStatusRefreshBusy(false);
   }, [ticket.id]);
+
+  const refreshStatus = async () => {
+    setStatusRefreshBusy(true);
+    try {
+      await onRefreshStatus(ticket.id);
+    } finally {
+      setStatusRefreshBusy(false);
+    }
+  };
 
   const loadDiff = async () => {
     setDiffBusy(true);
@@ -1585,7 +1607,19 @@ function TicketDetail({ state, ticket, onClose, onOpenTicket, onOpenProject, onP
             ) : null}
           </div>
           <div className="detail-kicker">
-            <span className={`status-chip state-${ticket.status}`}>{ticket.statusLabel}</span>
+            <span className="status-refresh-group">
+              <span className={`status-chip state-${ticket.status}`}>{ticket.statusLabel}</span>
+              <button
+                type="button"
+                className="quiet-button icon-action status-refresh-button"
+                onClick={refreshStatus}
+                disabled={statusRefreshBusy}
+                title="Refresh ticket status"
+                aria-label="Refresh ticket status"
+              >
+                <RefreshCw />
+              </button>
+            </span>
             <span className="reference-chip">{ticket.project?.name || "Unknown project"}</span>
             <RunningElapsed run={runningTicketRun} />
           </div>
