@@ -40,6 +40,7 @@ import {
   StatusIcon,
   timeAgo,
 } from "./components/primitives";
+import { Button, Card } from "./components/ui";
 import "./styles.css";
 
 const BOARD_STATUSES = ["backlog", "todo", "in_progress", "blocked", "human_review", "pr_review", "done"];
@@ -446,7 +447,7 @@ function App() {
           </div>
         </div>
         <nav className="command-nav">
-          <button className="create-ticket-link" onClick={() => state.projects.length > 0 ? openNewTicket() : openView("projects")}><SquarePen /> New Ticket</button>
+          <Button variant="ghost" className="create-ticket-link" onClick={() => state.projects.length > 0 ? openNewTicket() : openView("projects")}><SquarePen /> New Ticket</Button>
           <SidebarSection label="Work">
             <SidebarNavItem active={view === "dashboard"} onClick={() => openView("dashboard")} icon={LayoutDashboard} label="Dashboard" />
             <SidebarNavItem active={view === "inbox"} onClick={() => openView("inbox")} icon={Inbox} label="Inbox" badge={inboxCount || null} />
@@ -455,7 +456,8 @@ function App() {
           <SidebarSection label="Projects">
             <SidebarNavItem active={view === "projects" && !selectedProjectId} onClick={() => openView("projects")} icon={FolderGit2} label="All Projects" />
             {state.projects.map((project) => (
-              <button
+              <Button
+                variant="ghost"
                 className={view === "projects" && selectedProject?.id === project.id ? "teammate-row active" : "teammate-row"}
                 key={project.id}
                 onClick={() => openProject(project.id)}
@@ -463,13 +465,14 @@ function App() {
                 <span className="project-initial">{project.name.slice(0, 1).toUpperCase()}</span>
                 <span>{project.name}</span>
                 {(projectOpenCounts.get(project.id) || 0) > 0 ? <span className="sidebar-count">{projectOpenCounts.get(project.id)}</span> : null}
-              </button>
+              </Button>
             ))}
           </SidebarSection>
           <SidebarSection label="Team">
             <SidebarNavItem active={view === "agents" && !selectedAgentId} onClick={() => openView("agents")} icon={UsersRound} label="Agents" />
             {state.agents.map((agent) => (
-              <button
+              <Button
+                variant="ghost"
                 className={view === "agents" && selectedAgentId === agent.id ? "teammate-row active" : "teammate-row"}
                 key={agent.id}
                 onClick={() => openAgent(agent.id)}
@@ -477,7 +480,7 @@ function App() {
                 <span className={`presence-dot agent-${agent.status}`} />
                 <span>{agent.name}</span>
                 {(agentOpenCounts.get(agent.id) || 0) > 0 ? <span className="sidebar-count">{agentOpenCounts.get(agent.id)}</span> : null}
-              </button>
+              </Button>
             ))}
           </SidebarSection>
           <SidebarSection label="Instance">
@@ -495,7 +498,7 @@ function App() {
           </div>
           <div className="header-actions">
             {!selectedTicket && state.projects.length > 0 && ["dashboard", "inbox", "tickets"].includes(view) ? (
-              <button onClick={() => openNewTicket()}><SquarePen /> New Ticket</button>
+              <Button onClick={() => openNewTicket()}><SquarePen /> New Ticket</Button>
             ) : null}
             {!selectedTicket && <div className="view-switch">
               <button className={view === "dashboard" ? "active" : ""} onClick={() => openView("dashboard")} title="Dashboard"><LayoutDashboard /></button>
@@ -589,12 +592,12 @@ function Shell({ children, error, theme = "system" }) {
 
 function Stats({ stats }) {
   return (
-    <section className="compact-stats" aria-label="Ticket stats">
+    <Card as="section" className="compact-stats" aria-label="Ticket stats">
       <span><CircleDot /> <strong>{stats.openTickets}</strong> open</span>
       <span><UserRound /> <strong>{stats.unassignedTodo}</strong> unassigned</span>
       <span><ShieldAlert /> <strong>{stats.blocked}</strong> blocked</span>
       <span><CheckCircle2 /> <strong>{stats.done}</strong> done</span>
-    </section>
+    </Card>
   );
 }
 
@@ -721,16 +724,16 @@ function CreateTicket({ state, onSubmit, compact = false, defaults = {} }) {
 function Modal({ title, children, onClose }) {
   return (
     <div className="dialog-backdrop" onMouseDown={onClose}>
-      <section className="dialog" onMouseDown={(event) => event.stopPropagation()}>
+      <Card as="section" className="dialog" onMouseDown={(event) => event.stopPropagation()}>
         <div className="dialog-header">
           <div className="dialog-crumb">
             <span className="instance-mark">T</span>
             <span>{title}</span>
           </div>
-          <button className="close-action" onClick={onClose}>Close</button>
+          <Button variant="secondary" className="close-action" onClick={onClose}>Close</Button>
         </div>
         {children}
-      </section>
+      </Card>
     </div>
   );
 }
@@ -1344,7 +1347,7 @@ function Dashboard({ state, onOpenTicket }) {
 }
 
 function EmptyPanel({ message }) {
-  return <div className="blank-row">{message}</div>;
+  return <div className="blank-row ui-empty">{message}</div>;
 }
 
 function InboxView({ state, onOpenTicket }) {

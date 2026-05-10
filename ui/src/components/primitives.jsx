@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { AlertTriangle, Clock, MessageSquare, Network } from "lucide-react";
+import { Badge as UiBadge, Button, Card } from "./ui";
 
 export function SidebarSection({ label, children }) {
   return (
@@ -12,11 +13,11 @@ export function SidebarSection({ label, children }) {
 
 export function SidebarNavItem({ active, icon: Icon, label, onClick, badge }) {
   return (
-    <button className={active ? "active" : ""} onClick={onClick}>
+    <Button variant="ghost" className={active ? "active" : ""} onClick={onClick}>
       <Icon />
       <span className="nav-label">{label}</span>
       {badge !== undefined && badge !== null ? <span className="nav-badge">{badge}</span> : null}
-    </button>
+    </Button>
   );
 }
 
@@ -25,8 +26,8 @@ export function StatusIcon({ status }) {
 }
 
 export function Identity({ name }) {
-  if (!name) return <span className="assignee-pill assignee-empty">Unassigned</span>;
-  return <span className="assignee-pill"><span>{name.slice(0, 1).toUpperCase()}</span>{name}</span>;
+  if (!name) return <UiBadge variant="outline" className="assignee-pill assignee-empty">Unassigned</UiBadge>;
+  return <UiBadge variant="outline" className="assignee-pill"><span>{name.slice(0, 1).toUpperCase()}</span>{name}</UiBadge>;
 }
 
 export function IssueRow({ ticket, onOpenTicket, compact = false, run = null }) {
@@ -86,7 +87,7 @@ export function KanbanBoard({ statuses, tickets, statusLabel, onOpenTicket, runs
 export function IssueCard({ ticket, onOpenTicket, run = null }) {
   const isDone = ticket.status === "done";
   return (
-    <article className={`task-card${isDone ? " task-card-complete" : ""}`}>
+    <Card as="article" className={`task-card${isDone ? " task-card-complete" : ""}`}>
       <button
         className="card-button"
         onClick={() => onOpenTicket(ticket.id)}
@@ -110,18 +111,18 @@ export function IssueCard({ ticket, onOpenTicket, run = null }) {
           </>
         ) : null}
       </button>
-    </article>
+    </Card>
   );
 }
 
 export function Badge({ icon, text }) {
-  return <span className="tag">{icon}{text}</span>;
+  return <UiBadge className="tag">{icon}{text}</UiBadge>;
 }
 
 export function RunningElapsed({ run, compact = false }) {
   const elapsed = useElapsedLabel(run?.status === "running" ? run.startedAt : null);
   if (!elapsed) return null;
-  return <span className={compact ? "elapsed-pill elapsed-pill-compact" : "elapsed-pill"}><Clock />{elapsed}</span>;
+  return <UiBadge variant="outline" className={compact ? "elapsed-pill elapsed-pill-compact" : "elapsed-pill"}><Clock />{elapsed}</UiBadge>;
 }
 
 function useElapsedLabel(startedAt) {
