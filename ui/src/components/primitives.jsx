@@ -82,8 +82,9 @@ export function KanbanBoard({ statuses, tickets, statusLabel, onOpenTicket }) {
 }
 
 export function IssueCard({ ticket, onOpenTicket }) {
+  const isDone = ticket.status === "done";
   return (
-    <article className="task-card">
+    <article className={`task-card${isDone ? " task-card-complete" : ""}`}>
       <button
         className="card-button"
         onClick={() => onOpenTicket(ticket.id)}
@@ -92,15 +93,19 @@ export function IssueCard({ ticket, onOpenTicket }) {
           <span className="task-key">{ticket.id}</span>
         </span>
         <span className="card-title"><StatusIcon status={ticket.status} /><strong>{ticket.title}</strong></span>
-        <span className="card-meta">
-          <Identity name={ticket.assignee?.name} />
-        </span>
-        <span className="card-tags">
-          {ticket.labels?.slice(0, 2).map((label) => <span className="metadata-chip" key={label}>{label}</span>)}
-          {ticket.children.length > 0 && <Badge icon={<Network />} text={`${ticket.children.length} sub`} />}
-          {ticket.blockedBy.length > 0 && <Badge icon={<AlertTriangle />} text={`${ticket.blockedBy.length} blockers`} />}
-          {ticket.comments.length > 0 && <Badge icon={<MessageSquare />} text={ticket.comments.length} />}
-        </span>
+        {!isDone ? (
+          <>
+            <span className="card-meta">
+              <Identity name={ticket.assignee?.name} />
+            </span>
+            <span className="card-tags">
+              {ticket.labels?.slice(0, 2).map((label) => <span className="metadata-chip" key={label}>{label}</span>)}
+              {ticket.children.length > 0 && <Badge icon={<Network />} text={`${ticket.children.length} sub`} />}
+              {ticket.blockedBy.length > 0 && <Badge icon={<AlertTriangle />} text={`${ticket.blockedBy.length} blockers`} />}
+              {ticket.comments.length > 0 && <Badge icon={<MessageSquare />} text={ticket.comments.length} />}
+            </span>
+          </>
+        ) : null}
       </button>
     </article>
   );

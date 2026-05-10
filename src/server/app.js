@@ -7,7 +7,7 @@ const { spawnSync } = require("node:child_process");
 const { URL } = require("node:url");
 const { createThomasService } = require("../core/thomas-service");
 const { createAgentRunner } = require("./agent-runner");
-const { isGitRoot, resolveTicketWorkspace } = require("./workspace");
+const { defaultRunLogRoot, defaultWorktreeRoot, isGitRoot, resolveTicketWorkspace } = require("./workspace");
 const PACKAGE = require("../../package.json");
 
 function createApp(options = {}) {
@@ -15,6 +15,7 @@ function createApp(options = {}) {
   const workspaceRoot = options.workspaceRoot;
   const runLogRoot = options.runLogRoot;
   const runner = options.runner || createAgentRunner(service, { workspaceRoot, runLogRoot });
+  const prSyncer = createPrSyncer(service, runner, options);
   const systemActions = options.systemActions || {};
   const uiDist = options.uiDist || path.resolve(__dirname, "..", "..", "ui", "dist");
   const uiIndex = path.join(uiDist, "index.html");
@@ -23,7 +24,7 @@ function createApp(options = {}) {
     try {
       const requestUrl = new URL(req.url || "/", "http://localhost");
       if (requestUrl.pathname.startsWith("/api/")) {
-        await handleApi(service, runner, req, res, requestUrl, { workspaceRoot, systemActions });
+        await handleApi(service, runner, req, res, requestUrl, { workspaceRoot, systemActions, prSyncer });
         return;
       }
       await serveUi(req, res, requestUrl, uiDist, uiIndex);
@@ -43,25 +44,27 @@ async function handleApi(service, runner, req, res, requestUrl, options = {}) {
   const actor = req.headers["x-thomas-actor"] || "api";
 
   if (method === "GET" && parts.length === 1 && parts[0] === "state") {
-    sendJson(res, 200, { ok: true, state: stateWithRuns(service, runner) });
+    options.prSyncer?.maybeSync();
+    sendJson(res, 200, { ok: true, state: stateWithRuns(service, runner, options) });
     return;
   }
 
   if (method === "GET" && parts.length === 1 && parts[0] === "tickets") {
-    const state = stateWithRuns(service, runner);
+    options.prSyncer?.maybeSync();
+    const state = stateWithRuns(service, runner, options);
     sendJson(res, 200, { ok: true, tickets: filterTickets(state.tickets, requestUrl.searchParams), state });
     return;
   }
 
   if (method === "POST" && parts.length === 1 && parts[0] === "tickets") {
     const ticket = service.createTicket(await readJson(req), actor);
-    sendJson(res, 201, { ok: true, ticket, state: stateWithRuns(service, runner) });
+    sendJson(res, 201, { ok: true, ticket, state: stateWithRuns(service, runner, options) });
     return;
   }
 
   if (method === "PATCH" && parts.length === 2 && parts[0] === "tickets") {
-    const ticket = service.updateTicket(parts[1], await readJson(req), actor);
-    sendJson(res, 200, { ok: true, ticket, state: stateWithRuns(service, runner) });
+    const ticket = updateTicketAndCleanup(service, runner, parts[1], await readJson(req), actor, options);
+    sendJson(res, 200, { ok: true, ticket, state: stateWithRuns(service, runner, options) });
     return;
   }
 
@@ -73,19 +76,19 @@ async function handleApi(service, runner, req, res, requestUrl, options = {}) {
     if (shouldDispatchAfterComment(beforeTicket, body, actor, runner)) {
       run = runner.dispatch(parts[1], { message: body.body || "", resume: true });
     }
-    sendJson(res, 201, { ok: true, comment, run: sanitizeRun(run), state: stateWithRuns(service, runner) });
+    sendJson(res, 201, { ok: true, comment, run: sanitizeRun(run), state: stateWithRuns(service, runner, options) });
     return;
   }
 
   if (method === "POST" && parts.length === 3 && parts[0] === "tickets" && parts[2] === "dispatch") {
     const run = runner.dispatch(parts[1], await readJson(req));
-    sendJson(res, 202, { ok: true, run, state: stateWithRuns(service, runner) });
+    sendJson(res, 202, { ok: true, run, state: stateWithRuns(service, runner, options) });
     return;
   }
 
   if (method === "POST" && parts.length === 3 && parts[0] === "tickets" && parts[2] === "stop") {
     const run = runner.stop(parts[1]);
-    sendJson(res, 200, { ok: true, run, state: stateWithRuns(service, runner) });
+    sendJson(res, 200, { ok: true, run, state: stateWithRuns(service, runner, options) });
     return;
   }
 
@@ -113,20 +116,20 @@ async function handleApi(service, runner, req, res, requestUrl, options = {}) {
   if (method === "POST" && parts.length === 3 && parts[0] === "tickets" && parts[2] === "assign") {
     const body = await readJson(req);
     const ticket = service.assignTicket(parts[1], body.assigneeAgentId || body.agentId || null, actor);
-    sendJson(res, 200, { ok: true, ticket, state: stateWithRuns(service, runner) });
+    sendJson(res, 200, { ok: true, ticket, state: stateWithRuns(service, runner, options) });
     return;
   }
 
   if (method === "POST" && parts.length === 3 && parts[0] === "tickets" && parts[2] === "blockers") {
     const body = await readJson(req);
     const ticket = service.setBlockers(parts[1], body.blockedByTicketIds || [], actor);
-    sendJson(res, 200, { ok: true, ticket, state: stateWithRuns(service, runner) });
+    sendJson(res, 200, { ok: true, ticket, state: stateWithRuns(service, runner, options) });
     return;
   }
 
   if (method === "PATCH" && parts.length === 1 && parts[0] === "settings") {
     const settings = service.updateSettings(await readJson(req), actor);
-    sendJson(res, 200, { ok: true, settings, state: stateWithRuns(service, runner) });
+    sendJson(res, 200, { ok: true, settings, state: stateWithRuns(service, runner, options) });
     return;
   }
 
@@ -137,7 +140,7 @@ async function handleApi(service, runner, req, res, requestUrl, options = {}) {
 
   if (method === "POST" && parts.length === 1 && parts[0] === "projects") {
     const project = service.createProject(await readJson(req), actor);
-    sendJson(res, 201, { ok: true, project, state: stateWithRuns(service, runner) });
+    sendJson(res, 201, { ok: true, project, state: stateWithRuns(service, runner, options) });
     return;
   }
 
@@ -154,16 +157,185 @@ async function handleApi(service, runner, req, res, requestUrl, options = {}) {
 
   if (method === "POST" && parts.length === 1 && parts[0] === "agents") {
     const agent = service.createAgent(await readJson(req), actor);
-    sendJson(res, 201, { ok: true, agent, state: stateWithRuns(service, runner) });
+    sendJson(res, 201, { ok: true, agent, state: stateWithRuns(service, runner, options) });
     return;
   }
 
   sendJson(res, 404, { ok: false, error: "API route not found" });
 }
 
-function stateWithRuns(service, runner) {
+function stateWithRuns(service, runner, options) {
   const state = service.getState();
-  return { ...state, appVersion: PACKAGE.version, runs: runner.getRuns() };
+  return { ...state, appVersion: PACKAGE.version, cache: cacheInfo(options), runs: runner.getRuns() };
+}
+
+function cacheInfo(options = {}) {
+  const paths = [options.workspaceRoot || defaultWorktreeRoot(), options.runLogRoot || defaultRunLogRoot()];
+  const entries = paths.map((targetPath) => ({
+    path: targetPath,
+    bytes: directorySize(targetPath),
+  }));
+  return {
+    bytes: entries.reduce((total, entry) => total + entry.bytes, 0),
+    entries,
+  };
+}
+
+function directorySize(targetPath) {
+  let total = 0;
+  const visit = (current) => {
+    let stat;
+    try {
+      stat = fs.lstatSync(current);
+    } catch {
+      return;
+    }
+    if (stat.isSymbolicLink()) return;
+    if (stat.isFile()) {
+      total += stat.size;
+      return;
+    }
+    if (!stat.isDirectory()) return;
+    let entries = [];
+    try {
+      entries = fs.readdirSync(current);
+    } catch {
+      return;
+    }
+    for (const entry of entries) visit(path.join(current, entry));
+  };
+  visit(targetPath);
+  return total;
+}
+
+function createPrSyncer(service, runner, options = {}) {
+  if (options.prSync === false) {
+    return { maybeSync: () => [] };
+  }
+  const intervalMs = Number.isFinite(options.prSyncIntervalMs) ? options.prSyncIntervalMs : 60000;
+  const checkPullRequestStatus = options.checkPullRequestStatus || defaultCheckPullRequestStatus;
+  let lastSyncAt = 0;
+  return {
+    maybeSync() {
+      const now = Date.now();
+      if (lastSyncAt && now - lastSyncAt < intervalMs) return [];
+      lastSyncAt = now;
+      return syncMergedPullRequests(service, runner, checkPullRequestStatus, options);
+    },
+  };
+}
+
+function syncMergedPullRequests(service, runner, checkPullRequestStatus, options = {}) {
+  const state = service.getState();
+  const candidates = state.tickets.filter((ticket) => ticket.status === "pr_review" && ticket.prUrl);
+  const updated = [];
+  for (const ticket of candidates) {
+    const result = checkPullRequestStatus(ticket.prUrl, ticket.project?.repoPath || "");
+    if (String(result?.state || "").toUpperCase() !== "MERGED") continue;
+    updateTicketAndCleanup(service, runner, ticket.id, { status: "done" }, "agent", options, ticket);
+    updated.push(ticket.id);
+  }
+  return updated;
+}
+
+function defaultCheckPullRequestStatus(prUrl, repoPath) {
+  const result = spawnSync("gh", ["pr", "view", prUrl, "--json", "state,mergedAt,url,title"], {
+    cwd: repoPath || process.cwd(),
+    encoding: "utf8",
+    timeout: 15000,
+  });
+  if (result.status !== 0) return null;
+  try {
+    return JSON.parse(result.stdout || "{}");
+  } catch {
+    return null;
+  }
+}
+
+function updateTicketAndCleanup(service, runner, ticketId, input, actor, options = {}, beforeTicket = null) {
+  const before = beforeTicket || service.getState().tickets.find((item) => item.id === ticketId);
+  const ticket = service.updateTicket(ticketId, input, actor);
+  if (ticket.status === "done") {
+    cleanupDoneTicketArtifacts(before, runner, options);
+  }
+  return ticket;
+}
+
+function cleanupDoneTicketArtifacts(ticket, runner, options = {}) {
+  if (!ticket) return { worktree: null, logs: [] };
+  const deleted = { worktree: null, logs: [] };
+  const artifactPath = resolveTicketArtifactPath(ticket, options);
+  if (artifactPath) {
+    deleted.worktree = removeWorktree(artifactPath, ticket.project?.repoPath || "");
+  } else {
+    const resolved = resolveTicketWorkspace(ticket, options);
+    if (resolved.source === "worktree" && resolved.path) {
+      deleted.worktree = removeWorktree(resolved.path, resolved.projectPath);
+    }
+  }
+  if (runner?.cleanupTicketRuns) {
+    deleted.logs = runner.cleanupTicketRuns(ticket.id);
+  }
+  return deleted;
+}
+
+function resolveTicketArtifactPath(ticket, options = {}) {
+  const workspaceId = ticket.workspaceId || ticket.id?.toLowerCase();
+  if (!workspaceId) return "";
+  const worktreeRoot = options.workspaceRoot || defaultWorktreeRoot();
+  const candidates = [];
+  if (ticket.project?.name) candidates.push(path.join(worktreeRoot, ticket.project.name, workspaceId));
+  if (ticket.projectId) candidates.push(path.join(worktreeRoot, ticket.projectId, workspaceId));
+  candidates.push(path.join(worktreeRoot, workspaceId));
+  for (const candidate of candidates) {
+    if (!fs.existsSync(candidate)) continue;
+    const resolved = path.resolve(candidate);
+    const root = path.resolve(worktreeRoot);
+    if (resolved === root || !resolved.startsWith(`${root}${path.sep}`)) continue;
+    return resolved;
+  }
+  return "";
+}
+
+function removeWorktree(worktreePath, projectPath) {
+  const target = path.resolve(worktreePath);
+  const project = projectPath ? path.resolve(projectPath) : "";
+  if (!target || (project && target === project)) return null;
+  if (!fs.existsSync(target)) return null;
+  if (project && isGitRoot(project)) {
+    const result = spawnSync("git", ["worktree", "remove", "--force", target], {
+      cwd: project,
+      encoding: "utf8",
+      timeout: 30000,
+    });
+    if (result.status === 0 || !fs.existsSync(target)) return target;
+  }
+  try {
+    fs.rmSync(target, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+    pruneEmptyParents(path.dirname(target), optionsWorktreeRoot(target));
+    return target;
+  } catch {
+    return null;
+  }
+}
+
+function optionsWorktreeRoot(target) {
+  const parts = path.resolve(target).split(path.sep);
+  const index = parts.lastIndexOf("worktrees");
+  return index >= 0 ? parts.slice(0, index + 1).join(path.sep) || path.sep : path.dirname(target);
+}
+
+function pruneEmptyParents(start, stop) {
+  let current = path.resolve(start);
+  const root = path.resolve(stop);
+  while (current.startsWith(root) && current !== root) {
+    try {
+      fs.rmdirSync(current);
+    } catch {
+      return;
+    }
+    current = path.dirname(current);
+  }
 }
 
 function shouldDispatchAfterComment(ticket, body, actor, runner) {

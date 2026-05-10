@@ -212,6 +212,68 @@ test("human review comments resume the assigned agent", async () => {
   });
 });
 
+test("API syncs merged PR review tickets to done", async () => {
+  await withServer(async (baseUrl, tmp) => {
+    const repoPath = path.join(tmp, "repo");
+    fs.mkdirSync(repoPath);
+    const project = await post(`${baseUrl}/api/projects`, { name: "App", prefix: "APP", repoPath });
+    const ticket = await post(`${baseUrl}/api/tickets`, {
+      projectId: project.project.id,
+      title: "Merged PR",
+      status: "pr_review",
+      prUrl: "https://github.com/example/app/pull/10",
+    });
+
+    const response = await fetch(`${baseUrl}/api/state`);
+    const data = await response.json();
+    assert.equal(response.status, 200, data.error);
+    const updated = data.state.tickets.find((item) => item.id === ticket.ticket.id);
+    assert.equal(updated.status, "done");
+  }, {
+    prSyncIntervalMs: 0,
+    checkPullRequestStatus: () => ({ state: "MERGED", mergedAt: "2026-05-09T16:23:45Z" }),
+  });
+});
+
+test("done tickets delete comments, activity, worktree, and run logs", async () => {
+  await withServer(async (baseUrl, tmp) => {
+    const repoPath = path.join(tmp, "repo");
+    const workspaceRoot = path.join(tmp, "worktrees");
+    const runLogRoot = path.join(tmp, "run-logs");
+    fs.mkdirSync(repoPath);
+    const project = await post(`${baseUrl}/api/projects`, { name: "App", prefix: "APP", repoPath });
+    const ticket = await post(`${baseUrl}/api/tickets`, {
+      projectId: project.project.id,
+      title: "Archive artifacts",
+      status: "human_review",
+      workspaceId: "app-1",
+      prUrl: "https://github.com/example/app/pull/1",
+    });
+    await postAsUi(`${baseUrl}/api/tickets/${ticket.ticket.id}/comments`, { body: "remove after done" });
+
+    const worktreePath = path.join(workspaceRoot, "App", "app-1");
+    createGitRepo(worktreePath);
+    fs.mkdirSync(path.join(worktreePath, "src"), { recursive: true });
+    fs.writeFileSync(path.join(worktreePath, "src", "index.js"), "console.log('done');");
+    fs.mkdirSync(runLogRoot, { recursive: true });
+    fs.writeFileSync(path.join(runLogRoot, `run-${ticket.ticket.id}-1.json`), JSON.stringify({ id: `run-${ticket.ticket.id}-1`, ticketId: ticket.ticket.id }));
+    fs.writeFileSync(path.join(runLogRoot, `run-${ticket.ticket.id}-1.jsonl`), "{}\n");
+    fs.writeFileSync(path.join(runLogRoot, `run-${ticket.ticket.id}-1.stdout.log`), "output");
+
+    const archived = await patchAsAgent(`${baseUrl}/api/tickets/${ticket.ticket.id}`, { status: "done" });
+    const updated = archived.state.tickets.find((item) => item.id === ticket.ticket.id);
+    assert.equal(updated.status, "done");
+    assert.equal(updated.workspaceId, null);
+    assert.deepEqual(updated.comments, []);
+    assert.equal(archived.state.activity.some((event) => event.subject === ticket.ticket.id || event.details?.ticketId === ticket.ticket.id), false);
+    assert.equal(fs.existsSync(worktreePath), false);
+    assert.deepEqual(fs.readdirSync(runLogRoot).filter((file) => file.includes(ticket.ticket.id)), []);
+  }, (tmp) => ({
+    workspaceRoot: path.join(tmp, "worktrees"),
+    runLogRoot: path.join(tmp, "run-logs"),
+  }));
+});
+
 test("diff uses ticket worktree when one exists", async () => {
   await withServer(async (baseUrl, tmp) => {
     const repoPath = path.join(tmp, "repo");
@@ -295,6 +357,17 @@ async function postAsUi(url, body) {
   const response = await fetch(url, {
     method: "POST",
     headers: { "content-type": "application/json", "x-thomas-actor": "ui" },
+    body: JSON.stringify(body),
+  });
+  const data = await response.json();
+  assert.equal(response.status < 400, true, data.error);
+  return data;
+}
+
+async function patchAsAgent(url, body) {
+  const response = await fetch(url, {
+    method: "PATCH",
+    headers: { "content-type": "application/json", "x-thomas-actor": "agent" },
     body: JSON.stringify(body),
   });
   const data = await response.json();

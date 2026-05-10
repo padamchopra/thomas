@@ -81,6 +81,14 @@ Ticket details also provide local workflow actions:
 When you comment on a ticket in human review or PR review, Thomas resumes the
 assigned agent automatically with the comment as context.
 
+PR review tickets with a pull request URL are checked periodically with
+`gh pr view` and moved to done when GitHub reports the PR as merged.
+
+When a ticket moves to done, Thomas keeps only the ticket metadata needed for
+history: ticket id, title, description, status, assignee, project, and PR URL.
+Ticket comments, ticket-scoped activity, Thomas-owned worktrees, and Thomas run
+log files are deleted.
+
 ## Storage
 
 Thomas stores normalized state in SQLite:

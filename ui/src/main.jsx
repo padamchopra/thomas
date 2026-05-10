@@ -1006,6 +1006,7 @@ function AgentsView({ state, selectedAgentId, onSelectAgent, onBack, onCreateAge
 
 function SettingsView({ state, onUpdateSettings }) {
   const settings = state.settings || {};
+  const cacheBytes = state.cache?.bytes || 0;
   const testNotification = async () => {
     if (!("Notification" in window)) return;
     let permission = Notification.permission;
@@ -1026,6 +1027,14 @@ function SettingsView({ state, onUpdateSettings }) {
           </div>
         </div>
         <div className="settings-stack">
+          <div className="setting-row">
+            <span><strong>Version</strong><small>Currently running Thomas build.</small></span>
+            <code>{state.appVersion || "unknown"}</code>
+          </div>
+          <div className="setting-row">
+            <span><strong>Cache size</strong><small>Thomas worktrees and local run activity files.</small></span>
+            <code>{formatBytes(cacheBytes)}</code>
+          </div>
           <label className="setting-row">
             <span><strong>Theme</strong><small>Applies to this local UI.</small></span>
             <select value={settings.theme || "system"} onChange={(event) => onUpdateSettings({ theme: event.target.value })}>
@@ -2014,6 +2023,19 @@ function truncateText(value, limit) {
   const text = String(value || "").replace(/\s+/g, " ").trim();
   if (text.length <= limit) return text;
   return `${text.slice(0, limit - 1).trim()}...`;
+}
+
+function formatBytes(bytes) {
+  const value = Number(bytes || 0);
+  if (!Number.isFinite(value) || value <= 0) return "0 B";
+  const units = ["B", "KB", "MB", "GB"];
+  let size = value;
+  let unit = 0;
+  while (size >= 1024 && unit < units.length - 1) {
+    size /= 1024;
+    unit += 1;
+  }
+  return `${size >= 10 || unit === 0 ? Math.round(size) : size.toFixed(1)} ${units[unit]}`;
 }
 
 function titleCase(value) {

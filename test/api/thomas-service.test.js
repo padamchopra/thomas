@@ -63,6 +63,42 @@ test("circular blockers are rejected", () => {
   );
 });
 
+test("done tickets retain only ticket metadata", () => {
+  const thomas = service();
+  const project = thomas.createProject({ name: "App", prefix: "APP" });
+  const parent = thomas.createTicket({ projectId: project.id, title: "Parent" });
+  const ticket = thomas.createTicket({
+    projectId: project.id,
+    title: "Archive me",
+    description: "metadata stays",
+    status: "human_review",
+    assigneeAgentId: "agent-claude",
+    parentTicketId: parent.id,
+    blockedByTicketIds: [parent.id],
+    labels: ["reviewed"],
+    workspaceId: "app-2",
+    prUrl: "https://github.com/example/app/pull/2",
+  }, "agent");
+  thomas.addComment(ticket.id, { body: "delete me" }, "ui");
+  thomas.recordActivity("agent.run.finished", ticket.id, { ticketId: ticket.id, runId: "run-1" });
+
+  thomas.updateTicket(ticket.id, { status: "done" }, "agent");
+  const archived = thomas.getState().tickets.find((item) => item.id === ticket.id);
+
+  assert.equal(archived.title, "Archive me");
+  assert.equal(archived.description, "metadata stays");
+  assert.equal(archived.status, "done");
+  assert.equal(archived.assigneeAgentId, "agent-claude");
+  assert.equal(archived.projectId, project.id);
+  assert.equal(archived.prUrl, "https://github.com/example/app/pull/2");
+  assert.equal(archived.workspaceId, null);
+  assert.equal(archived.parentTicketId, null);
+  assert.deepEqual(archived.blockedBy, []);
+  assert.deepEqual(archived.labels, []);
+  assert.deepEqual(archived.comments, []);
+  assert.equal(thomas.getState().activity.some((event) => event.subject === ticket.id || event.details?.ticketId === ticket.id), false);
+});
+
 test("state is persisted in sqlite tables", () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "thomas-sqlite-"));
   const dbPath = path.join(tmp, "thomas.db");

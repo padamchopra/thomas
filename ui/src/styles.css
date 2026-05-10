@@ -729,6 +729,11 @@ button {
   color: var(--muted-foreground);
   font-size: 12px;
 }
+.setting-row code {
+  color: var(--foreground);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+}
 .setting-row input[type="checkbox"] {
   justify-self: start;
   width: 16px;
@@ -1117,6 +1122,14 @@ button {
   font-size: 13px;
   font-weight: 500;
   line-height: 1.4;
+}
+.task-card-complete .card-button {
+  gap: 8px;
+  padding: 10px 12px;
+}
+.task-card-complete .card-button strong {
+  min-height: 0;
+  -webkit-line-clamp: 2;
 }
 .card-head,
 .card-meta,

@@ -128,6 +128,31 @@ function createAgentRunner(service, runnerOptions = {}) {
     };
   }
 
+  function cleanupTicketRuns(ticketId) {
+    const safePrefix = `${safeRunFileName(`run-${ticketId}`)}-`;
+    const deleted = [];
+    for (const [runId] of runs) {
+      if (String(runId).startsWith(`run-${ticketId}-`)) runs.delete(runId);
+    }
+    let files = [];
+    try {
+      files = fs.readdirSync(runLogRoot);
+    } catch {
+      return deleted;
+    }
+    for (const file of files) {
+      if (!file.startsWith(safePrefix)) continue;
+      const target = path.join(runLogRoot, file);
+      try {
+        fs.rmSync(target, { force: true });
+        deleted.push(target);
+      } catch {
+        // Cleanup is best-effort; stale files should not block archival.
+      }
+    }
+    return deleted;
+  }
+
   function finishRun(run, ticketId, agentName, exitCode, errorMessage = "") {
     if (run.status !== "running") return;
     parseRunOutput(run, true);
@@ -154,7 +179,7 @@ function createAgentRunner(service, runnerOptions = {}) {
     });
   }
 
-  return { dispatch, getRuns, stop };
+  return { dispatch, getRuns, stop, cleanupTicketRuns };
 }
 
 function sanitizeRun(run) {

@@ -10,7 +10,9 @@ function createThomasService(options = {}) {
     const state = store.load();
     const result = fn(state);
     state.updatedAt = new Date().toISOString();
-    addActivity(state, actor, type, subject, result?.activityDetails || {});
+    if (!result?.skipActivity) {
+      addActivity(state, actor, type, subject, result?.activityDetails || {});
+    }
     store.save(state);
     return result?.value === undefined ? result : result.value;
   }
@@ -148,6 +150,7 @@ function createThomasService(options = {}) {
         const before = { ...ticket };
         if (input.title !== undefined) ticket.title = requireString(input.title, "title");
         if (input.description !== undefined) ticket.description = String(input.description || "");
+        const statusChangedToDone = input.status !== undefined && normalizeStatus(input.status) === "done";
         if (input.status !== undefined) {
           if (actor === "ui") throw httpError(400, "Ticket status is controlled by the agent workflow.");
           ticket.status = normalizeStatus(input.status);
@@ -175,10 +178,14 @@ function createThomasService(options = {}) {
           ticket.labels = Array.isArray(input.labels) ? input.labels.map(String).filter(Boolean) : [];
         }
         if (input.prUrl !== undefined) ticket.prUrl = input.prUrl || null;
+        if (ticket.status === "done") {
+          trimDoneTicketState(state, ticket.id);
+        }
         ticket.updatedAt = new Date().toISOString();
         return {
           value: ticket,
           activityDetails: { ticketId: ticket.id, changed: changedKeys(before, ticket) },
+          skipActivity: ticket.status === "done" || statusChangedToDone,
         };
       });
     },
@@ -385,6 +392,23 @@ function normalizeCommentAuthor(author) {
   const normalized = String(author || "").trim().toLowerCase();
   if (normalized === "agent" || normalized === "assistant" || normalized === "bot") return "agent";
   return "you";
+}
+
+function trimDoneTicketState(state, ticketId) {
+  const ticket = requireTicket(state, ticketId);
+  ticket.parentTicketId = null;
+  ticket.blockedByTicketIds = [];
+  ticket.labels = [];
+  ticket.workspaceId = null;
+  state.comments = state.comments.filter((comment) => comment.ticketId !== ticketId);
+  state.activity = state.activity.filter((event) => event.subject !== ticketId && event.details?.ticketId !== ticketId);
+  for (const other of state.tickets) {
+    if (other.id === ticketId) continue;
+    if (other.parentTicketId === ticketId) other.parentTicketId = null;
+    if (Array.isArray(other.blockedByTicketIds)) {
+      other.blockedByTicketIds = other.blockedByTicketIds.filter((id) => id !== ticketId);
+    }
+  }
 }
 
 function httpError(status, message) {
