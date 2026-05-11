@@ -152,7 +152,7 @@ INSERT INTO workspaces (project, name, data) VALUES ('app', 'app-1', '{"name":"a
   assert.equal(fs.readdirSync(tmp).some((name) => name.includes(".legacy-") && name.endsWith(".bak")), true);
 });
 
-test("interrupted in-progress tickets are recovered to human review", () => {
+test("interrupted in-progress tickets are recovered to human review without agent comments", () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "thomas-service-"));
   const service = createThomasService({
     store: createStateStore({ dbPath: path.join(tmp, "state.db") }),
@@ -163,9 +163,22 @@ test("interrupted in-progress tickets are recovered to human review", () => {
   assert.equal(service.recoverInterruptedRuns(), 1);
   const recovered = service.getState().tickets.find((item) => item.id === ticket.id);
   assert.equal(recovered.status, "human_review");
-  assert.equal(recovered.comments.at(-1).author, "agent");
-  assert.equal(recovered.comments.at(-1).metadata.type, "agent_run_interrupted");
+  assert.equal(recovered.comments.length, 0);
   assert.equal(service.recoverInterruptedRuns(), 0);
+});
+
+test("legacy agent run comments are pruned while human and review comments remain", () => {
+  const thomas = service();
+  const project = thomas.createProject({ name: "App", prefix: "APP" });
+  const ticket = thomas.createTicket({ projectId: project.id, title: "Clean comments" });
+  thomas.addComment(ticket.id, { author: "agent", body: "old run", metadata: { type: "agent_run", runId: "run-1" } }, "agent");
+  thomas.addComment(ticket.id, { author: "agent", body: "old interrupted", metadata: { type: "agent_run_interrupted" } }, "agent");
+  thomas.addComment(ticket.id, { author: "you", body: "keep human" }, "ui");
+  thomas.addComment(ticket.id, { author: "agent", body: "keep review", metadata: { type: "diff_review" } }, "agent");
+
+  assert.equal(thomas.pruneAgentRunComments(), 2);
+  const comments = thomas.getState().tickets.find((item) => item.id === ticket.id).comments;
+  assert.deepEqual(comments.map((item) => item.body), ["keep human", "keep review"]);
 });
 
 function sqlite(dbPath, sql) {

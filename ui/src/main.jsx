@@ -14,6 +14,7 @@ import {
   Inbox,
   LayoutDashboard,
   List,
+  Menu,
   MessageSquare,
   Plus,
   RefreshCw,
@@ -27,6 +28,7 @@ import {
   Trash2,
   UsersRound,
   UserRound,
+  X,
   FileDiff,
   FileText,
 } from "lucide-react";
@@ -134,6 +136,7 @@ function App() {
   const [selectedProjectId, setSelectedProjectId] = useState(initialRoute.projectId || null);
   const [pendingProjectPrefix, setPendingProjectPrefix] = useState(initialRoute.projectPrefix || null);
   const [newTicketOpen, setNewTicketOpen] = useState(false);
+  const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const [ticketDraftDefaults, setTicketDraftDefaults] = useState({});
 
   const openNewTicket = (defaults = {}) => {
@@ -438,15 +441,18 @@ function App() {
 
   return (
     <Shell error={error} theme={state.settings?.theme || "system"}>
-      <aside className="side-pane">
+      <aside className={mobileSidebarOpen ? "side-pane mobile-open" : "side-pane"}>
         <div className="instance-header">
           <div className="instance-mark">T</div>
           <div>
             <strong>Thomas</strong>
             <span>Local control plane</span>
           </div>
+          <button type="button" className="mobile-sidebar-close" onClick={() => setMobileSidebarOpen(false)} aria-label="Close navigation">
+            <X />
+          </button>
         </div>
-        <nav className="command-nav">
+        <nav className="command-nav" onClick={() => setMobileSidebarOpen(false)}>
           <Button variant="ghost" className="create-ticket-link" onClick={() => state.projects.length > 0 ? openNewTicket() : openView("projects")}><SquarePen /> New Ticket</Button>
           <SidebarSection label="Work">
             <SidebarNavItem active={view === "dashboard"} onClick={() => openView("dashboard")} icon={LayoutDashboard} label="Dashboard" />
@@ -489,12 +495,18 @@ function App() {
           </SidebarSection>
         </nav>
       </aside>
+      {mobileSidebarOpen ? <button type="button" className="mobile-sidebar-backdrop" onClick={() => setMobileSidebarOpen(false)} aria-label="Close navigation" /> : null}
 
       <main className="content-stage">
         <header className={selectedTicket ? "page-header page-header-detail" : "page-header"}>
-          <div>
-            <h1>{headerTitle}</h1>
-            <p>{headerSubtitle}</p>
+          <div className="page-title-row">
+            <button type="button" className="mobile-sidebar-toggle" aria-label="Open navigation" onClick={() => setMobileSidebarOpen(true)}>
+              <Menu />
+            </button>
+            <div>
+              <h1>{headerTitle}</h1>
+              <p>{headerSubtitle}</p>
+            </div>
           </div>
           <div className="header-actions">
             {!selectedTicket && state.projects.length > 0 && ["dashboard", "inbox", "tickets"].includes(view) ? (
@@ -1177,10 +1189,6 @@ function SettingsView({ state, onUpdateSettings }) {
               <button type="button" className="quiet-button" onClick={testNotification}>Test</button>
             </span>
           </label>
-          <label className="setting-row">
-            <span><strong>Show live agent activity</strong><small>Streams transient activity while a dispatched ticket is running.</small></span>
-            <input type="checkbox" checked={settings.showLiveAgentActivity !== false} onChange={(event) => onUpdateSettings({ showLiveAgentActivity: event.target.checked })} />
-          </label>
         </div>
       </div>
     </section>
@@ -1502,9 +1510,6 @@ function TicketDetail({ state, ticket, onClose, onOpenTicket, onOpenProject, onP
   const [reviewComment, setReviewComment] = useState("");
   const [blockers, setBlockers] = useState(ticket.blockedByTicketIds.join(", "));
   const [labels, setLabels] = useState(ticket.labels.join(", "));
-  const ticketEvents = state.activity
-    .filter((event) => event.subject === ticket.id || event.details?.ticketId === ticket.id)
-    .slice(0, 6);
   const latestComment = ticket.comments.slice().sort((a, b) => dateValue(b.createdAt) - dateValue(a.createdAt))[0];
   const orderedComments = ticket.comments.slice().sort((a, b) => dateValue(a.createdAt) - dateValue(b.createdAt));
   const handoffLines = buildHandoffLines(ticket, latestComment);
@@ -1648,30 +1653,13 @@ function TicketDetail({ state, ticket, onClose, onOpenTicket, onOpenProject, onP
         <div className="detail-tabs" role="tablist" aria-label="Ticket detail sections">
           <button className={detailTab === "conversation" ? "active" : ""} onClick={() => setDetailTab("conversation")}>Conversation</button>
           {ticket.status === "human_review" ? <button className={detailTab === "review" ? "active" : ""} onClick={() => setDetailTab("review")}>Review diff</button> : null}
-          <button className={detailTab === "activity" ? "active" : ""} onClick={() => setDetailTab("activity")}>Activity</button>
           <button className={detailTab === "dependencies" ? "active" : ""} onClick={() => setDetailTab("dependencies")}>Dependencies</button>
         </div>
         <div className="detail-layout">
           <div className="detail-primary">
             {detailTab === "conversation" && (
               <section className="detail-tab-panel">
-                <div className="comment-stack">
-                  {orderedComments.length ? orderedComments.map((item) => (
-                    <article className={`note note-${commentAuthorClass(item.author)}`} key={item.id}>
-                      <div className="note-header">
-                        <strong>{displayCommentAuthor(item.author)}</strong>
-                        <time>{timeAgo(item.createdAt)}</time>
-                      </div>
-                      {item.metadata?.type === "diff_review" ? (
-                        <div className="review-metadata">
-                          <FileDiff />
-                          <span>{item.metadata.filePath}:{item.metadata.line || "?"}</span>
-                        </div>
-                      ) : null}
-                      <MarkdownText value={item.body} />
-                    </article>
-                  )) : <EmptyPanel message="No comments yet." />}
-                </div>
+                <ConversationTimeline comments={orderedComments} run={ticketRun} />
                 <form className="note-form note-form-primary" onSubmit={async (event) => {
                   event.preventDefault();
                   if (!comment.trim()) return;
@@ -1702,28 +1690,6 @@ function TicketDetail({ state, ticket, onClose, onOpenTicket, onOpenProject, onP
                     onSubmit={submitReviewComment}
                   />
                 ) : <EmptyPanel message="Load the current local diff when this ticket is ready for human review." />}
-              </section>
-            )}
-
-            {detailTab === "activity" && (
-              <section className="detail-tab-panel">
-                {ticketRun ? <LiveActivity run={ticketRun} /> : null}
-                <div className="section-heading-row">
-                  <h3><History /> Run ledger</h3>
-                  <span>{ticketEvents.length || 1} event{ticketEvents.length === 1 ? "" : "s"}</span>
-                </div>
-                <div className="run-ledger">
-                  {(ticketEvents.length ? ticketEvents : [syntheticTicketEvent(ticket)]).map((event) => (
-                    <div className="run-row" key={event.id}>
-                      <div>
-                        <strong>{event.type}</strong>
-                        <span>by {event.actor || "api"}</span>
-                      </div>
-                      <span>{event.details?.changed?.length ? event.details.changed.join(", ") : event.subject || ticket.id}</span>
-                      <time>{timeAgo(event.createdAt)}</time>
-                    </div>
-                  ))}
-                </div>
               </section>
             )}
 
@@ -1849,17 +1815,6 @@ function summarizeCommentForHandoff(body) {
   return truncateText(text, 180);
 }
 
-function syntheticTicketEvent(ticket) {
-  return {
-    id: `${ticket.id}-summary`,
-    type: "ticket.snapshot",
-    actor: ticket.assignee?.name || "api",
-    subject: ticket.id,
-    details: {},
-    createdAt: ticket.updatedAt,
-  };
-}
-
 function PropertyRow({ label, children }) {
   return (
     <div className="property-row">
@@ -1869,7 +1824,84 @@ function PropertyRow({ label, children }) {
   );
 }
 
+function ConversationTimeline({ comments, run }) {
+  const timelineItems = buildConversationTimelineItems(comments, run);
+  const groups = groupConversationTimelineItems(timelineItems);
+  return (
+    <div className="comment-stack conversation-timeline">
+      {groups.length ? groups.map((group) => {
+        if (group.type === "comment") return <ConversationComment comment={group.comment} key={group.id} />;
+        if (group.type === "collapsed") return <CollapsedLiveEventGroup group={group} key={group.id} />;
+        return <LiveActivityEvent event={group.event} key={group.id} />;
+      }) : <EmptyPanel message="No comments yet." />}
+    </div>
+  );
+}
+
+function ConversationComment({ comment }) {
+  return (
+    <article className={`note note-${commentAuthorClass(comment.author)}`} key={comment.id}>
+      <div className="note-header">
+        <strong>{displayCommentAuthor(comment.author)}</strong>
+        <time>{timeAgo(comment.createdAt)}</time>
+      </div>
+      {comment.metadata?.type === "diff_review" ? (
+        <div className="review-metadata">
+          <FileDiff />
+          <span>{comment.metadata.filePath}:{comment.metadata.line || "?"}</span>
+        </div>
+      ) : null}
+      <MarkdownText value={comment.body} />
+    </article>
+  );
+}
+
+function CollapsedLiveEventGroup({ group }) {
+  return (
+    <details className="live-event-group">
+      <summary>
+        <span>Activity</span>
+        <em>{group.events.length} collapsed event{group.events.length === 1 ? "" : "s"}</em>
+      </summary>
+      <div className="live-event-group-list">
+        {group.events.map((event) => <LiveActivityEvent event={event} key={event.id} />)}
+      </div>
+    </details>
+  );
+}
+
+function buildConversationTimelineItems(comments, run) {
+  return [
+    ...comments.map((comment) => ({ type: "comment", id: comment.id, createdAt: comment.createdAt, comment })),
+    ...(run?.events || []).slice(-30).map((event) => ({ type: "event", id: event.id, createdAt: event.createdAt, event })),
+  ].sort((a, b) => dateValue(a.createdAt) - dateValue(b.createdAt));
+}
+
+function groupConversationTimelineItems(items) {
+  const groups = [];
+  let activeCollapsedGroup = null;
+  for (const item of items) {
+    if (item.type === "comment") {
+      activeCollapsedGroup = null;
+      groups.push({ type: "comment", id: item.id, comment: item.comment, createdAt: item.createdAt });
+      continue;
+    }
+    if (!isExpandedLiveEventKind(item.event.kind)) {
+      if (!activeCollapsedGroup) {
+        activeCollapsedGroup = { type: "collapsed", id: `collapsed-${item.id}`, events: [], createdAt: item.createdAt };
+        groups.push(activeCollapsedGroup);
+      }
+      activeCollapsedGroup.events.push(item.event);
+      activeCollapsedGroup.id = `collapsed-${activeCollapsedGroup.events[0].id}-${item.id}`;
+      continue;
+    }
+    groups.push({ type: "event", id: item.id, event: item.event, createdAt: item.createdAt });
+  }
+  return groups;
+}
+
 function LiveActivity({ run }) {
+  const eventGroups = groupLiveActivityEvents(run.events?.slice(-30) || []);
   return (
     <section className="live-activity">
       <div className="section-heading-row">
@@ -1881,15 +1913,65 @@ function LiveActivity({ run }) {
         <RunningElapsed run={run} compact />
       </div>
       <div className="live-event-stack">
-        {run.events?.length ? run.events.slice(-30).map((event) => (
-          <div className={`live-event live-event-${event.kind}`} key={event.id}>
-            <span>{displayLiveEventKind(event.kind)}</span>
-            <p>{event.text}</p>
-          </div>
-        )) : <EmptyPanel message="Waiting for agent activity." />}
+        {eventGroups.length ? eventGroups.map((group) => group.type === "collapsed" ? (
+          <details className="live-event-group" key={group.id}>
+            <summary>
+              <span>Activity</span>
+              <em>{group.events.length} collapsed event{group.events.length === 1 ? "" : "s"}</em>
+            </summary>
+            <div className="live-event-group-list">
+              {group.events.map((event) => <LiveActivityEvent event={event} key={event.id} />)}
+            </div>
+          </details>
+        ) : <LiveActivityEvent event={group.event} key={group.id} />) : <EmptyPanel message="Waiting for agent activity." />}
       </div>
     </section>
   );
+}
+
+function LiveActivityEvent({ event }) {
+  const expanded = isExpandedLiveEventKind(event.kind);
+  return (
+    <details className={`live-event live-event-${event.kind} ${expanded ? "live-event-expanded" : "live-event-collapsed"}`} key={event.id} open={expanded}>
+      <summary>
+        <span>{displayLiveEventKind(event.kind)}</span>
+        {!expanded ? <em>{collapseLiveEventText(event)}</em> : null}
+      </summary>
+      {event.kind === "assistant" ? <MarkdownText value={event.text} className="live-event-markdown" /> : <p>{event.text}</p>}
+    </details>
+  );
+}
+
+function groupLiveActivityEvents(events) {
+  const groups = [];
+  let collapsed = [];
+  const flushCollapsed = () => {
+    if (!collapsed.length) return;
+    groups.push({ type: "collapsed", id: `collapsed-${collapsed[0].id}-${collapsed[collapsed.length - 1].id}`, events: collapsed });
+    collapsed = [];
+  };
+  for (const event of events) {
+    if (isExpandedLiveEventKind(event.kind)) {
+      flushCollapsed();
+      groups.push({ type: "event", id: event.id, event });
+    } else {
+      collapsed.push(event);
+    }
+  }
+  flushCollapsed();
+  return groups;
+}
+
+function isExpandedLiveEventKind(kind) {
+  return kind === "assistant";
+}
+
+function collapseLiveEventText(event) {
+  const label = displayLiveEventKind(event.kind).toLowerCase();
+  if (event.kind === "tool") return "Tool call collapsed";
+  if (event.kind === "stdout") return "Output collapsed";
+  if (event.kind === "stderr") return "Error output collapsed";
+  return `${titleCase(label)} collapsed`;
 }
 
 function displayLiveEventKind(kind) {

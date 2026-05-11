@@ -71,7 +71,6 @@ function defaultState() {
     settings: {
       theme: "system",
       notifyHumanReview: false,
-      showLiveAgentActivity: true,
       preferredTerminal: "warp",
     },
   };
@@ -641,7 +640,6 @@ function normalizeSettings(settings) {
   return {
     theme,
     notifyHumanReview: settings.notifyHumanReview === true,
-    showLiveAgentActivity: settings.showLiveAgentActivity !== false,
     preferredTerminal,
   };
 }

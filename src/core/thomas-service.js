@@ -33,15 +33,6 @@ function createThomasService(options = {}) {
       for (const ticket of interrupted) {
         ticket.status = "human_review";
         ticket.updatedAt = now;
-        state.comments.push({
-          id: nextId(state, "comment", "comment"),
-          ticketId: ticket.id,
-          author: "agent",
-          body: "Thomas restarted while this ticket was in development, so the agent process is no longer attached. Any captured transcript remains available from the run log; review the current workspace state, then comment again if the agent should continue.",
-          metadata: { type: "agent_run_interrupted" },
-          createdAt: now,
-          updatedAt: now,
-        });
       }
       state.updatedAt = now;
       addActivity(state, "agent", "agent.run.interrupted", "tickets", {
@@ -51,6 +42,18 @@ function createThomasService(options = {}) {
       return interrupted.length;
     },
 
+    pruneAgentRunComments() {
+      const state = store.load();
+      const before = state.comments.length;
+      state.comments = state.comments.filter((comment) => !isAgentRunComment(comment));
+      const removed = before - state.comments.length;
+      if (removed > 0) {
+        state.updatedAt = new Date().toISOString();
+        store.save(state);
+      }
+      return removed;
+    },
+
     updateSettings(input, actor = "api") {
       return mutate(actor, "settings.updated", "settings", (state) => {
         const before = { ...state.settings };
@@ -58,7 +61,6 @@ function createThomasService(options = {}) {
           ...state.settings,
           ...(input.theme !== undefined ? { theme: normalizeTheme(input.theme) } : {}),
           ...(input.notifyHumanReview !== undefined ? { notifyHumanReview: input.notifyHumanReview === true } : {}),
-          ...(input.showLiveAgentActivity !== undefined ? { showLiveAgentActivity: input.showLiveAgentActivity !== false } : {}),
           ...(input.preferredTerminal !== undefined ? { preferredTerminal: normalizeTerminal(input.preferredTerminal) } : {}),
         };
         return { value: state.settings, activityDetails: { changed: changedKeys(before, state.settings) } };
@@ -240,6 +242,11 @@ function createThomasService(options = {}) {
       return mutate(actor, type, subject, () => ({ value: true, activityDetails: details }));
     },
   };
+}
+
+function isAgentRunComment(comment) {
+  const type = comment?.metadata?.type;
+  return comment?.author === "agent" && (type === "agent_run" || type === "agent_run_interrupted");
 }
 
 function presentState(state, statePath) {

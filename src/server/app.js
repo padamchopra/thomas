@@ -12,6 +12,7 @@ const PACKAGE = require("../../package.json");
 
 function createApp(options = {}) {
   const service = options.service || createThomasService(options);
+  service.pruneAgentRunComments?.();
   const workspaceRoot = options.workspaceRoot;
   const runLogRoot = options.runLogRoot;
   const runner = options.runner || createAgentRunner(service, {

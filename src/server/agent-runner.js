@@ -23,7 +23,7 @@ function createAgentRunner(service, runnerOptions = {}) {
 
     const cwd = ensureTicketWorkspace(ticket, runnerOptions).path;
     const runId = `run-${ticket.id}-${Date.now()}`;
-    const liveActivity = state.settings?.showLiveAgentActivity !== false;
+    const liveActivity = true;
     const prompt = buildPrompt(ticket, options.message || "", { resume: options.resume === true });
     const command = agentCommand(agent, { prompt, liveActivity, resume: options.resume === true });
     const run = {
@@ -161,15 +161,8 @@ function createAgentRunner(service, runnerOptions = {}) {
     run.endedAt = new Date().toISOString();
     saveRunMeta(run);
     const summary = run.stopped ? `${agentName} was stopped by the user.` : cleanSummary(run.summary) || errorMessage || `${agentName} finished with exit code ${exitCode}.`;
-    addRunEvent(run, run.status, summary);
+    addRunEvent(run, run.status, finalRunEventText(run, agentName, exitCode, errorMessage));
     updateTicketAfterRun(service, ticketId, run, summary, runnerOptions);
-    if (!run.stopped) {
-      service.addComment(ticketId, {
-        author: "agent",
-        body: exitCode === 0 ? summary : `Agent run exited with code ${exitCode}.\n\n${summary}`,
-        metadata: { type: "agent_run", runId: run.id, exitCode },
-      }, "agent");
-    }
     service.recordActivity("agent.run.finished", ticketId, {
       ticketId,
       agentId: run.agentId,
@@ -214,18 +207,13 @@ function refreshRun(run, service, runnerOptions = {}) {
     run.exitCode = null;
     run.endedAt = new Date().toISOString();
     const summary = cleanSummary(run.summary) || "Agent run finished while Thomas was not attached.";
-    addRunEvent(run, "finished", summary);
+    addRunEvent(run, "finished", finalRunEventText(run, run.agentName || "Agent", 0));
     try {
       const state = service.getState();
       const ticket = state.tickets.find((item) => item.id === run.ticketId);
       if (ticket?.status === "in_progress") {
         const prUrl = ticket.prUrl || findPullRequestUrl(run, summary, runnerOptions);
         service.updateTicket(run.ticketId, prUrl ? { status: "pr_review", prUrl } : { status: "human_review" }, "agent");
-        service.addComment(run.ticketId, {
-          author: "agent",
-          body: summary,
-          metadata: { type: "agent_run", runId: run.id, exitCode: null, detached: true },
-        }, "agent");
         service.recordActivity("agent.run.finished", run.ticketId, {
           ticketId: run.ticketId,
           agentId: run.agentId,
@@ -584,18 +572,27 @@ function buildPrompt(ticket, message, options = {}) {
     "Do not call tracker APIs or change ticket status directly.",
     "If you open a pull request, use gh on the current branch. The runner will detect the PR after this run.",
     "Run the smallest relevant validation that gives useful signal.",
-    "",
-    "Finish:",
-    "Print SUMMARY: followed by a short, conversational teammate-style update.",
-    "Keep it to 2-5 sentences unless critical details require more.",
-    "Mention only what changed, validation run, and anything the human needs to know next.",
-    "Do not paste long logs, full diffs, or exhaustive file lists.",
-    "If blocked, print BLOCKED: followed by a short explanation of the specific missing input, failing command, or external dependency.",
+    "If blocked, explain the specific missing input, failing command, or external dependency in your normal final response.",
   ].filter(Boolean).join("\n");
 }
 
 function promptCommentAuthor(author) {
   return String(author || "").trim().toLowerCase() === "agent" ? "Agent" : "You";
+}
+
+function finalRunEventText(run, agentName, exitCode, errorMessage = "") {
+  if (run.stopped) return `${agentName} was stopped by the user.`;
+  if (run.status === "failed" || (Number.isFinite(exitCode) && exitCode !== 0)) {
+    const detail = cleanSummary(errorMessage || run.summary);
+    return detail ? `${agentName} failed with exit code ${exitCode}. ${truncateInline(detail, 180)}` : `${agentName} failed with exit code ${exitCode}.`;
+  }
+  return `${agentName} finished. Review the latest Agent message above for the result.`;
+}
+
+function truncateInline(value, limit) {
+  const text = String(value || "").replace(/\s+/g, " ").trim();
+  if (text.length <= limit) return text;
+  return `${text.slice(0, limit - 1).trim()}...`;
 }
 
 function cleanSummary(text) {

@@ -96,17 +96,20 @@ test("API auto-dispatches assigned tickets on create and exposes live activity",
 
     const state = await waitForState(baseUrl, (next) => {
       const updated = next.tickets.find((item) => item.id === ticket.ticket.id);
-      return updated?.status === "human_review" && updated.comments.length > 0;
+      const completedRun = next.runs.find((item) => item.ticketId === ticket.ticket.id && item.status === "finished");
+      return updated?.status === "human_review" && completedRun?.events.some((event) => event.kind === "assistant");
     });
     const updated = state.tickets.find((item) => item.id === ticket.ticket.id);
-    assert.match(updated.comments.at(-1).body, /changed one file|Reading context/);
+    assert.equal(updated.comments.length, 0);
     const completedRun = state.runs.find((item) => item.ticketId === ticket.ticket.id);
     const expectedWorktree = path.join(tmp, "worktrees", "App", "app-1");
     assert.equal(completedRun.cwd, expectedWorktree);
     const prompt = fs.readFileSync(path.join(expectedWorktree, "prompt.txt"), "utf8");
     assert.match(prompt, /Ticket: APP-1/);
     assert.match(prompt, /Do not call tracker APIs or change ticket status directly/);
-    assert.match(prompt, /Keep it to 2-5 sentences/);
+    assert.doesNotMatch(prompt, /Finish:/);
+    assert.doesNotMatch(prompt, /SUMMARY:/);
+    assert.doesNotMatch(prompt, /Keep it to 2-5 sentences/);
     assert.doesNotMatch(prompt, /Working context/);
     assert.doesNotMatch(prompt, /Current worktree/);
     assert.doesNotMatch(prompt, /Source repository/);
@@ -146,10 +149,11 @@ test("API auto-dispatches todo tickets when an assignee is added", async () => {
 
     const state = await waitForState(baseUrl, (next) => {
       const updated = next.tickets.find((item) => item.id === ticket.ticket.id);
-      return updated?.status === "human_review" && updated.comments.some((item) => item.author === "agent");
+      const run = next.runs.find((item) => item.ticketId === ticket.ticket.id && item.status === "finished");
+      return updated?.status === "human_review" && run?.summary.includes("started after assignment");
     });
     const updated = state.tickets.find((item) => item.id === ticket.ticket.id);
-    assert.match(updated.comments.at(-1).body, /started after assignment/);
+    assert.equal(updated.comments.length, 0);
   });
 });
 
@@ -259,11 +263,11 @@ test("human review comments resume the assigned agent", async () => {
 
     const state = await waitForState(baseUrl, (next) => {
       const updated = next.tickets.find((item) => item.id === ticket.ticket.id);
-      return updated?.status === "human_review" && updated.comments.some((item) => item.author === "agent");
+      const run = next.runs.find((item) => item.ticketId === ticket.ticket.id && item.status === "finished");
+      return updated?.status === "human_review" && run?.summary.includes("applied review feedback");
     });
     const updated = state.tickets.find((item) => item.id === ticket.ticket.id);
-    assert.equal(updated.comments.some((item) => item.author === "you" && item.body.includes("review note")), true);
-    assert.match(updated.comments.at(-1).body, /applied review feedback/);
+    assert.deepEqual(updated.comments.map((item) => item.author), ["you"]);
     const run = state.runs.find((item) => item.ticketId === ticket.ticket.id);
     const prompt = fs.readFileSync(path.join(run.cwd, "prompt.txt"), "utf8");
     assert.match(prompt, /Latest human reply:\nPlease address this review note/);
@@ -299,11 +303,11 @@ test("todo comments dispatch the assigned agent", async () => {
 
     const state = await waitForState(baseUrl, (next) => {
       const updated = next.tickets.find((item) => item.id === ticket.ticket.id);
-      return updated?.status === "human_review" && updated.comments.some((item) => item.author === "agent");
+      const run = next.runs.find((item) => item.ticketId === ticket.ticket.id && item.status === "finished");
+      return updated?.status === "human_review" && run?.summary.includes("picked up todo reply");
     });
     const updated = state.tickets.find((item) => item.id === ticket.ticket.id);
-    assert.equal(updated.comments.some((item) => item.author === "you" && item.body.includes("start from this note")), true);
-    assert.match(updated.comments.at(-1).body, /picked up todo reply/);
+    assert.deepEqual(updated.comments.map((item) => item.author), ["you"]);
   });
 });
 
@@ -334,7 +338,7 @@ test("agent completion detects pull requests with gh and moves ticket to PR revi
     });
     const updated = state.tickets.find((item) => item.id === ticket.ticket.id);
     assert.equal(updated.prUrl, "https://github.com/example/app/pull/42");
-    assert.match(updated.comments.at(-1).body, /opened a pull request/);
+    assert.equal(updated.comments.length, 0);
     assert.equal(detectedCwd, path.join(tmp, "worktrees", "App", "app-1"));
   }, {
     findPullRequestUrl: (run) => {
@@ -683,11 +687,13 @@ test("ticket reply CLI posts a human comment and resumes the assigned agent", as
 
     const state = await waitForState(baseUrl, (next) => {
       const updated = next.tickets.find((item) => item.id === ticket.ticket.id);
+      const run = next.runs.find((item) => item.ticketId === ticket.ticket.id && item.status === "finished");
       return updated?.comments.some((item) => item.author === "you" && item.body === "Please continue")
-        && updated?.comments.some((item) => item.author === "agent" && item.body.includes("resumed from CLI"));
+        && run?.summary.includes("resumed from CLI");
     });
     const updated = state.tickets.find((item) => item.id === ticket.ticket.id);
     assert.equal(updated.status, "human_review");
+    assert.deepEqual(updated.comments.map((item) => item.author), ["you"]);
   });
 });
 
