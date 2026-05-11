@@ -116,10 +116,46 @@ test("API auto-dispatches assigned tickets on create and exposes live activity",
     assert.doesNotMatch(prompt, /Thomas ticket/);
     assert.equal(fs.readFileSync(path.join(expectedWorktree, "setup-output.txt"), "utf8"), `App/app-1/${expectedWorktree}`);
     assert.equal(completedRun.events.some((event) => event.kind === "status" && event.text === "System"), false);
+    assert.equal(completedRun.events.some((event) => event.kind === "stdout"), false);
     assert.equal(completedRun.events.some((event) => event.kind === "assistant" && event.text === "Reading context"), true);
-    assert.equal(completedRun.events.some((event) => event.kind === "tool" && event.text === "$ git status"), true);
+    assert.equal(completedRun.events.some((event) => event.kind === "tool"), false);
     assert.equal(fs.existsSync(completedRun.logPath), true);
     assert.match(fs.readFileSync(completedRun.logPath, "utf8"), /Reading context/);
+  });
+});
+
+test("API filters run events before slicing so assistant updates are not crowded out", async () => {
+  await withServer(async (baseUrl, tmp) => {
+    const repoPath = path.join(tmp, "repo");
+    createGitRepo(repoPath);
+    const agentScript = path.join(tmp, "noisy-agent.js");
+    fs.writeFileSync(agentScript, [
+      "console.log(JSON.stringify({ type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text: 'Important agent update' } } }));",
+      "for (let i = 0; i < 140; i += 1) console.log(JSON.stringify({ type: 'system', subtype: 'noise', index: i }));",
+      "for (let i = 0; i < 140; i += 1) console.log('raw noise ' + i);",
+    ].join("\n"));
+
+    const project = await post(`${baseUrl}/api/projects`, { name: "App", prefix: "APP", repoPath });
+    const agent = await post(`${baseUrl}/api/agents`, {
+      name: "Fake",
+      type: "custom",
+      command: `${process.execPath} ${agentScript}`,
+    });
+    const ticket = await post(`${baseUrl}/api/tickets`, {
+      projectId: project.project.id,
+      title: "Noisy run",
+      assigneeAgentId: agent.agent.id,
+    });
+
+    const state = await waitForState(baseUrl, (next) => {
+      return next.runs.find((item) => item.ticketId === ticket.ticket.id && item.status === "finished");
+    });
+    const completedRun = state.runs.find((item) => item.ticketId === ticket.ticket.id);
+    assert.equal(completedRun.events.some((event) => event.kind === "assistant" && event.text === "Important agent update"), true);
+    assert.equal(completedRun.events.some((event) => event.kind === "tool"), false);
+    assert.equal(completedRun.events.some((event) => event.kind === "stdout"), false);
+    assert.equal(completedRun.events.some((event) => event.text?.includes("raw noise")), false);
+    assert.match(fs.readFileSync(completedRun.stdoutPath, "utf8"), /raw noise 139/);
   });
 });
 
@@ -229,6 +265,73 @@ test("API stops running ticket agents", async () => {
     assert.equal(updated.status, "human_review");
     assert.equal(updated.comments.length, 0);
   });
+});
+
+test("API stops detached ticket agents after a Thomas server restart", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "thomas-api-"));
+  const service = createThomasService({
+    store: createStateStore({ dbPath: path.join(tmp, "thomas.db") }),
+  });
+  const serverOptions = {
+    service,
+    workspaceRoot: path.join(tmp, "worktrees"),
+    runLogRoot: path.join(tmp, "run-logs"),
+  };
+  const repoPath = path.join(tmp, "repo");
+  createGitRepo(repoPath);
+  const childPidPath = path.join(tmp, "agent-child.pid");
+  const agentScript = path.join(tmp, "detached-agent.js");
+  fs.writeFileSync(agentScript, [
+    "const fs = require('node:fs');",
+    "const { spawn } = require('node:child_process');",
+    "const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });",
+    `fs.writeFileSync(${JSON.stringify(childPidPath)}, String(child.pid));`,
+    "setInterval(() => {}, 1000);",
+  ].join("\n"));
+
+  let server = await startServer(serverOptions);
+  let agentPid;
+  let childPid;
+  try {
+    const project = await post(`${server.baseUrl}/api/projects`, { name: "App", prefix: "APP", repoPath });
+    const agent = await post(`${server.baseUrl}/api/agents`, {
+      name: "Detached",
+      type: "custom",
+      command: `${process.execPath} ${agentScript}`,
+    });
+    const ticket = await post(`${server.baseUrl}/api/tickets`, {
+      projectId: project.project.id,
+      title: "Stop after restart",
+      assigneeAgentId: agent.agent.id,
+    });
+    const metaPath = path.join(serverOptions.runLogRoot, `${ticket.run.id}.json`);
+    await waitFor(() => Number.isInteger(JSON.parse(fs.readFileSync(metaPath, "utf8")).pid));
+    agentPid = JSON.parse(fs.readFileSync(metaPath, "utf8")).pid;
+    await waitFor(() => fs.existsSync(childPidPath));
+    childPid = Number(fs.readFileSync(childPidPath, "utf8"));
+    assert.equal(isProcessAliveForTest(agentPid), true);
+    assert.equal(isProcessAliveForTest(childPid), true);
+
+    await server.close();
+    server = await startServer(serverOptions);
+    const stopped = await post(`${server.baseUrl}/api/tickets/${ticket.ticket.id}/stop`, {});
+    assert.equal(stopped.run.status, "running");
+
+    await waitFor(() => !isProcessAliveForTest(agentPid) && !isProcessAliveForTest(childPid), 7000);
+    const state = await waitForState(server.baseUrl, (next) => {
+      const updated = next.tickets.find((item) => item.id === ticket.ticket.id);
+      return updated?.status === "human_review";
+    });
+    assert.equal(state.tickets.find((item) => item.id === ticket.ticket.id).status, "human_review");
+  } finally {
+    if (server) await server.close();
+    for (const pid of [agentPid, childPid]) {
+      if (pid && isProcessAliveForTest(pid)) {
+        try { process.kill(-pid, "SIGKILL"); } catch {}
+        try { process.kill(pid, "SIGKILL"); } catch {}
+      }
+    }
+  }
 });
 
 test("human review comments resume the assigned agent", async () => {
@@ -503,9 +606,16 @@ test("diff uses ticket worktree when one exists", async () => {
     const ticketWorktree = path.join(workspaceRoot, "Jupiter Mobile", "jmobile-3");
     createGitRepo(repoPath);
     createGitRepo(ticketWorktree);
+    assert.equal(spawnSync("git", ["branch", "-M", "main"], { cwd: ticketWorktree, encoding: "utf8" }).status, 0);
+    fs.writeFileSync(path.join(ticketWorktree, "README.md"), "# Test\n\nbase\n");
+    assert.equal(spawnSync("git", ["commit", "-am", "base content"], { cwd: ticketWorktree, encoding: "utf8" }).status, 0);
+    assert.equal(spawnSync("git", ["checkout", "-b", "thomas/jmobile-3"], { cwd: ticketWorktree, encoding: "utf8" }).status, 0);
     fs.mkdirSync(path.join(repoPath, "task"), { recursive: true });
     fs.mkdirSync(path.join(ticketWorktree, "task", "JMOBILE-3"), { recursive: true });
     fs.writeFileSync(path.join(ticketWorktree, "task", "JMOBILE-3", "plan.html"), "<h1>plan</h1>");
+    fs.writeFileSync(path.join(ticketWorktree, "README.md"), "# Test\n\nchanged on ticket branch\n");
+    assert.equal(spawnSync("git", ["add", "README.md"], { cwd: ticketWorktree, encoding: "utf8" }).status, 0);
+    assert.equal(spawnSync("git", ["commit", "-m", "ticket change"], { cwd: ticketWorktree, encoding: "utf8" }).status, 0);
 
     const project = await post(`${baseUrl}/api/projects`, { name: "Jupiter Mobile", prefix: "JMOBILE", repoPath });
     const ticket = await post(`${baseUrl}/api/tickets`, {
@@ -520,6 +630,8 @@ test("diff uses ticket worktree when one exists", async () => {
     assert.equal(data.diff.workspaceSource, "worktree");
     assert.equal(data.diff.repoPath, ticketWorktree);
     assert.equal(data.diff.tree.files.includes("task/JMOBILE-3/plan.html"), true);
+    assert.equal(data.diff.files.some((file) => file.newPath === "README.md"), true);
+    assert.equal(data.diff.files.find((file) => file.newPath === "README.md").hunks.some((hunk) => hunk.lines.some((line) => line.content.includes("changed on ticket branch"))), true);
   }, (tmp) => ({ workspaceRoot: path.join(tmp, "worktrees") }));
 });
 
@@ -789,4 +901,22 @@ async function waitForState(baseUrl, predicate) {
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
   throw new Error("Timed out waiting for state.");
+}
+
+async function waitFor(predicate, timeoutMs = 3000) {
+  const started = Date.now();
+  while (Date.now() - started < timeoutMs) {
+    if (predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw new Error("Timed out waiting for condition.");
+}
+
+function isProcessAliveForTest(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
 }

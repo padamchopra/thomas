@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import {
   ChevronDown,
@@ -138,6 +138,8 @@ function App() {
   const [newTicketOpen, setNewTicketOpen] = useState(false);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const [ticketDraftDefaults, setTicketDraftDefaults] = useState({});
+  const notifiedHumanReviewTicketIds = useRef(new Set());
+  const notificationBaselineReady = useRef(false);
 
   const openNewTicket = (defaults = {}) => {
     setTicketDraftDefaults(defaults);
@@ -214,6 +216,10 @@ function App() {
   };
 
   useEffect(() => {
+    registerThomasServiceWorker();
+  }, []);
+
+  useEffect(() => {
     if (window.location.pathname === "/dashboard") {
       pushPath("/", { replace: true });
     }
@@ -252,6 +258,11 @@ function App() {
     }
     setPendingProjectPrefix(null);
   }, [state, pendingProjectPrefix]);
+
+  useEffect(() => {
+    if (!state) return;
+    notifyHumanReviewTickets(state, notifiedHumanReviewTicketIds.current, notificationBaselineReady);
+  }, [state]);
 
   const selectedTicket = useMemo(
     () => state?.tickets.find((ticket) => ticket.id === selectedTicketId) || null,
@@ -1140,15 +1151,28 @@ function AgentsView({ state, selectedAgentId, onSelectAgent, onBack, onCreateAge
 function SettingsView({ state, onUpdateSettings }) {
   const settings = state.settings || {};
   const cacheBytes = state.cache?.bytes || 0;
+  const [notificationStatus, setNotificationStatus] = useState(() => notificationSupportStatus().message);
   const testNotification = async () => {
-    if (!("Notification" in window)) return;
-    let permission = Notification.permission;
-    if (permission === "default") permission = await Notification.requestPermission();
-    if (permission === "granted") {
-      new Notification("Thomas", {
-        body: "Test notification: Human Review alerts are available.",
-      });
+    const support = notificationSupportStatus();
+    if (!support.supported) {
+      setNotificationStatus(support.message);
+      return;
     }
+    let permission = Notification.permission;
+    try {
+      if (permission === "default") permission = await Notification.requestPermission();
+    } catch (err) {
+      setNotificationStatus(`Notification permission could not be requested: ${err.message}`);
+      return;
+    }
+    if (permission === "granted") {
+      setNotificationStatus(await showThomasNotification("Thomas", {
+        body: "Test notification: Human Review alerts are available.",
+        tag: "thomas-test-notification",
+      }));
+      return;
+    }
+    setNotificationStatus(permission === "denied" ? "Notifications are blocked for this browser. Allow them in site settings, then test again." : "Notification permission was not granted.");
   };
   return (
     <section className="settings-layout">
@@ -1188,11 +1212,92 @@ function SettingsView({ state, onUpdateSettings }) {
               <input type="checkbox" checked={settings.notifyHumanReview === true} onChange={(event) => onUpdateSettings({ notifyHumanReview: event.target.checked })} />
               <button type="button" className="quiet-button" onClick={testNotification}>Test</button>
             </span>
+            <small className="notification-status">{notificationStatus}</small>
           </label>
         </div>
       </div>
     </section>
   );
+}
+
+function notificationSupportStatus() {
+  if (typeof window === "undefined") {
+    return { supported: false, message: "Browser notifications are checked when the UI loads." };
+  }
+  if (window.isSecureContext === false) {
+    return {
+      supported: false,
+      message: "Browser notifications require HTTPS or localhost. Open Thomas from the Tailscale HTTPS URL, not the 100.x HTTP URL.",
+    };
+  }
+  if (!("Notification" in window)) {
+    if (isLikelyIos()) {
+      return { supported: false, message: "On iPhone/iPad, open the Tailscale HTTPS URL in Safari, choose Share → Add to Home Screen, then launch Thomas from the Home Screen before enabling notifications." };
+    }
+    return { supported: false, message: "Browser notifications are not available in this browser." };
+  }
+  if (Notification.permission === "denied") {
+    return { supported: true, message: "Notifications are blocked for this browser. Allow them in site settings, then test again." };
+  }
+  if (Notification.permission === "granted") {
+    return { supported: true, message: "Notifications are enabled for this browser." };
+  }
+  if (isLikelyIos() && !isStandaloneWebApp()) {
+    return { supported: true, message: "For reliable iPhone/iPad alerts, Add Thomas to your Home Screen from the Tailscale HTTPS URL and launch it from there before testing." };
+  }
+  return { supported: true, message: "Use Test to request browser permission and send a notification." };
+}
+
+function isLikelyIos() {
+  if (typeof navigator === "undefined") return false;
+  return /iPad|iPhone|iPod/.test(navigator.userAgent || "") || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+}
+
+function isStandaloneWebApp() {
+  if (typeof window === "undefined") return false;
+  return window.matchMedia?.("(display-mode: standalone)")?.matches || window.navigator?.standalone === true;
+}
+
+function registerThomasServiceWorker() {
+  if (typeof navigator === "undefined" || !("serviceWorker" in navigator) || typeof window === "undefined" || window.isSecureContext === false) return;
+  navigator.serviceWorker.register("/thomas-sw.js").catch(() => {});
+}
+
+async function showThomasNotification(title, options = {}) {
+  try {
+    if (typeof navigator !== "undefined" && "serviceWorker" in navigator) {
+      const registration = await navigator.serviceWorker.ready;
+      if (registration?.showNotification) {
+        await registration.showNotification(title, options);
+        return "Test notification sent by the Thomas web app.";
+      }
+    }
+    new Notification(title, options);
+    return "Test notification sent by this browser.";
+  } catch (err) {
+    return `Notification could not be shown: ${err.message}`;
+  }
+}
+
+function notifyHumanReviewTickets(state, notifiedIds, baselineReadyRef) {
+  const humanReviewTickets = (state.tickets || []).filter((ticket) => ticket.status === "human_review");
+  if (!baselineReadyRef.current) {
+    for (const ticket of humanReviewTickets) notifiedIds.add(ticket.id);
+    baselineReadyRef.current = true;
+    return;
+  }
+  if (state.settings?.notifyHumanReview !== true || typeof Notification === "undefined" || Notification.permission !== "granted") {
+    for (const ticket of humanReviewTickets) notifiedIds.add(ticket.id);
+    return;
+  }
+  for (const ticket of humanReviewTickets) {
+    if (notifiedIds.has(ticket.id)) continue;
+    notifiedIds.add(ticket.id);
+    showThomasNotification(`Thomas: ${ticket.id} needs review`, {
+      body: ticket.title || "A ticket is ready for human review.",
+      tag: `thomas-human-review-${ticket.id}`,
+    });
+  }
 }
 
 function ActivityView({ state }) {
@@ -1513,7 +1618,9 @@ function TicketDetail({ state, ticket, onClose, onOpenTicket, onOpenProject, onP
   const latestComment = ticket.comments.slice().sort((a, b) => dateValue(b.createdAt) - dateValue(a.createdAt))[0];
   const orderedComments = ticket.comments.slice().sort((a, b) => dateValue(a.createdAt) - dateValue(b.createdAt));
   const handoffLines = buildHandoffLines(ticket, latestComment);
-  const ticketRun = state.runs?.find((run) => run.ticketId === ticket.id && ["running", "finished", "failed", "interrupted"].includes(run.status)) || null;
+  const ticketRuns = (state.runs || [])
+    .filter((run) => run.ticketId === ticket.id && ["running", "finished", "failed", "stopped", "interrupted"].includes(run.status))
+    .sort((a, b) => dateValue(a.startedAt) - dateValue(b.startedAt));
   const runningTicketRun = state.runs?.find((run) => run.ticketId === ticket.id && run.status === "running") || null;
   const defaultTerminal = state.settings?.preferredTerminal || "warp";
 
@@ -1659,7 +1766,7 @@ function TicketDetail({ state, ticket, onClose, onOpenTicket, onOpenProject, onP
           <div className="detail-primary">
             {detailTab === "conversation" && (
               <section className="detail-tab-panel">
-                <ConversationTimeline comments={orderedComments} run={ticketRun} />
+                <ConversationTimeline comments={orderedComments} runs={ticketRuns} />
                 <form className="note-form note-form-primary" onSubmit={async (event) => {
                   event.preventDefault();
                   if (!comment.trim()) return;
@@ -1824,14 +1931,13 @@ function PropertyRow({ label, children }) {
   );
 }
 
-function ConversationTimeline({ comments, run }) {
-  const timelineItems = buildConversationTimelineItems(comments, run);
+function ConversationTimeline({ comments, runs }) {
+  const timelineItems = buildConversationTimelineItems(comments, runs);
   const groups = groupConversationTimelineItems(timelineItems);
   return (
     <div className="comment-stack conversation-timeline">
       {groups.length ? groups.map((group) => {
         if (group.type === "comment") return <ConversationComment comment={group.comment} key={group.id} />;
-        if (group.type === "collapsed") return <CollapsedLiveEventGroup group={group} key={group.id} />;
         return <LiveActivityEvent event={group.event} key={group.id} />;
       }) : <EmptyPanel message="No comments yet." />}
     </div>
@@ -1856,48 +1962,81 @@ function ConversationComment({ comment }) {
   );
 }
 
-function CollapsedLiveEventGroup({ group }) {
-  return (
-    <details className="live-event-group">
-      <summary>
-        <span>Activity</span>
-        <em>{group.events.length} collapsed event{group.events.length === 1 ? "" : "s"}</em>
-      </summary>
-      <div className="live-event-group-list">
-        {group.events.map((event) => <LiveActivityEvent event={event} key={event.id} />)}
-      </div>
-    </details>
-  );
+function buildConversationTimelineItems(comments, runs) {
+  const items = [];
+  const seenComments = new Set();
+  for (const comment of comments || []) {
+    const id = stableCommentTimelineId(comment);
+    if (seenComments.has(id)) continue;
+    seenComments.add(id);
+    items.push({ type: "comment", id, createdAt: comment.createdAt, comment });
+  }
+  const runList = Array.isArray(runs) ? runs : runs ? [runs] : [];
+  const seenEvents = new Set();
+  for (const run of runList) {
+    const events = run?.events || [];
+    const eventIdCounts = countEventIds(run, events);
+    for (const [index, event] of events.entries()) {
+      const id = stableRunEventTimelineId(run, event, index, eventIdCounts);
+      const dedupeKey = runEventDedupeKey(run, event, id);
+      if (seenEvents.has(dedupeKey)) continue;
+      seenEvents.add(dedupeKey);
+      items.push({ type: "event", id, createdAt: event.createdAt || run?.startedAt, event: { ...event, id } });
+    }
+  }
+  return items.sort((a, b) => dateValue(a.createdAt) - dateValue(b.createdAt) || String(a.id).localeCompare(String(b.id)));
 }
 
-function buildConversationTimelineItems(comments, run) {
-  return [
-    ...comments.map((comment) => ({ type: "comment", id: comment.id, createdAt: comment.createdAt, comment })),
-    ...(run?.events || []).slice(-30).map((event) => ({ type: "event", id: event.id, createdAt: event.createdAt, event })),
-  ].sort((a, b) => dateValue(a.createdAt) - dateValue(b.createdAt));
+function stableCommentTimelineId(comment) {
+  return `comment-${comment?.id || `${comment?.createdAt || ""}-${hashText(comment?.body || "")}`}`;
+}
+
+function countEventIds(run, events) {
+  const counts = new Map();
+  for (const event of events || []) {
+    const id = String(event?.id || `${run?.id || "run"}-${event?.kind || "event"}`);
+    counts.set(id, (counts.get(id) || 0) + 1);
+  }
+  return counts;
+}
+
+function stableRunEventTimelineId(run, event, index, counts) {
+  const runId = run?.id || "run";
+  const eventId = String(event?.id || `${event?.kind || "event"}-${index + 1}`);
+  const scopedId = `${runId}:${eventId}`;
+  if ((counts.get(eventId) || 0) <= 1) return `event-${scopedId}`;
+  return `event-${scopedId}:${index + 1}`;
+}
+
+function runEventDedupeKey(run, event, stableId) {
+  const textKey = hashText(event?.text || "");
+  return `${run?.id || "run"}:${event?.id || stableId}:${event?.kind || "event"}:${event?.createdAt || ""}:${textKey}`;
+}
+
+function hashText(value) {
+  let hash = 0;
+  const text = String(value || "");
+  for (let index = 0; index < text.length; index += 1) {
+    hash = ((hash << 5) - hash + text.charCodeAt(index)) | 0;
+  }
+  return String(hash);
 }
 
 function groupConversationTimelineItems(items) {
   const groups = [];
-  let activeCollapsedGroup = null;
   for (const item of items) {
     if (item.type === "comment") {
-      activeCollapsedGroup = null;
       groups.push({ type: "comment", id: item.id, comment: item.comment, createdAt: item.createdAt });
       continue;
     }
-    if (!isExpandedLiveEventKind(item.event.kind)) {
-      if (!activeCollapsedGroup) {
-        activeCollapsedGroup = { type: "collapsed", id: `collapsed-${item.id}`, events: [], createdAt: item.createdAt };
-        groups.push(activeCollapsedGroup);
-      }
-      activeCollapsedGroup.events.push(item.event);
-      activeCollapsedGroup.id = `collapsed-${activeCollapsedGroup.events[0].id}-${item.id}`;
-      continue;
-    }
+    if (!isConversationLiveEventKind(item.event.kind)) continue;
     groups.push({ type: "event", id: item.id, event: item.event, createdAt: item.createdAt });
   }
   return groups;
+}
+
+function isConversationLiveEventKind(kind) {
+  return kind === "assistant" || kind === "failed" || kind === "stopped";
 }
 
 function LiveActivity({ run }) {

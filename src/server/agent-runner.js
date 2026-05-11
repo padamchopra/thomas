@@ -37,6 +37,7 @@ function createAgentRunner(service, runnerOptions = {}) {
       startedAt: new Date().toISOString(),
       endedAt: null,
       exitCode: null,
+      nextEventSequence: 1,
       events: [],
       summary: "",
       child: null,
@@ -108,23 +109,24 @@ function createAgentRunner(service, runnerOptions = {}) {
     if (!run) throw httpError(404, `No running agent for ticket: ${ticketId}`);
     run.stopped = true;
     addRunEvent(run, "status", "Stop requested.");
-    if (run.child && !run.child.killed) {
-      run.child.kill("SIGTERM");
-    } else if (run.pid && isProcessAlive(run.pid)) {
-      process.kill(run.pid, "SIGTERM");
+    const signalled = killRunProcess(run, "SIGTERM");
+    if (!signalled) {
+      finishStoppedRun(run, service, ticketId, { detached: true, missingPid: true });
+      return {
+        ...run,
+        child: undefined,
+        events: selectConversationEvents(run.events || []),
+      };
     }
+    saveRunMeta(run);
     setTimeout(() => {
       if (run.status !== "running") return;
-      if (run.child && !run.child.killed) {
-        run.child.kill("SIGKILL");
-      } else if (run.pid && isProcessAlive(run.pid)) {
-        process.kill(run.pid, "SIGKILL");
-      }
+      killRunProcess(run, "SIGKILL");
     }, 5000).unref?.();
     return {
       ...run,
       child: undefined,
-      events: run.events.slice(-80),
+      events: selectConversationEvents(run.events || []),
     };
   }
 
@@ -190,9 +192,20 @@ function sanitizeRun(run) {
     logPath: run.eventsPath,
     stdoutPath: run.stdoutPath,
     stderrPath: run.stderrPath,
-    events: (run.events || []).slice(-80),
+    events: selectConversationEvents(run.events || []),
     summary: run.summary || "",
   };
+}
+
+function selectConversationEvents(events) {
+  return (events || []).filter(isConversationRunEvent).slice(-80);
+}
+
+function isConversationRunEvent(event) {
+  if (!event || !event.kind) return false;
+  if (event.kind === "assistant") return true;
+  if (event.kind === "failed" || event.kind === "stopped") return true;
+  return false;
 }
 
 function refreshRun(run, service, runnerOptions = {}) {
@@ -203,6 +216,10 @@ function refreshRun(run, service, runnerOptions = {}) {
     return;
   }
   if (run.pid) {
+    if (run.stopped) {
+      finishStoppedRun(run, service, run.ticketId, { detached: true });
+      return;
+    }
     run.status = "finished";
     run.exitCode = null;
     run.endedAt = new Date().toISOString();
@@ -243,6 +260,27 @@ function updateTicketAfterRun(service, ticketId, run, summary, runnerOptions = {
     return;
   }
   service.updateTicket(ticketId, { status: "human_review" }, "agent");
+}
+
+function finishStoppedRun(run, service, ticketId, details = {}) {
+  run.status = "interrupted";
+  run.exitCode = null;
+  run.endedAt = new Date().toISOString();
+  addRunEvent(run, "stopped", details.missingPid
+    ? "Stop requested; Thomas was no longer attached to this legacy run process."
+    : "Agent run stopped.");
+  try {
+    service.updateTicket(ticketId, { status: "human_review" }, "agent");
+    service.recordActivity("agent.run.stopped", ticketId, {
+      ticketId,
+      agentId: run.agentId,
+      runId: run.id,
+      ...details,
+    });
+  } catch {
+    // Keep stop best-effort if state persistence is temporarily unavailable.
+  }
+  saveRunMeta(run);
 }
 
 function findPullRequestUrl(run, summary, runnerOptions = {}) {
@@ -299,6 +337,7 @@ function readPersistedRuns(runLogRoot) {
       run.stdoutOffset = Number.isFinite(run.stdoutOffset) ? run.stdoutOffset : 0;
       run.stderrOffset = Number.isFinite(run.stderrOffset) ? run.stderrOffset : 0;
       run.events = readRunEvents(run.eventsPath);
+      run.nextEventSequence = nextEventSequence(run);
       return run;
     } catch {
       return null;
@@ -320,7 +359,17 @@ function readRunEvents(eventsPath) {
 function saveRunMeta(run) {
   if (!run.metaPath) return;
   fs.mkdirSync(path.dirname(run.metaPath), { recursive: true });
-  fs.writeFileSync(run.metaPath, JSON.stringify(sanitizeRun(run), null, 2));
+  fs.writeFileSync(run.metaPath, JSON.stringify(persistRunMeta(run), null, 2));
+}
+
+function persistRunMeta(run) {
+  return {
+    ...sanitizeRun(run),
+    pid: run.pid || null,
+    stdoutOffset: Number.isFinite(run.stdoutOffset) ? run.stdoutOffset : 0,
+    stderrOffset: Number.isFinite(run.stderrOffset) ? run.stderrOffset : 0,
+    stopped: run.stopped === true,
+  };
 }
 
 function saveRunEvents(run) {
@@ -368,6 +417,31 @@ function isProcessAlive(pid) {
   }
 }
 
+function killRunProcess(run, signal) {
+  const pid = run?.child?.pid || run?.pid;
+  if (!pid) return false;
+  try {
+    process.kill(-pid, signal);
+    return true;
+  } catch {
+    // Detached runs are process-group leaders on POSIX. If group signalling is
+    // unavailable or the group is already gone, fall back to the direct child.
+  }
+  try {
+    if (run.child && !run.child.killed) {
+      run.child.kill(signal);
+      return true;
+    }
+    if (isProcessAlive(pid)) {
+      process.kill(pid, signal);
+      return true;
+    }
+  } catch {
+    // Stop is best-effort; refreshRun will reconcile status when the process exits.
+  }
+  return false;
+}
+
 function consumeOutput(run, chunk, liveActivity, stream = "stdout") {
   if (!chunk || chunk.length === 0) return;
   const text = chunk.toString("utf8");
@@ -381,6 +455,7 @@ function consumeOutput(run, chunk, liveActivity, stream = "stdout") {
     if (!trimmed) continue;
     const parsed = parseStructuredEvent(trimmed);
     if (parsed) {
+      if (parsed.hidden) continue;
       if (parsed.append) {
         appendRunEvent(run, parsed.kind, parsed.text);
       } else {
@@ -388,7 +463,7 @@ function consumeOutput(run, chunk, liveActivity, stream = "stdout") {
       }
       if (parsed.summary) run.summary += parsed.append ? parsed.summary : `${parsed.summary}\n`;
     } else {
-      addRunEvent(run, stream, trimmed);
+      if (stream === "stderr") addRunEvent(run, stream, trimmed);
       run.summary += `${trimmed}\n`;
     }
     if (run.summary.length > 20000) run.summary = run.summary.slice(-20000);
@@ -404,7 +479,7 @@ function parseStructuredEvent(line) {
   }
 
   if (event.type === "stream_event" && event.event) {
-    return parseStreamEvent(event.event);
+    return parseStreamEvent(event.event) || { hidden: true };
   }
   if (event.type === "assistant" && event.message?.content) {
     return parseAssistantMessage(event.message);
@@ -412,7 +487,7 @@ function parseStructuredEvent(line) {
   if (event.type === "result") {
     return event.result ? { kind: "assistant", text: event.result, summary: event.result } : null;
   }
-  if (event.type === "system" || event.type === "user") return null;
+  if (event.type === "system" || event.type === "user") return { hidden: true };
 
   const type = event.type || event.event || event.kind || "";
   const text =
@@ -484,7 +559,7 @@ function addRunEvent(run, kind, text) {
   const cleaned = String(text || "").trim();
   if (!cleaned) return;
   run.events.push({
-    id: `${run.id}-${run.events.length + 1}`,
+    id: nextRunEventId(run),
     kind,
     text: cleaned.length > 1000 ? `${cleaned.slice(0, 1000)}...` : cleaned,
     createdAt: new Date().toISOString(),
@@ -508,7 +583,7 @@ function appendRunEvent(run, kind, text) {
   }
   if (!next.trim()) return;
   run.events.push({
-    id: `${run.id}-${run.events.length + 1}`,
+    id: nextRunEventId(run),
     kind,
     text: next.length > 2000 ? `...${next.slice(-2000)}` : next,
     createdAt: new Date().toISOString(),
@@ -516,6 +591,27 @@ function appendRunEvent(run, kind, text) {
   if (run.events.length > 120) run.events.splice(0, run.events.length - 120);
   saveRunEvents(run);
   saveRunMeta(run);
+}
+
+function nextRunEventId(run) {
+  if (!Number.isFinite(run.nextEventSequence) || run.nextEventSequence < 1) {
+    run.nextEventSequence = nextEventSequence(run);
+  }
+  const id = `${run.id}-${run.nextEventSequence}`;
+  run.nextEventSequence += 1;
+  return id;
+}
+
+function nextEventSequence(run) {
+  const prefix = `${run.id}-`;
+  let max = 0;
+  for (const event of run.events || []) {
+    const id = String(event?.id || "");
+    if (!id.startsWith(prefix)) continue;
+    const sequence = Number(id.slice(prefix.length));
+    if (Number.isFinite(sequence)) max = Math.max(max, sequence);
+  }
+  return max + 1;
 }
 
 

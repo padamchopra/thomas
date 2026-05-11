@@ -568,7 +568,46 @@ function filterTickets(tickets, params) {
 
 function ticketDiff(service, ticketId, options = {}) {
   const { ticket, repoPath, workspaceSource } = ticketRepository(service, ticketId, options);
-  const result = spawnSync("git", ["diff", "--no-ext-diff", "--unified=80", "--", "."], {
+  const diffText = ticketDiffText(repoPath);
+  return {
+    ticketId: ticket.id,
+    projectId: ticket.projectId,
+    repoPath,
+    workspaceSource,
+    generatedAt: new Date().toISOString(),
+    tree: projectTree(repoPath, diffText),
+    files: parseUnifiedDiff(diffText),
+  };
+}
+
+function ticketDiffText(repoPath) {
+  const sections = [];
+  const baseRef = ticketDiffBaseRef(repoPath);
+  if (baseRef) {
+    sections.push(gitDiff(repoPath, [`${baseRef}...HEAD`]));
+  }
+  sections.push(gitDiff(repoPath, ["--cached"]));
+  sections.push(gitDiff(repoPath, []));
+  return sections.filter(Boolean).join("\n");
+}
+
+function ticketDiffBaseRef(repoPath) {
+  for (const ref of ["origin/main", "origin/master", "main", "master", "@{upstream}"]) {
+    if (gitRefExists(repoPath, ref)) return ref;
+  }
+  return "";
+}
+
+function gitRefExists(repoPath, ref) {
+  return spawnSync("git", ["rev-parse", "--verify", "--quiet", ref], {
+    cwd: repoPath,
+    encoding: "utf8",
+    timeout: 10000,
+  }).status === 0;
+}
+
+function gitDiff(repoPath, refs = []) {
+  const result = spawnSync("git", ["diff", "--no-ext-diff", "--unified=80", ...refs, "--", "."], {
     cwd: repoPath,
     encoding: "utf8",
     maxBuffer: 20 * 1024 * 1024,
@@ -579,15 +618,7 @@ function ticketDiff(service, ticketId, options = {}) {
     error.status = 500;
     throw error;
   }
-  return {
-    ticketId: ticket.id,
-    projectId: ticket.projectId,
-    repoPath,
-    workspaceSource,
-    generatedAt: new Date().toISOString(),
-    tree: projectTree(repoPath, result.stdout || ""),
-    files: parseUnifiedDiff(result.stdout || ""),
-  };
+  return result.stdout || "";
 }
 
 function ticketRepository(service, ticketId, options = {}) {

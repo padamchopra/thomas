@@ -911,9 +911,17 @@ button {
   align-items: center;
   gap: 10px;
 }
+.setting-row > .setting-inline-control {
+  display: inline-flex;
+}
 .setting-inline-control .quiet-button {
   min-height: 28px;
   padding: 3px 9px;
+}
+.notification-status {
+  grid-column: 1 / -1;
+  color: var(--muted-foreground);
+  line-height: 1.35;
 }
 .projects-layout {
   display: grid;
