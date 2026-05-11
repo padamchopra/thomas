@@ -62,6 +62,7 @@ function createThomasService(options = {}) {
           ...(input.theme !== undefined ? { theme: normalizeTheme(input.theme) } : {}),
           ...(input.notifyHumanReview !== undefined ? { notifyHumanReview: input.notifyHumanReview === true } : {}),
           ...(input.preferredTerminal !== undefined ? { preferredTerminal: normalizeTerminal(input.preferredTerminal) } : {}),
+          ...(input.branchPrefix !== undefined ? { branchPrefix: normalizeBranchPrefix(input.branchPrefix) } : {}),
         };
         return { value: state.settings, activityDetails: { changed: changedKeys(before, state.settings) } };
       });
@@ -87,6 +88,18 @@ function createThomasService(options = {}) {
         };
         state.projects.push(project);
         return { value: project, activityDetails: { projectId: project.id } };
+      });
+    },
+
+    updateProject(projectId, input, actor = "api") {
+      return mutate(actor, "project.updated", projectId, (state) => {
+        const project = findProject(state, projectId);
+        const before = { ...project };
+        if (input.repoPath !== undefined) project.repoPath = String(input.repoPath || "");
+        if (input.description !== undefined) project.description = String(input.description || "");
+        if (input.setupScript !== undefined) project.setupScript = String(input.setupScript || "");
+        project.updatedAt = new Date().toISOString();
+        return { value: project, activityDetails: { projectId: project.id, changed: changedKeys(before, project) } };
       });
     },
 
@@ -371,6 +384,20 @@ function normalizeTerminal(terminal) {
   const normalized = String(terminal || "").trim().toLowerCase();
   if (!["warp", "terminal", "iterm", "system"].includes(normalized)) throw httpError(400, `Unknown terminal: ${terminal}`);
   return normalized;
+}
+
+function normalizeBranchPrefix(value) {
+  const prefix = String(value || "thomas")
+    .trim()
+    .toLowerCase()
+    .split("/")
+    .map((part) => part
+      .replace(/[^a-z0-9._-]+/g, "-")
+      .replace(/^[.-]+|[.-]+$/g, "")
+      .replace(/-+/g, "-"))
+    .filter(Boolean)
+    .join("/");
+  return prefix || "thomas";
 }
 
 function normalizePrefix(value) {

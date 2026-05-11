@@ -449,7 +449,8 @@ h3 { font-size: 13px; font-weight: 650; }
   font-size: 12px;
 }
 .entry-row input,
-.entry-row select {
+.entry-row select,
+.entry-row textarea {
   width: 100%;
 }
 .entry-actions {
@@ -910,9 +911,14 @@ button {
   display: inline-flex;
   align-items: center;
   gap: 10px;
+  min-width: 0;
 }
 .setting-row > .setting-inline-control {
   display: inline-flex;
+}
+.setting-inline-control input {
+  min-width: 0;
+  width: 100%;
 }
 .setting-inline-control .quiet-button {
   min-height: 28px;
@@ -967,6 +973,30 @@ button {
   color: var(--foreground);
   font-size: 18px;
   line-height: 1;
+}
+.project-setup-action {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  min-height: 58px;
+  padding: 11px 14px;
+}
+.project-setup-action > div {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+.project-setup-action strong {
+  font-size: 13px;
+}
+.project-setup-action code {
+  overflow: hidden;
+  color: var(--muted-foreground);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .agent-profile-layout {
   display: grid;
@@ -1624,6 +1654,19 @@ button {
   width: 32px;
   height: 32px;
   font-size: 13px;
+}
+.setup-script-form {
+  display: grid;
+}
+.setup-script-textarea {
+  min-height: min(54vh, 460px);
+  border: 0;
+  border-radius: 0;
+  padding: 18px 20px;
+  background: var(--card);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 13px;
+  resize: vertical;
 }
 .ticket-compose {
   display: grid;
@@ -2844,6 +2887,13 @@ button.link-button:hover {
   }
   .project-summary-strip span:nth-last-child(-n + 2) {
     border-bottom: 0;
+  }
+  .project-setup-action {
+    align-items: stretch;
+    flex-direction: column;
+  }
+  .project-setup-action .quiet-button {
+    width: 100%;
   }
   .section-titlebar {
     align-items: flex-start;

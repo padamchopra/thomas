@@ -56,7 +56,7 @@ function ensureTicketWorkspace(ticket, options = {}) {
   }
 
   fs.mkdirSync(path.dirname(worktreePath), { recursive: true });
-  const branch = defaultWorkspaceBranch(projectPath, ticket.workspaceId || ticket.id?.toLowerCase());
+  const branch = defaultWorkspaceBranch(projectPath, ticket.workspaceId || ticket.id?.toLowerCase(), options.branchPrefix);
   const base = defaultBaseRef(projectPath);
   const args = branchExists(projectPath, branch)
     ? ["worktree", "add", worktreePath, branch]
@@ -88,9 +88,9 @@ function isGitRoot(repoPath) {
   return Boolean(repoPath) && fs.existsSync(path.join(repoPath, ".git"));
 }
 
-function defaultWorkspaceBranch(repoPath, workspaceId) {
-  const user = detectGithubUsername(repoPath);
-  return `${user || "thomas"}/${sanitizeBranchSegment(workspaceId)}`;
+function defaultWorkspaceBranch(repoPath, workspaceId, branchPrefix) {
+  const prefix = sanitizeBranchPrefix(branchPrefix) || detectGithubUsername(repoPath) || "thomas";
+  return `${prefix}/${sanitizeBranchSegment(workspaceId)}`;
 }
 
 function detectGithubUsername(repoPath) {
@@ -165,6 +165,19 @@ function sanitizeBranchSegment(value) {
     .replace(/[^a-z0-9._-]+/g, "-")
     .replace(/^[.-]+|[.-]+$/g, "")
     .replace(/-+/g, "-") || "workspace";
+}
+
+function sanitizeBranchPrefix(value) {
+  return String(value || "")
+    .trim()
+    .toLowerCase()
+    .split("/")
+    .map((part) => part
+      .replace(/[^a-z0-9._-]+/g, "-")
+      .replace(/^[.-]+|[.-]+$/g, "")
+      .replace(/-+/g, "-"))
+    .filter(Boolean)
+    .join("/");
 }
 
 function workspaceError(message) {

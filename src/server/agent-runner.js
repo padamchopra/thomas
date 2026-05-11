@@ -21,16 +21,31 @@ function createAgentRunner(service, runnerOptions = {}) {
     if (agent.status === "paused" || agent.status === "offline") throw httpError(400, `${agent.name} is ${agent.status}.`);
     if (!ticket.project?.repoPath) throw httpError(400, "Ticket project has no repository folder configured.");
 
-    const cwd = ensureTicketWorkspace(ticket, runnerOptions).path;
+    const cwd = ensureTicketWorkspace(ticket, {
+      ...runnerOptions,
+      branchPrefix: runnerOptions.getBranchPrefix?.(),
+    }).path;
     const runId = `run-${ticket.id}-${Date.now()}`;
     const liveActivity = true;
-    const prompt = buildPrompt(ticket, options.message || "", { resume: options.resume === true });
-    const command = agentCommand(agent, { prompt, liveActivity, resume: options.resume === true });
+    const resume = options.resume === true;
+    const conversationName = buildConversationName(ticket);
+    const previousSession = resume ? latestProviderSessionForTicket(runLogRoot, runs, ticket.id, agent.id) : null;
+    const prompt = buildPrompt(ticket, options.message || "", { resume });
+    const command = agentCommand(agent, {
+      prompt,
+      liveActivity,
+      resume,
+      providerSessionId: previousSession?.providerSessionId || "",
+      conversationName,
+    });
     const run = {
       id: runId,
       ticketId: ticket.id,
       agentId: agent.id,
       agentName: agent.name,
+      provider: agentProvider(agent),
+      providerSessionId: previousSession?.providerSessionId || "",
+      conversationName,
       status: "running",
       command: displayCommand(command),
       cwd,
@@ -185,6 +200,9 @@ function sanitizeRun(run) {
     agentName: run.agentName,
     status: run.status,
     command: run.command,
+    provider: run.provider || "",
+    providerSessionId: run.providerSessionId || "",
+    conversationName: run.conversationName || "",
     cwd: run.cwd,
     startedAt: run.startedAt,
     endedAt: run.endedAt,
@@ -338,6 +356,7 @@ function readPersistedRuns(runLogRoot) {
       run.stderrOffset = Number.isFinite(run.stderrOffset) ? run.stderrOffset : 0;
       run.events = readRunEvents(run.eventsPath);
       run.nextEventSequence = nextEventSequence(run);
+      recoverProviderSessionFromOutput(run);
       return run;
     } catch {
       return null;
@@ -386,6 +405,21 @@ function parseRunOutput(run, liveActivity) {
   consumeOutput(run, readNewOutput(run, "stdout"), liveActivity, "stdout");
   consumeOutput(run, readNewOutput(run, "stderr"), liveActivity, "stderr");
   saveRunMeta(run);
+}
+
+function recoverProviderSessionFromOutput(run) {
+  if (run.providerSessionId || !run.stdoutPath || !fs.existsSync(run.stdoutPath)) return;
+  try {
+    const text = fs.readFileSync(run.stdoutPath, "utf8");
+    for (const line of text.split(/\r?\n/)) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      captureProviderSession(run, JSON.parse(trimmed));
+      if (run.providerSessionId) return;
+    }
+  } catch {
+    // Legacy run logs are best-effort; missing session metadata only affects precise resume.
+  }
 }
 
 function readNewOutput(run, stream) {
@@ -453,7 +487,7 @@ function consumeOutput(run, chunk, liveActivity, stream = "stdout") {
   for (const line of text.split(/\r?\n/)) {
     const trimmed = line.trim();
     if (!trimmed) continue;
-    const parsed = parseStructuredEvent(trimmed);
+    const parsed = parseStructuredEvent(trimmed, run);
     if (parsed) {
       if (parsed.hidden) continue;
       if (parsed.append) {
@@ -470,13 +504,14 @@ function consumeOutput(run, chunk, liveActivity, stream = "stdout") {
   }
 }
 
-function parseStructuredEvent(line) {
+function parseStructuredEvent(line, run = null) {
   let event;
   try {
     event = JSON.parse(line);
   } catch {
     return null;
   }
+  captureProviderSession(run, event);
 
   if (event.type === "stream_event" && event.event) {
     return parseStreamEvent(event.event) || { hidden: true };
@@ -513,6 +548,19 @@ function parseStructuredEvent(line) {
     return { kind: "status", text: titleCase(type.replace(/[._-]+/g, " ")) };
   }
   return null;
+}
+
+function captureProviderSession(run, event) {
+  if (!run || run.providerSessionId || !event || typeof event !== "object") return;
+  if (event.type === "system" && event.subtype === "init" && event.session_id) {
+    run.provider = run.provider || "claude";
+    run.providerSessionId = String(event.session_id);
+    return;
+  }
+  if (event.type === "session_meta" && event.payload?.id) {
+    run.provider = run.provider || "codex";
+    run.providerSessionId = String(event.payload.id);
+  }
 }
 
 function parseStreamEvent(event) {
@@ -619,19 +667,41 @@ function agentCommand(agent, options) {
   const base = shellWords(agent.command || defaultCommand(agent.type));
   const executable = base[0] || defaultCommand(agent.type);
   const presetArgs = base.slice(1);
-  const type = String(agent.type || "").toLowerCase();
-  if (type === "codex" || path.basename(executable).toLowerCase().includes("codex")) {
+  const provider = agentProvider(agent, executable);
+  if (provider === "codex") {
     return options.resume
-      ? [executable, ...presetArgs, "exec", "resume", ...(options.liveActivity ? ["--json"] : []), "--last", options.prompt]
+      ? [executable, ...presetArgs, "exec", "resume", ...(options.liveActivity ? ["--json"] : []), ...(options.providerSessionId ? [options.providerSessionId] : ["--last"]), options.prompt]
       : [executable, ...presetArgs, "exec", ...(options.liveActivity ? ["--json"] : []), options.prompt];
   }
-  if (type === "claude" || path.basename(executable).toLowerCase().includes("claude")) {
+  if (provider === "claude") {
     const live = options.liveActivity ? ["--output-format", "stream-json", "--verbose", "--include-partial-messages"] : [];
+    const name = options.conversationName ? ["--name", options.conversationName] : [];
+    const resumeTarget = options.providerSessionId || options.conversationName || "";
     return options.resume
-      ? [executable, ...presetArgs, ...live, "--continue", "-p", options.prompt]
-      : [executable, ...presetArgs, ...live, "-p", options.prompt];
+      ? [executable, ...presetArgs, ...live, ...name, ...(resumeTarget ? ["--resume", resumeTarget] : ["--continue"]), "-p", options.prompt]
+      : [executable, ...presetArgs, ...live, ...name, "-p", options.prompt];
   }
   return [executable, ...presetArgs, options.prompt];
+}
+
+function latestProviderSessionForTicket(runLogRoot, activeRuns, ticketId, agentId) {
+  return hydrateRuns(runLogRoot, activeRuns)
+    .filter((run) => run.ticketId === ticketId && run.agentId === agentId && run.providerSessionId)
+    .sort((a, b) => String(b.startedAt || "").localeCompare(String(a.startedAt || "")))[0] || null;
+}
+
+function agentProvider(agent, executable = "") {
+  const command = executable || shellWords(agent?.command || defaultCommand(agent?.type))[0] || defaultCommand(agent?.type);
+  const type = String(agent?.type || "").toLowerCase();
+  const name = path.basename(command).toLowerCase();
+  if (type === "codex" || name.includes("codex")) return "codex";
+  if (type === "claude" || name.includes("claude")) return "claude";
+  return type || "custom";
+}
+
+function buildConversationName(ticket) {
+  const id = String(ticket?.id || "ticket").trim().toLowerCase().replace(/[^a-z0-9_.-]+/g, "-").replace(/^-+|-+$/g, "");
+  return `thomas-${id || "ticket"}`;
 }
 
 function buildPrompt(ticket, message, options = {}) {

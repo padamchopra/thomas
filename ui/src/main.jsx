@@ -32,7 +32,7 @@ import {
   FileDiff,
   FileText,
 } from "lucide-react";
-import { addComment, chooseProjectFolder, createAgent, createProject, createTicket, deleteTicket, fetchState, fetchTicketDiff, openTicketFile, openTicketWorktree, refreshTicketStatus, resumeTicketTerminal, stopTicketRun, updateSettings, updateTicket } from "./lib/api";
+import { addComment, chooseProjectFolder, createAgent, createProject, createTicket, deleteTicket, fetchState, fetchTicketDiff, openTicketFile, openTicketWorktree, refreshTicketStatus, resumeTicketTerminal, stopTicketRun, updateProject, updateSettings, updateTicket } from "./lib/api";
 import {
   IssueRow,
   KanbanBoard,
@@ -346,6 +346,16 @@ function App() {
     }
   };
 
+  const handleUpdateProject = async (projectId, payload) => {
+    try {
+      await updateProject(projectId, payload);
+      await refresh();
+    } catch (err) {
+      setError(err.message);
+      throw err;
+    }
+  };
+
   const handleCreateTicket = async (event) => {
     event.preventDefault();
     const target = event.currentTarget;
@@ -559,7 +569,7 @@ function App() {
           />
         ) : (
           <>
-            {view === "projects" && <ProjectsView state={state} selectedProjectId={selectedProjectId} onSelectProject={openProject} onBack={() => openView("projects")} onCreateProject={handleCreateProject} onOpenTicket={openTicket} onNewTicket={openNewTicket} />}
+            {view === "projects" && <ProjectsView state={state} selectedProjectId={selectedProjectId} onSelectProject={openProject} onBack={() => openView("projects")} onCreateProject={handleCreateProject} onUpdateProject={handleUpdateProject} onOpenTicket={openTicket} onNewTicket={openNewTicket} />}
             {view === "agents" && <AgentsView state={state} selectedAgentId={selectedAgentId} onSelectAgent={openAgent} onBack={() => openView("agents")} onCreateAgent={handleCreateAgent} onOpenTicket={openTicket} />}
             {view === "activity" && <ActivityView state={state} />}
             {view === "settings" && <SettingsView state={state} onUpdateSettings={handleSettingsPatch} />}
@@ -853,7 +863,7 @@ function IssueControls({
   );
 }
 
-function ProjectsView({ state, selectedProjectId, onSelectProject, onBack, onCreateProject, onOpenTicket, onNewTicket }) {
+function ProjectsView({ state, selectedProjectId, onSelectProject, onBack, onCreateProject, onUpdateProject, onOpenTicket, onNewTicket }) {
   const selectedProject = findProjectByIdentifier(state.projects, selectedProjectId);
   if (selectedProjectId) {
     return (
@@ -863,6 +873,7 @@ function ProjectsView({ state, selectedProjectId, onSelectProject, onBack, onCre
         onBack={onBack}
         onOpenTicket={onOpenTicket}
         onNewTicket={onNewTicket}
+        onUpdateProject={onUpdateProject}
       />
     );
   }
@@ -902,7 +913,14 @@ function ProjectsView({ state, selectedProjectId, onSelectProject, onBack, onCre
   );
 }
 
-function ProjectDetail({ state, project, onBack, onOpenTicket, onNewTicket }) {
+function ProjectDetail({ state, project, onBack, onOpenTicket, onNewTicket, onUpdateProject }) {
+  const [setupScript, setSetupScript] = useState(project?.setupScript || "");
+  const [setupScriptEditorOpen, setSetupScriptEditorOpen] = useState(false);
+  const [setupScriptSaving, setSetupScriptSaving] = useState(false);
+  useEffect(() => {
+    setSetupScript(project?.setupScript || "");
+  }, [project?.id, project?.setupScript]);
+
   if (!project) {
     return (
       <section className="project-detail-layout">
@@ -927,6 +945,18 @@ function ProjectDetail({ state, project, onBack, onOpenTicket, onNewTicket }) {
     agent,
     count: open.filter((ticket) => ticket.assigneeAgentId === agent.id).length,
   })).filter((row) => row.count > 0);
+  const setupScriptConfigured = String(project.setupScript || "").trim().length > 0;
+  const setupScriptPreview = String(project.setupScript || "").split(/\r?\n/).find((line) => line.trim()) || "No setup script";
+  const saveSetupScript = async (event) => {
+    event.preventDefault();
+    setSetupScriptSaving(true);
+    try {
+      await onUpdateProject(project.id, { setupScript });
+      setSetupScriptEditorOpen(false);
+    } finally {
+      setSetupScriptSaving(false);
+    }
+  };
 
   return (
     <section className="project-detail-layout">
@@ -936,6 +966,15 @@ function ProjectDetail({ state, project, onBack, onOpenTicket, onNewTicket }) {
         <span><strong>{unassigned.length}</strong> unassigned</span>
         <span><strong>{blocked.length}</strong> blocked</span>
         <span><strong>{done.length}</strong> done</span>
+      </div>
+      <div className="data-panel project-setup-action">
+        <div>
+          <strong>{setupScriptConfigured ? "Setup script configured" : "No setup script"}</strong>
+          <code>{setupScriptPreview}</code>
+        </div>
+        <button type="button" className="quiet-button" onClick={() => setSetupScriptEditorOpen(true)}>
+          <SquarePen /> Edit setup script
+        </button>
       </div>
       <div className="project-detail-grid">
         <div className="data-panel">
@@ -988,6 +1027,25 @@ function ProjectDetail({ state, project, onBack, onOpenTicket, onNewTicket }) {
           </div>
         </aside>
       </div>
+      {setupScriptEditorOpen && (
+        <Modal title="Setup Script" onClose={() => setSetupScriptEditorOpen(false)}>
+          <form className="setup-script-form" onSubmit={saveSetupScript}>
+            <textarea
+              className="setup-script-textarea"
+              value={setupScript}
+              onChange={(event) => setSetupScript(event.target.value)}
+              placeholder="pnpm install&#10;cp .env.example .env"
+              autoFocus
+            />
+            <div className="compose-footer">
+              <span className="subtle-copy">Runs after Thomas creates a fresh ticket worktree.</span>
+              <button type="submit" disabled={setupScriptSaving}>
+                <CheckCircle2 /> {setupScriptSaving ? "Saving" : "Save setup script"}
+              </button>
+            </div>
+          </form>
+        </Modal>
+      )}
     </section>
   );
 }
@@ -996,16 +1054,16 @@ function usageLinkForAgent(agent) {
   const text = `${agent.type || ""} ${agent.command || ""} ${agent.name || ""}`.toLowerCase();
   if (text.includes("codex") || text.includes("openai")) {
     return {
-      provider: "OpenAI",
-      href: "https://platform.openai.com/usage",
-      description: "Open the OpenAI usage dashboard for API and organization activity.",
+      provider: "Codex",
+      href: "https://chatgpt.com/codex/settings/usage",
+      description: "Open the ChatGPT Codex usage dashboard.",
     };
   }
   if (text.includes("claude") || text.includes("anthropic")) {
     return {
-      provider: "Anthropic",
-      href: "https://console.anthropic.com/settings/usage",
-      description: "Open the Anthropic Console usage report for API usage and cost.",
+      provider: "Claude",
+      href: "https://claude.ai/settings/usage",
+      description: "Open the Claude usage dashboard.",
     };
   }
   return null;
@@ -1151,7 +1209,11 @@ function AgentsView({ state, selectedAgentId, onSelectAgent, onBack, onCreateAge
 function SettingsView({ state, onUpdateSettings }) {
   const settings = state.settings || {};
   const cacheBytes = state.cache?.bytes || 0;
+  const [branchPrefixDraft, setBranchPrefixDraft] = useState(settings.branchPrefix || "thomas");
   const [notificationStatus, setNotificationStatus] = useState(() => notificationSupportStatus().message);
+  useEffect(() => {
+    setBranchPrefixDraft(settings.branchPrefix || "thomas");
+  }, [settings.branchPrefix]);
   const testNotification = async () => {
     const support = notificationSupportStatus();
     if (!support.supported) {
@@ -1206,6 +1268,19 @@ function SettingsView({ state, onUpdateSettings }) {
               {TERMINAL_OPTIONS.map((terminal) => <option key={terminal.value} value={terminal.value}>{terminal.label}</option>)}
             </select>
           </label>
+          <form
+            className="setting-row"
+            onSubmit={(event) => {
+              event.preventDefault();
+              onUpdateSettings({ branchPrefix: branchPrefixDraft });
+            }}
+          >
+            <span><strong>Branch prefix</strong><small>New worktree branches use this prefix.</small></span>
+            <span className="setting-inline-control">
+              <input value={branchPrefixDraft} onChange={(event) => setBranchPrefixDraft(event.target.value)} placeholder="thomas" />
+              <button type="submit" className="quiet-button"><CheckCircle2 /> Save</button>
+            </span>
+          </form>
           <label className="setting-row">
             <span><strong>Notify on Human Review</strong><small>Only alert when an agent leaves a ticket ready for review.</small></span>
             <span className="setting-inline-control">

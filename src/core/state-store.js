@@ -72,6 +72,7 @@ function defaultState() {
       theme: "system",
       notifyHumanReview: false,
       preferredTerminal: "warp",
+      branchPrefix: "thomas",
     },
   };
 }
@@ -641,7 +642,22 @@ function normalizeSettings(settings) {
     theme,
     notifyHumanReview: settings.notifyHumanReview === true,
     preferredTerminal,
+    branchPrefix: normalizeBranchPrefix(settings.branchPrefix),
   };
+}
+
+function normalizeBranchPrefix(value) {
+  const prefix = String(value || "thomas")
+    .trim()
+    .toLowerCase()
+    .split("/")
+    .map((part) => part
+      .replace(/[^a-z0-9._-]+/g, "-")
+      .replace(/^[.-]+|[.-]+$/g, "")
+      .replace(/-+/g, "-"))
+    .filter(Boolean)
+    .join("/");
+  return prefix || "thomas";
 }
 
 function groupRows(rows, keyField, valueField) {

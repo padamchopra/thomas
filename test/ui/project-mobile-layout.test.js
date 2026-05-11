@@ -28,3 +28,14 @@ test("phone layout exposes the sidebar from a mobile menu button", () => {
   assert.match(css, /@media \(max-width: 720px\) \{[\s\S]*\.side-pane\.mobile-open\s*\{[\s\S]*transform:\s*translateX\(0\)/);
   assert.match(css, /@media \(max-width: 720px\) \{[\s\S]*\.content-stage\s*\{[\s\S]*padding:\s*16px 16px calc\(80px \+ env\(safe-area-inset-bottom, 0px\)\)/);
 });
+
+test("project setup script editor opens from a page action into a modal", () => {
+  const css = cssSource();
+  const source = fs.readFileSync(path.join(repoRoot, "ui/src/main.jsx"), "utf8");
+  assert.match(source, /const \[setupScriptEditorOpen, setSetupScriptEditorOpen\] = useState\(false\)/);
+  assert.match(source, /className="data-panel project-setup-action"[\s\S]*Edit setup script/);
+  assert.match(source, /setupScriptEditorOpen && \([\s\S]*<Modal title="Setup Script"/);
+  assert.match(source, /className="setup-script-textarea"/);
+  assert.match(css, /\.project-setup-action\s*\{[\s\S]*justify-content:\s*space-between/);
+  assert.match(css, /\.setup-script-textarea\s*\{[\s\S]*min-height:\s*min\(54vh, 460px\)/);
+});

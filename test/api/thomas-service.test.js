@@ -29,6 +29,18 @@ test("tickets can be created without an assignee", () => {
   assert.equal(state.stats.unassignedTodo, 1);
 });
 
+test("projects and branch prefix settings can be updated", () => {
+  const thomas = service();
+  const project = thomas.createProject({ name: "App", prefix: "APP", setupScript: "npm install" });
+
+  const updated = thomas.updateProject(project.id, { setupScript: "pnpm install\npnpm build" });
+  const settings = thomas.updateSettings({ branchPrefix: "Padam/Thomas Work" });
+
+  assert.equal(updated.setupScript, "pnpm install\npnpm build");
+  assert.equal(settings.branchPrefix, "padam/thomas-work");
+  assert.equal(thomas.getState().projects[0].setupScript, "pnpm install\npnpm build");
+});
+
 test("tickets expose parent children and blocker relations", () => {
   const thomas = service();
   const project = thomas.createProject({ name: "App", prefix: "APP" });

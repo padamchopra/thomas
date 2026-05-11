@@ -10,6 +10,13 @@ export async function createProject(payload) {
   });
 }
 
+export async function updateProject(projectId, payload) {
+  return request(`/api/projects/${encodeURIComponent(projectId)}`, {
+    method: "PATCH",
+    body: JSON.stringify(payload),
+  });
+}
+
 export async function chooseProjectFolder() {
   return request("/api/projects/choose-folder", {
     method: "POST",

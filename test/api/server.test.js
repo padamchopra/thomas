@@ -124,6 +124,100 @@ test("API auto-dispatches assigned tickets on create and exposes live activity",
   });
 });
 
+test("Claude ticket resumes reuse the captured provider session and keep a ticket conversation name", async () => {
+  await withServer(async (baseUrl, tmp) => {
+    const repoPath = path.join(tmp, "repo");
+    createGitRepo(repoPath);
+    const argsPath = path.join(tmp, "claude-args.jsonl");
+    const agentScript = path.join(tmp, "fake-claude.js");
+    fs.writeFileSync(agentScript, [
+      "const fs = require('node:fs');",
+      `fs.appendFileSync(${JSON.stringify(argsPath)}, JSON.stringify(process.argv.slice(2)) + '\\n');`,
+      "const sessionId = process.argv.includes('--resume') ? process.argv[process.argv.indexOf('--resume') + 1] : 'session-app-1';",
+      "console.log(JSON.stringify({ type: 'system', subtype: 'init', session_id: sessionId }));",
+      "console.log(JSON.stringify({ type: 'result', result: 'SUMMARY: claude run complete' }));",
+    ].join("\n"));
+
+    const project = await post(`${baseUrl}/api/projects`, { name: "App", prefix: "APP", repoPath });
+    const agent = await post(`${baseUrl}/api/agents`, {
+      name: "Claude",
+      type: "claude",
+      command: `${process.execPath} ${agentScript} --permission-mode auto`,
+    });
+    const ticket = await post(`${baseUrl}/api/tickets`, {
+      projectId: project.project.id,
+      title: "Reuse session",
+      assigneeAgentId: agent.agent.id,
+    });
+
+    await waitForState(baseUrl, (next) => {
+      const run = next.runs.find((item) => item.ticketId === ticket.ticket.id && item.status === "finished");
+      return run?.providerSessionId === "session-app-1";
+    });
+
+    await postAsUi(`${baseUrl}/api/tickets/${ticket.ticket.id}/comments`, { body: "Please continue" });
+    const state = await waitForState(baseUrl, (next) => {
+      const runs = next.runs.filter((item) => item.ticketId === ticket.ticket.id && item.status === "finished");
+      return runs.length === 2 && runs[0]?.providerSessionId === "session-app-1";
+    });
+
+    const runs = state.runs.filter((item) => item.ticketId === ticket.ticket.id && item.status === "finished");
+    assert.equal(runs[0].conversationName, "thomas-app-1");
+    assert.equal(runs[1].conversationName, "thomas-app-1");
+    const invocations = fs.readFileSync(argsPath, "utf8").trim().split(/\r?\n/).map((line) => JSON.parse(line));
+    assert.equal(invocations.length, 2);
+    assert.equal(invocations[0].includes("--name"), true);
+    assert.equal(invocations[0][invocations[0].indexOf("--name") + 1], "thomas-app-1");
+    assert.equal(invocations[0].includes("--resume"), false);
+    assert.equal(invocations[0].includes("--continue"), false);
+    assert.equal(invocations[1].includes("--resume"), true);
+    assert.equal(invocations[1][invocations[1].indexOf("--resume") + 1], "session-app-1");
+    assert.equal(invocations[1][invocations[1].indexOf("--name") + 1], "thomas-app-1");
+    assert.equal(invocations[1].includes("--continue"), false);
+  });
+});
+
+test("API updates project setup scripts and uses settings branch prefix for worktrees", async () => {
+  const actions = {};
+  await withServer(async (baseUrl, tmp) => {
+    const repoPath = path.join(tmp, "repo");
+    createGitRepo(repoPath);
+
+    const project = await post(`${baseUrl}/api/projects`, {
+      name: "App",
+      prefix: "APP",
+      repoPath,
+      setupScript: "printf old > setup-output.txt",
+    });
+    const updated = await patchAsUi(`${baseUrl}/api/projects/${project.project.id}`, {
+      setupScript: "printf updated > setup-output.txt",
+    });
+    assert.equal(updated.project.setupScript, "printf updated > setup-output.txt");
+
+    await patchAsUi(`${baseUrl}/api/settings`, { branchPrefix: "Padam/Feature Work" });
+    const ticket = await post(`${baseUrl}/api/tickets`, {
+      projectId: project.project.id,
+      title: "Open tools",
+    });
+
+    const opened = await post(`${baseUrl}/api/tickets/${ticket.ticket.id}/open-worktree`, {});
+    const expectedWorktree = path.join(tmp, "worktrees", "App", "app-1");
+    assert.equal(opened.opened.repoPath, expectedWorktree);
+    assert.equal(actions.openedPath, expectedWorktree);
+    assert.equal(fs.readFileSync(path.join(expectedWorktree, "setup-output.txt"), "utf8"), "updated");
+
+    const branch = spawnSync("git", ["-C", expectedWorktree, "branch", "--show-current"], { encoding: "utf8" });
+    assert.equal(branch.status, 0, branch.stderr);
+    assert.equal(branch.stdout.trim(), "padam/feature-work/app-1");
+  }, {
+    systemActions: {
+      openPath: (targetPath) => {
+        actions.openedPath = targetPath;
+      },
+    },
+  });
+});
+
 test("API filters run events before slicing so assistant updates are not crowded out", async () => {
   await withServer(async (baseUrl, tmp) => {
     const repoPath = path.join(tmp, "repo");
@@ -663,7 +757,7 @@ test("ticket actions open worktree and prepare resume command", async () => {
     assert.equal(terminal.opened.repoPath, expectedWorktree);
     assert.equal(actions.terminalPath, expectedWorktree);
     assert.equal(actions.terminal, "warp");
-    assert.equal(actions.clipboard, "thomas ticket reply APP-1 <message>");
+    assert.equal(actions.clipboard, "claude --permission-mode auto --resume thomas-app-1");
     assert.equal(terminal.opened.command, actions.clipboard);
     assert.equal(terminal.opened.terminal, "warp");
 

@@ -19,6 +19,7 @@ function createApp(options = {}) {
     workspaceRoot,
     runLogRoot,
     findPullRequestUrl: options.findPullRequestUrl,
+    getBranchPrefix: () => service.getState().settings?.branchPrefix,
   });
   const prSyncer = createPrSyncer(service, runner, options);
   const systemActions = options.systemActions || {};
@@ -31,6 +32,7 @@ function createApp(options = {}) {
       if (requestUrl.pathname.startsWith("/api/")) {
         await handleApi(service, runner, req, res, requestUrl, {
           workspaceRoot,
+          getBranchPrefix: () => service.getState().settings?.branchPrefix,
           systemActions,
           prSyncer,
           checkPullRequestStatus: options.checkPullRequestStatus,
@@ -174,6 +176,12 @@ async function handleApi(service, runner, req, res, requestUrl, options = {}) {
   if (method === "POST" && parts.length === 1 && parts[0] === "projects") {
     const project = service.createProject(await readJson(req), actor);
     sendJson(res, 201, { ok: true, project, state: stateWithRuns(service, runner, options) });
+    return;
+  }
+
+  if (method === "PATCH" && parts.length === 2 && parts[0] === "projects") {
+    const project = service.updateProject(parts[1], await readJson(req), actor);
+    sendJson(res, 200, { ok: true, project, state: stateWithRuns(service, runner, options) });
     return;
   }
 
@@ -763,7 +771,7 @@ function openResumeTerminal(service, runner, ticketId, input = {}, options = {})
     error.status = 400;
     throw error;
   }
-  const command = buildResumeCommand(ticket);
+  const command = buildResumeCommand(ticket, agent, runner.getRuns());
   const terminal = normalizeTerminal(input.terminal || service.getState().settings?.preferredTerminal || "warp");
   copyToClipboard(command, options);
   openTerminal(repoPath, terminal, options);
@@ -774,7 +782,10 @@ function ticketRepositoryForWorkspaceAction(service, runner, ticketId, options =
   const base = ticketRepository(service, ticketId, options);
   const runRepoPath = latestRunRepoPath(runner, ticketId, base.repoPath);
   if (runRepoPath) return { ...base, repoPath: runRepoPath, workspaceSource: "run" };
-  const ensured = ensureTicketWorkspace(base.ticket, options);
+  const ensured = ensureTicketWorkspace(base.ticket, {
+    ...options,
+    branchPrefix: options.getBranchPrefix?.(),
+  });
   return { ...base, repoPath: ensured.path, workspaceSource: ensured.source };
 }
 
@@ -841,7 +852,16 @@ function copyToClipboard(text, options = {}) {
   }
 }
 
-function buildResumeCommand(ticket) {
+function buildResumeCommand(ticket, agent = null, runs = []) {
+  const provider = agentProvider(agent);
+  const base = shellWords(agent?.command || defaultCommand(agent?.type));
+  const executable = base[0] || defaultCommand(agent?.type);
+  const presetArgs = base.slice(1);
+  const latestRun = latestProviderSessionForTicket(runs, ticket, agent);
+  const conversationName = latestRun?.conversationName || buildConversationName(ticket);
+  const resumeTarget = latestRun?.providerSessionId || conversationName;
+  if (provider === "claude") return displayShellCommand([executable, ...presetArgs, "--resume", resumeTarget]);
+  if (provider === "codex") return displayShellCommand([executable, ...presetArgs, "resume", resumeTarget]);
   return `thomas ticket reply ${shellQuote(ticket.id)} <message>`;
 }
 
@@ -849,6 +869,43 @@ function shellQuote(value) {
   const text = String(value || "");
   if (/^[a-zA-Z0-9_./:=+-]+$/.test(text)) return text;
   return `'${text.replace(/'/g, "'\\''")}'`;
+}
+
+function displayShellCommand(parts) {
+  return parts.map(shellQuote).join(" ");
+}
+
+function latestProviderSessionForTicket(runs, ticket, agent) {
+  return (runs || [])
+    .filter((run) => run.ticketId === ticket?.id && run.agentId === agent?.id && run.providerSessionId)
+    .sort((a, b) => String(b.startedAt || "").localeCompare(String(a.startedAt || "")))[0] || null;
+}
+
+function agentProvider(agent) {
+  const base = shellWords(agent?.command || defaultCommand(agent?.type));
+  const executable = base[0] || defaultCommand(agent?.type);
+  const type = String(agent?.type || "").toLowerCase();
+  const name = path.basename(executable).toLowerCase();
+  if (type === "codex" || name.includes("codex")) return "codex";
+  if (type === "claude" || name.includes("claude")) return "claude";
+  return type || "custom";
+}
+
+function defaultCommand(type) {
+  return String(type || "").toLowerCase() === "codex" ? "codex" : "claude";
+}
+
+function buildConversationName(ticket) {
+  const id = String(ticket?.id || "ticket").trim().toLowerCase().replace(/[^a-z0-9_.-]+/g, "-").replace(/^-+|-+$/g, "");
+  return `thomas-${id || "ticket"}`;
+}
+
+function shellWords(input) {
+  const words = [];
+  const re = /"([^"]*)"|'([^']*)'|(\S+)/g;
+  let match;
+  while ((match = re.exec(String(input || "")))) words.push(match[1] ?? match[2] ?? match[3]);
+  return words;
 }
 
 function parseUnifiedDiff(diffText) {

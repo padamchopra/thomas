@@ -146,6 +146,7 @@ GET    /api/state
 
 GET    /api/projects
 POST   /api/projects
+PATCH  /api/projects/:id
 POST   /api/projects/choose-folder
 
 GET    /api/agents
