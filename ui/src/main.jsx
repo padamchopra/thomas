@@ -32,7 +32,7 @@ import {
   FileDiff,
   FileText,
 } from "lucide-react";
-import { addComment, chooseProjectFolder, createAgent, createProject, createTicket, deleteTicket, fetchState, fetchTicketDiff, openTicketFile, openTicketWorktree, refreshTicketStatus, resumeTicketTerminal, runTicketSetupScript, stopTicketRun, updateProject, updateSettings, updateTicket } from "./lib/api";
+import { addComment, addPlanComment, chooseProjectFolder, createAgent, createProject, createTicket, createTicketPlan, deleteTicket, fetchState, fetchTicketDiff, fetchTicketPlans, openTicketFile, openTicketWorktree, refreshTicketStatus, resumeTicketTerminal, runTicketSetupScript, stopTicketRun, updatePlanComment, updateProject, updateSettings, updateTicket } from "./lib/api";
 import {
   IssueRow,
   KanbanBoard,
@@ -633,6 +633,7 @@ function App() {
             onRunSetupScript={handleRunTicketSetupScript}
             onOpenWorktree={handleOpenTicketWorktree}
             onResumeTerminal={handleResumeTicketTerminal}
+            onStateUpdate={setState}
             onComment={async (body, metadata = {}) => {
               await addComment(selectedTicket.id, { body, metadata });
               await refresh();
@@ -1939,7 +1940,7 @@ function DashboardTicketRow({ ticket, run = null, onOpenTicket }) {
   );
 }
 
-function TicketDetail({ state, ticket, onClose, onOpenTicket, onOpenProject, onPatch, onDelete, onStopRun, onRefreshStatus, onRunSetupScript, onOpenWorktree, onResumeTerminal, onComment, onCreateSubIssue }) {
+function TicketDetail({ state, ticket, onClose, onOpenTicket, onOpenProject, onPatch, onDelete, onStopRun, onRefreshStatus, onRunSetupScript, onOpenWorktree, onResumeTerminal, onStateUpdate, onComment, onCreateSubIssue }) {
   const [detailTab, setDetailTab] = useState("conversation");
   const [comment, setComment] = useState("");
   const [terminalMenuOpen, setTerminalMenuOpen] = useState(false);
@@ -2116,6 +2117,7 @@ function TicketDetail({ state, ticket, onClose, onOpenTicket, onOpenProject, onP
         </section>
         <div className="detail-tabs" role="tablist" aria-label="Ticket detail sections">
           <button className={detailTab === "conversation" ? "active" : ""} onClick={() => setDetailTab("conversation")}>Conversation</button>
+          <button className={detailTab === "plan" ? "active" : ""} onClick={() => setDetailTab("plan")}>Plan</button>
           {ticket.status === "human_review" ? <button className={detailTab === "review" ? "active" : ""} onClick={() => setDetailTab("review")}>Review diff</button> : null}
           <button className={detailTab === "dependencies" ? "active" : ""} onClick={() => setDetailTab("dependencies")}>Dependencies</button>
         </div>
@@ -2134,6 +2136,10 @@ function TicketDetail({ state, ticket, onClose, onOpenTicket, onOpenProject, onP
                   <button><MessageSquare /> Comment</button>
                 </form>
               </section>
+            )}
+
+            {detailTab === "plan" && (
+              <PlanTab ticket={ticket} onStateUpdate={onStateUpdate} />
             )}
 
             {detailTab === "review" && (
@@ -2456,6 +2462,186 @@ function LiveActivityEvent({ event }) {
       {event.kind === "assistant" ? <MarkdownText value={event.text} className="live-event-markdown" /> : <p>{event.text}</p>}
     </details>
   );
+}
+
+function PlanTab({ ticket, onStateUpdate }) {
+  const [plans, setPlans] = useState(null);
+  const [selectedPath, setSelectedPath] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [commentBody, setCommentBody] = useState("");
+  const [selectedText, setSelectedText] = useState("");
+  const [selectedAnchorValue, setSelectedAnchorValue] = useState("plan");
+  const selectedPlan = plans?.plan || null;
+  const anchors = selectedPlan?.anchors?.length ? selectedPlan.anchors : [{ type: "plan", label: "Plan-wide" }];
+  const selectedAnchor = anchors.find((anchor) => anchorKey(anchor) === selectedAnchorValue) || anchors[0];
+  const planComments = (ticket.planComments || []).filter((comment) => !selectedPlan?.path || comment.planPath === selectedPlan.path);
+  const openComments = planComments.filter((comment) => comment.status !== "resolved");
+
+  const loadPlans = async (pathOverride = selectedPath) => {
+    setBusy(true);
+    setError("");
+    try {
+      const data = await fetchTicketPlans(ticket.id, pathOverride);
+      setPlans(data);
+      setSelectedPath(data.selectedPath || "");
+      setSelectedAnchorValue("plan");
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  useEffect(() => {
+    setPlans(null);
+    setSelectedPath("");
+    setError("");
+    setCommentBody("");
+    setSelectedText("");
+    loadPlans("");
+  }, [ticket.id]);
+
+  const createPlan = async () => {
+    setBusy(true);
+    setError("");
+    try {
+      const data = await createTicketPlan(ticket.id);
+      if (data.state) onStateUpdate(data.state);
+      const nextPath = data.plan?.plan?.path || ".context/plan.md";
+      await loadPlans(nextPath);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const submitPlanComment = async (event) => {
+    event.preventDefault();
+    if (!selectedPlan?.path || !commentBody.trim()) return;
+    setBusy(true);
+    setError("");
+    try {
+      const data = await addPlanComment(ticket.id, {
+        planPath: selectedPlan.path,
+        anchor: selectedAnchor,
+        selectedText,
+        body: commentBody,
+      });
+      if (data.state) onStateUpdate(data.state);
+      setCommentBody("");
+      setSelectedText("");
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const resolveComment = async (comment) => {
+    setBusy(true);
+    setError("");
+    try {
+      const data = await updatePlanComment(ticket.id, comment.id, { status: comment.status === "resolved" ? "open" : "resolved" });
+      if (data.state) onStateUpdate(data.state);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const changePlan = async (event) => {
+    const nextPath = event.target.value;
+    setSelectedPath(nextPath);
+    await loadPlans(nextPath);
+  };
+
+  const captureSelection = () => {
+    const selection = window.getSelection?.().toString().trim();
+    if (selection) setSelectedText(selection.slice(0, 500));
+  };
+
+  return (
+    <section className="detail-tab-panel plan-tab-panel">
+      <div className="data-panel plan-toolbar">
+        <div>
+          <h3><ClipboardList /> Plan</h3>
+          <p>{selectedPlan ? `${selectedPlan.path} · ${selectedPlan.format}` : "No plan file discovered in this ticket workspace."}</p>
+        </div>
+        <div className="plan-actions">
+          {plans?.files?.length ? (
+            <select value={selectedPath} onChange={changePlan} aria-label="Plan file">
+              {plans.files.map((file) => <option key={file.path} value={file.path}>{file.path}</option>)}
+            </select>
+          ) : null}
+          <button className="quiet-button" onClick={() => loadPlans()} disabled={busy}><RefreshCw /> Refresh</button>
+          <button className="quiet-button" onClick={createPlan} disabled={busy}><Plus /> Thomas plan</button>
+        </div>
+      </div>
+      {error ? <div className="blank-row">{error}</div> : null}
+      {selectedPlan ? (
+        <div className="plan-review-layout">
+          <div className="plan-preview data-panel" onMouseUp={captureSelection}>
+            <div className="section-heading-row">
+              <h3>{selectedPlan.path}</h3>
+              <span>{formatBytes(selectedPlan.bytes)}</span>
+            </div>
+            {selectedPlan.format === "html" ? (
+              <iframe className="plan-html-frame" sandbox="" srcDoc={selectedPlan.content} title={`Plan preview for ${ticket.id}`} />
+            ) : (
+              <MarkdownText value={selectedPlan.content} className="plan-markdown" />
+            )}
+          </div>
+          <aside className="plan-comment-panel data-panel">
+            <div className="section-heading-row">
+              <h3><MessageSquare /> Comments</h3>
+              <span>{openComments.length} open</span>
+            </div>
+            <form className="plan-comment-form" onSubmit={submitPlanComment}>
+              <label>
+                <span>Anchor</span>
+                <select value={selectedAnchorValue} onChange={(event) => setSelectedAnchorValue(event.target.value)}>
+                  {anchors.map((anchor) => <option key={anchorKey(anchor)} value={anchorKey(anchor)}>{anchor.label || "Plan-wide"}</option>)}
+                </select>
+              </label>
+              <label>
+                <span>Selected text</span>
+                <input value={selectedText} onChange={(event) => setSelectedText(event.target.value)} placeholder="Optional snippet from the plan" />
+              </label>
+              <textarea value={commentBody} onChange={(event) => setCommentBody(event.target.value)} placeholder="Comment on this plan for the next agent run" />
+              <button disabled={busy || !commentBody.trim()}><MessageSquare /> Add comment</button>
+            </form>
+            <div className="plan-comment-list">
+              {planComments.length ? planComments.map((comment) => (
+                <article className={comment.status === "resolved" ? "plan-comment resolved" : "plan-comment"} key={comment.id}>
+                  <div>
+                    <strong>{comment.anchor?.label || (comment.anchor?.step ? `Step ${comment.anchor.step}` : "Plan-wide")}</strong>
+                    <time>{timeAgo(comment.createdAt)}</time>
+                  </div>
+                  {comment.selectedText ? <blockquote>{comment.selectedText}</blockquote> : null}
+                  <p>{comment.body}</p>
+                  <button className="quiet-button" onClick={() => resolveComment(comment)}>{comment.status === "resolved" ? "Reopen" : "Resolve"}</button>
+                </article>
+              )) : <EmptyPanel message="No plan comments yet." />}
+            </div>
+          </aside>
+        </div>
+      ) : (
+        <div className="data-panel plan-empty-state">
+          <h3>No plan file found</h3>
+          <p>Thomas looks for */plan.html, */plan.md, */PLAN.html, and */PLAN.md inside the ticket workspace. Create a Thomas plan to start from .context/plan.md.</p>
+          <button onClick={createPlan} disabled={busy}><Plus /> Create Thomas plan</button>
+        </div>
+      )}
+    </section>
+  );
+}
+
+function anchorKey(anchor) {
+  if (!anchor) return "plan";
+  return [anchor.type || "plan", anchor.step || "", anchor.line || "", anchor.label || ""].join(":");
 }
 
 function groupLiveActivityEvents(events) {

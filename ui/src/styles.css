@@ -2019,6 +2019,123 @@ button:where(:not([data-slot])) {
   gap: 12px;
   min-width: 0;
 }
+.plan-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px;
+}
+.plan-toolbar h3,
+.plan-empty-state h3 {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 14px;
+}
+.plan-toolbar p,
+.plan-empty-state p {
+  margin-top: 3px;
+  color: var(--muted-foreground);
+  font-size: 12px;
+}
+.plan-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.plan-actions select {
+  max-width: min(420px, 46vw);
+}
+.plan-review-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 320px;
+  gap: 12px;
+  align-items: start;
+}
+.plan-preview {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+  padding: 12px;
+}
+.plan-html-frame {
+  width: 100%;
+  min-height: clamp(420px, 62vh, 760px);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: white;
+}
+.plan-markdown {
+  min-height: 420px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--card) 86%, var(--background));
+}
+.plan-comment-panel {
+  display: grid;
+  gap: 12px;
+  padding: 12px;
+}
+.plan-comment-form {
+  display: grid;
+  gap: 8px;
+}
+.plan-comment-form label {
+  display: grid;
+  gap: 5px;
+  color: var(--muted-foreground);
+  font-size: 11px;
+  font-weight: 600;
+}
+.plan-comment-form textarea {
+  min-height: 96px;
+  resize: vertical;
+}
+.plan-comment-list {
+  display: grid;
+  gap: 8px;
+}
+.plan-comment {
+  display: grid;
+  gap: 7px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--card) 92%, var(--background));
+}
+.plan-comment.resolved {
+  opacity: 0.62;
+}
+.plan-comment > div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.plan-comment time {
+  color: var(--muted-foreground);
+  font-size: 11px;
+}
+.plan-comment blockquote {
+  margin: 0;
+  padding-left: 8px;
+  border-left: 2px solid var(--border);
+  color: var(--muted-foreground);
+  font-size: 12px;
+}
+.plan-comment p {
+  color: var(--foreground);
+  font-size: 13px;
+}
+.plan-empty-state {
+  display: grid;
+  gap: 10px;
+  justify-items: start;
+  padding: 16px;
+}
 .conversation-tab-panel {
   min-height: 0;
 }
@@ -2956,6 +3073,7 @@ button.link-button:hover {
   .dashboard-signal-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .split-columns { grid-template-columns: 1fr; }
   .detail-layout { grid-template-columns: 1fr; }
+  .plan-review-layout { grid-template-columns: 1fr; }
   .diff-review-layout { grid-template-columns: 1fr; }
   .project-tree-panel { position: static; }
   .project-tree { max-height: 300px; }
@@ -3069,6 +3187,18 @@ button.link-button:hover {
   }
   .section-titlebar p {
     overflow-wrap: anywhere;
+  }
+  .plan-toolbar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+  .plan-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+  .plan-actions select {
+    max-width: 100%;
+    width: 100%;
   }
   .dashboard-ticket-row {
     grid-template-columns: minmax(0, 1fr);

@@ -124,6 +124,73 @@ test("API auto-dispatches assigned tickets on create and exposes live activity",
   });
 });
 
+test("ticket plans discover plan files, store overlay comments, and bundle comments into agent prompts", async () => {
+  await withServer(async (baseUrl, tmp) => {
+    const repoPath = path.join(tmp, "repo");
+    createGitRepo(repoPath);
+    const agentScript = path.join(tmp, "plan-agent.js");
+    fs.writeFileSync(agentScript, [
+      "require('node:fs').writeFileSync('prompt.txt', process.argv.at(-1));",
+      "console.log('SUMMARY: read plan comments');",
+    ].join("\n"));
+
+    const project = await post(`${baseUrl}/api/projects`, {
+      name: "App",
+      prefix: "APP",
+      repoPath,
+    });
+    const agent = await post(`${baseUrl}/api/agents`, {
+      name: "Fake",
+      type: "custom",
+      command: `${process.execPath} ${agentScript}`,
+    });
+    const ticket = await post(`${baseUrl}/api/tickets`, {
+      projectId: project.project.id,
+      title: "Use the plan",
+      description: "Plan-backed ticket.",
+    });
+
+    const nativePlan = await post(`${baseUrl}/api/tickets/${ticket.ticket.id}/plans`, {});
+    const worktreePath = nativePlan.plan.repoPath;
+    assert.equal(nativePlan.plan.plan.path, ".context/plan.md");
+    assert.equal(fs.existsSync(path.join(worktreePath, ".context", "plan.md")), true);
+
+    fs.mkdirSync(path.join(worktreePath, "task", ticket.ticket.id), { recursive: true });
+    fs.writeFileSync(path.join(worktreePath, "task", ticket.ticket.id, "PLAN.md"), "# External Plan\n\n## Step 1\nVerify the behavior.\n");
+
+    const planResponse = await fetch(`${baseUrl}/api/tickets/${ticket.ticket.id}/plans`);
+    const planData = await planResponse.json();
+    assert.equal(planResponse.status, 200, planData.error);
+    assert.equal(planData.plans.plan.path, `task/${ticket.ticket.id}/PLAN.md`);
+    assert.equal(planData.plans.plan.content.includes("External Plan"), true);
+    assert.equal(planData.plans.files.some((file) => file.path === ".context/plan.md"), true);
+
+    const planComment = await post(`${baseUrl}/api/tickets/${ticket.ticket.id}/plan-comments`, {
+      planPath: `task/${ticket.ticket.id}/PLAN.md`,
+      anchor: { type: "heading", label: "Step 1" },
+      selectedText: "Verify the behavior.",
+      body: "Use the Jupiter workflow if this ticket has one, and address this verification point.",
+    });
+    assert.equal(planComment.comment.status, "open");
+    assert.equal(planComment.state.tickets[0].planComments.length, 1);
+
+    await patchAsUi(`${baseUrl}/api/tickets/${ticket.ticket.id}`, {
+      assigneeAgentId: agent.agent.id,
+    });
+    const state = await waitForState(baseUrl, (next) => {
+      const run = next.runs.find((item) => item.ticketId === ticket.ticket.id && item.status === "finished");
+      return Boolean(run);
+    });
+    const run = state.runs.find((item) => item.ticketId === ticket.ticket.id);
+    const prompt = fs.readFileSync(path.join(run.cwd, "prompt.txt"), "utf8");
+    assert.match(prompt, /Open Thomas plan comments:/);
+    assert.match(prompt, new RegExp(`task/${ticket.ticket.id}/PLAN\\.md`));
+    assert.match(prompt, /Step 1/);
+    assert.match(prompt, /Verify the behavior\./);
+    assert.match(prompt, /Use the Jupiter workflow/);
+  });
+});
+
 test("Claude ticket resumes reuse the captured provider session and keep a ticket conversation name", async () => {
   await withServer(async (baseUrl, tmp) => {
     const repoPath = path.join(tmp, "repo");

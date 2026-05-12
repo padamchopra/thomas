@@ -963,6 +963,10 @@ function buildPrompt(ticket, message, options = {}) {
   if (!options.resume && comments) {
     contextLines.push("Recent conversation:", comments, "");
   }
+  const planComments = formatPlanComments(ticket.planComments || []);
+  if (planComments) {
+    contextLines.push("Open Thomas plan comments:", planComments, "");
+  }
   return [
     `Ticket: ${ticket.id}`,
     "",
@@ -987,6 +991,21 @@ function buildPrompt(ticket, message, options = {}) {
     "Run the smallest relevant validation that gives useful signal.",
     "If blocked, explain the specific missing input, failing command, or external dependency in your normal final response.",
   ].filter(Boolean).join("\n");
+}
+
+function formatPlanComments(comments) {
+  const open = (comments || []).filter((comment) => comment.status !== "resolved");
+  if (!open.length) return "";
+  return open.slice(-20).map((comment, index) => {
+    const anchor = comment.anchor || {};
+    const anchorLabel = anchor.label || (anchor.step ? `Step ${anchor.step}` : "Plan-wide");
+    const lines = [
+      `${index + 1}. ${comment.planPath || "plan"} — ${anchorLabel}`,
+    ];
+    if (comment.selectedText) lines.push(`Selected text: ${comment.selectedText}`);
+    lines.push(`Comment: ${comment.body}`);
+    return lines.join("\n");
+  }).join("\n\n");
 }
 
 function promptCommentAuthor(author) {

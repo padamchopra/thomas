@@ -7,6 +7,7 @@ const { spawnSync } = require("node:child_process");
 const { URL } = require("node:url");
 const { createThomasService } = require("../core/thomas-service");
 const { createAgentRunner } = require("./agent-runner");
+const { createThomasPlanFile, discoverPlanFiles, readPlanFile } = require("./plans");
 const { defaultRunLogRoot, defaultWorktreeRoot, ensureTicketWorkspace, isGitRoot, resolveTicketWorkspace, runTicketSetupScript } = require("./workspace");
 const PACKAGE = require("../../package.json");
 
@@ -125,6 +126,28 @@ async function handleApi(service, runner, req, res, requestUrl, options = {}) {
 
   if (method === "GET" && parts.length === 3 && parts[0] === "tickets" && parts[2] === "diff") {
     sendJson(res, 200, { ok: true, diff: ticketDiff(service, parts[1], options) });
+    return;
+  }
+
+  if (method === "GET" && parts.length === 3 && parts[0] === "tickets" && parts[2] === "plans") {
+    sendJson(res, 200, { ok: true, plans: ticketPlans(service, parts[1], requestUrl.searchParams, options), state: stateWithRuns(service, runner, options) });
+    return;
+  }
+
+  if (method === "POST" && parts.length === 3 && parts[0] === "tickets" && parts[2] === "plans") {
+    sendJson(res, 201, { ok: true, plan: createTicketPlan(service, runner, parts[1], options), state: stateWithRuns(service, runner, options) });
+    return;
+  }
+
+  if (method === "POST" && parts.length === 3 && parts[0] === "tickets" && parts[2] === "plan-comments") {
+    const comment = service.addPlanComment(parts[1], await readJson(req), actor);
+    sendJson(res, 201, { ok: true, comment, state: stateWithRuns(service, runner, options) });
+    return;
+  }
+
+  if (method === "PATCH" && parts.length === 4 && parts[0] === "tickets" && parts[2] === "plan-comments") {
+    const comment = service.updatePlanComment(parts[1], parts[3], await readJson(req), actor);
+    sendJson(res, 200, { ok: true, comment, state: stateWithRuns(service, runner, options) });
     return;
   }
 
@@ -590,6 +613,36 @@ function ticketDiff(service, ticketId, options = {}) {
     generatedAt: new Date().toISOString(),
     tree: projectTree(repoPath, diffText),
     files: parseUnifiedDiff(diffText),
+  };
+}
+
+function ticketPlans(service, ticketId, searchParams, options = {}) {
+  const { ticket, repoPath, workspaceSource } = ticketRepository(service, ticketId, options);
+  const selectedPath = String(searchParams.get("path") || "").trim();
+  const discovered = discoverPlanFiles(repoPath, ticket.id, selectedPath);
+  const selected = selectedPath || discovered.files[0]?.path || "";
+  const plan = selected ? readPlanFile(repoPath, selected) : null;
+  return {
+    ticketId: ticket.id,
+    projectId: ticket.projectId,
+    repoPath,
+    workspaceSource,
+    files: discovered.files,
+    truncated: discovered.truncated,
+    selectedPath: plan?.path || "",
+    plan,
+  };
+}
+
+function createTicketPlan(service, runner, ticketId, options = {}) {
+  const { ticket, repoPath, workspaceSource } = ticketRepositoryForWorkspaceAction(service, runner, ticketId, options);
+  const plan = createThomasPlanFile(repoPath, ticket);
+  return {
+    ticketId: ticket.id,
+    projectId: ticket.projectId,
+    repoPath,
+    workspaceSource,
+    plan,
   };
 }
 

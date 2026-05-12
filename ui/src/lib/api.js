@@ -91,6 +91,33 @@ export async function fetchTicketDiff(ticketId) {
   return data.diff;
 }
 
+export async function fetchTicketPlans(ticketId, planPath = "") {
+  const query = planPath ? `?path=${encodeURIComponent(planPath)}` : "";
+  const data = await request(`/api/tickets/${encodeURIComponent(ticketId)}/plans${query}`);
+  return data.plans;
+}
+
+export async function createTicketPlan(ticketId) {
+  return request(`/api/tickets/${encodeURIComponent(ticketId)}/plans`, {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+}
+
+export async function addPlanComment(ticketId, payload) {
+  return request(`/api/tickets/${encodeURIComponent(ticketId)}/plan-comments`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function updatePlanComment(ticketId, commentId, payload) {
+  return request(`/api/tickets/${encodeURIComponent(ticketId)}/plan-comments/${encodeURIComponent(commentId)}`, {
+    method: "PATCH",
+    body: JSON.stringify(payload),
+  });
+}
+
 export async function openTicketFile(ticketId, filePath) {
   return request(`/api/tickets/${encodeURIComponent(ticketId)}/open-file`, {
     method: "POST",

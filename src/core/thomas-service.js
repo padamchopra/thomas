@@ -213,6 +213,7 @@ function createThomasService(options = {}) {
         const ticket = requireTicket(state, ticketId);
         state.tickets = state.tickets.filter((item) => item.id !== ticket.id);
         state.comments = state.comments.filter((comment) => comment.ticketId !== ticket.id);
+        state.planComments = state.planComments.filter((comment) => comment.ticketId !== ticket.id);
         state.activity = state.activity.filter((event) => event.subject !== ticket.id && event.details?.ticketId !== ticket.id);
         for (const other of state.tickets) {
           if (other.parentTicketId === ticket.id) other.parentTicketId = null;
@@ -244,6 +245,44 @@ function createThomasService(options = {}) {
       });
     },
 
+    addPlanComment(ticketId, input, actor = "api") {
+      return mutate(actor, "plan_comment.created", ticketId, (state) => {
+        const ticket = requireTicket(state, ticketId);
+        const body = requireString(input.body, "body");
+        const now = new Date().toISOString();
+        const comment = {
+          id: nextId(state, "planComment", "plan-comment"),
+          ticketId: ticket.id,
+          planPath: normalizePlanPath(input.planPath),
+          anchor: normalizePlanAnchor(input.anchor),
+          selectedText: String(input.selectedText || ""),
+          body,
+          status: "open",
+          createdAt: now,
+          updatedAt: now,
+        };
+        state.planComments.push(comment);
+        ticket.updatedAt = now;
+        return { value: comment, activityDetails: { ticketId: ticket.id, planCommentId: comment.id, planPath: comment.planPath } };
+      });
+    },
+
+    updatePlanComment(ticketId, commentId, input, actor = "api") {
+      return mutate(actor, "plan_comment.updated", ticketId, (state) => {
+        const ticket = requireTicket(state, ticketId);
+        const comment = state.planComments.find((item) => item.ticketId === ticket.id && item.id === commentId);
+        if (!comment) throw httpError(404, `Unknown plan comment: ${commentId}`);
+        const before = { ...comment };
+        if (input.body !== undefined) comment.body = requireString(input.body, "body");
+        if (input.status !== undefined) comment.status = normalizePlanCommentStatus(input.status);
+        if (input.anchor !== undefined) comment.anchor = normalizePlanAnchor(input.anchor);
+        if (input.selectedText !== undefined) comment.selectedText = String(input.selectedText || "");
+        comment.updatedAt = new Date().toISOString();
+        ticket.updatedAt = comment.updatedAt;
+        return { value: comment, activityDetails: { ticketId: ticket.id, planCommentId: comment.id, changed: changedKeys(before, comment) } };
+      });
+    },
+
     assignTicket(ticketId, agentId, actor = "api") {
       return this.updateTicket(ticketId, { assigneeAgentId: agentId || null }, actor);
     },
@@ -267,6 +306,7 @@ function presentState(state, statePath) {
   const projectsById = new Map(state.projects.map((project) => [project.id, project]));
   const agentsById = new Map(state.agents.map((agent) => [agent.id, agent]));
   const commentsByTicket = groupBy(state.comments, "ticketId");
+  const planCommentsByTicket = groupBy(state.planComments || [], "ticketId");
   const tickets = state.tickets.map((ticket) => {
     const children = state.tickets.filter((candidate) => candidate.parentTicketId === ticket.id);
     const blocks = state.tickets.filter((candidate) => candidate.blockedByTicketIds.includes(ticket.id));
@@ -277,6 +317,7 @@ function presentState(state, statePath) {
       project: projectsById.get(ticket.projectId) || null,
       assignee: ticket.assigneeAgentId ? agentsById.get(ticket.assigneeAgentId) || null : null,
       comments: commentsByTicket.get(ticket.id) || [],
+      planComments: planCommentsByTicket.get(ticket.id) || [],
       children: children.map((item) => summarizeTicket(item)),
       blockedBy: ticket.blockedByTicketIds.map((id) => summarizeTicket(state.tickets.find((item) => item.id === id))).filter(Boolean),
       blocks: blocks.map((item) => summarizeTicket(item)),
@@ -453,6 +494,33 @@ function normalizeCommentAuthor(author) {
   return "you";
 }
 
+function normalizePlanPath(value) {
+  const planPath = String(value || "").trim().replace(/\\/g, "/");
+  if (!planPath || planPath.startsWith("/") || planPath.split("/").includes("..")) {
+    throw httpError(400, "Invalid plan path.");
+  }
+  return planPath;
+}
+
+function normalizePlanAnchor(anchor) {
+  if (!anchor || typeof anchor !== "object") return { type: "plan" };
+  const type = String(anchor.type || "plan").trim().toLowerCase();
+  const label = String(anchor.label || "").trim();
+  return {
+    type: ["html-step", "heading", "line", "plan"].includes(type) ? type : "plan",
+    ...(anchor.step !== undefined ? { step: String(anchor.step) } : {}),
+    ...(label ? { label } : {}),
+    ...(anchor.selector ? { selector: String(anchor.selector) } : {}),
+    ...(Number.isFinite(Number(anchor.line)) ? { line: Number(anchor.line) } : {}),
+  };
+}
+
+function normalizePlanCommentStatus(status) {
+  const normalized = String(status || "").trim().toLowerCase();
+  if (normalized === "open" || normalized === "resolved") return normalized;
+  throw httpError(400, `Unknown plan comment status: ${status}`);
+}
+
 function trimDoneTicketState(state, ticketId) {
   const ticket = requireTicket(state, ticketId);
   ticket.parentTicketId = null;
@@ -460,6 +528,7 @@ function trimDoneTicketState(state, ticketId) {
   ticket.labels = [];
   ticket.workspaceId = null;
   state.comments = state.comments.filter((comment) => comment.ticketId !== ticketId);
+  state.planComments = state.planComments.filter((comment) => comment.ticketId !== ticketId);
   state.activity = state.activity.filter((event) => event.subject !== ticketId && event.details?.ticketId !== ticketId);
   for (const other of state.tickets) {
     if (other.id === ticketId) continue;

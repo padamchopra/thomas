@@ -41,6 +41,7 @@ function defaultState() {
       activity: 1,
       agent: 1,
       comment: 1,
+      planComment: 1,
       project: 1,
       ticket: 1,
     },
@@ -67,6 +68,7 @@ function defaultState() {
     ],
     tickets: [],
     comments: [],
+    planComments: [],
     activity: [],
     settings: {
       theme: "system",
@@ -161,6 +163,17 @@ CREATE TABLE IF NOT EXISTS comments (
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS plan_comments (
+  id TEXT PRIMARY KEY,
+  ticket_id TEXT NOT NULL REFERENCES tickets(id) ON DELETE CASCADE,
+  plan_path TEXT NOT NULL,
+  anchor TEXT NOT NULL DEFAULT '{}',
+  selected_text TEXT NOT NULL DEFAULT '',
+  body TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'open',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS activity (
   id TEXT PRIMARY KEY,
   type TEXT NOT NULL,
@@ -172,6 +185,7 @@ CREATE TABLE IF NOT EXISTS activity (
 CREATE INDEX IF NOT EXISTS tickets_project_index ON tickets(project_id);
 CREATE INDEX IF NOT EXISTS tickets_assignee_index ON tickets(assignee_agent_id);
 CREATE INDEX IF NOT EXISTS comments_ticket_index ON comments(ticket_id);
+CREATE INDEX IF NOT EXISTS plan_comments_ticket_index ON plan_comments(ticket_id);
 CREATE INDEX IF NOT EXISTS activity_created_at_index ON activity(created_at);
 `);
 }
@@ -272,6 +286,26 @@ ORDER BY created_at;
     metadata: parseJson(comment.metadata, {}),
   }));
 
+  state.planComments = sqliteJson(dbPath, `
+SELECT
+  id,
+  ticket_id AS ticketId,
+  plan_path AS planPath,
+  anchor,
+  selected_text AS selectedText,
+  body,
+  status,
+  created_at AS createdAt,
+  updated_at AS updatedAt
+FROM plan_comments
+ORDER BY created_at;
+`).map((comment) => ({
+    ...comment,
+    anchor: parseJson(comment.anchor, {}),
+    selectedText: comment.selectedText || "",
+    status: comment.status || "open",
+  }));
+
   state.activity = sqliteJson(dbPath, `
 SELECT
   id,
@@ -297,6 +331,7 @@ function writeState(dbPath, state, options = {}) {
     "PRAGMA foreign_keys = OFF;",
     "BEGIN IMMEDIATE;",
     "DELETE FROM activity;",
+    "DELETE FROM plan_comments;",
     "DELETE FROM comments;",
     "DELETE FROM ticket_labels;",
     "DELETE FROM ticket_blockers;",
@@ -381,6 +416,22 @@ function writeState(dbPath, state, options = {}) {
       ${sqlValue(comment.author || "api")},
       ${sqlValue(comment.body || "")},
       ${sqlValue(JSON.stringify(comment.metadata || {}))},
+      ${sqlValue(comment.createdAt)},
+      ${sqlValue(comment.updatedAt)}
+    );`);
+  }
+
+  for (const comment of state.planComments || []) {
+    statements.push(`INSERT INTO plan_comments (
+      id, ticket_id, plan_path, anchor, selected_text, body, status, created_at, updated_at
+    ) VALUES (
+      ${sqlValue(comment.id)},
+      ${sqlValue(comment.ticketId)},
+      ${sqlValue(comment.planPath || "")},
+      ${sqlValue(JSON.stringify(comment.anchor || {}))},
+      ${sqlValue(comment.selectedText || "")},
+      ${sqlValue(comment.body || "")},
+      ${sqlValue(comment.status || "open")},
       ${sqlValue(comment.createdAt)},
       ${sqlValue(comment.updatedAt)}
     );`);
@@ -585,6 +636,7 @@ DROP TABLE IF EXISTS tickets;
 DROP TABLE IF EXISTS ticket_blockers;
 DROP TABLE IF EXISTS ticket_labels;
 DROP TABLE IF EXISTS comments;
+DROP TABLE IF EXISTS plan_comments;
 DROP TABLE IF EXISTS activity;
 PRAGMA foreign_keys = ON;
 `);
@@ -601,6 +653,7 @@ function normalizeState(state) {
     agents: Array.isArray(state?.agents) && state.agents.length > 0 ? state.agents : base.agents,
     tickets: Array.isArray(state?.tickets) ? state.tickets : [],
     comments: Array.isArray(state?.comments) ? state.comments : [],
+    planComments: Array.isArray(state?.planComments) ? state.planComments : [],
     activity: Array.isArray(state?.activity) ? state.activity : [],
   };
 
@@ -631,6 +684,12 @@ function normalizeState(state) {
 
   for (const comment of next.comments) {
     comment.metadata = comment.metadata && typeof comment.metadata === "object" ? comment.metadata : {};
+  }
+
+  for (const comment of next.planComments) {
+    comment.anchor = comment.anchor && typeof comment.anchor === "object" ? comment.anchor : {};
+    comment.selectedText = comment.selectedText || "";
+    comment.status = comment.status === "resolved" ? "resolved" : "open";
   }
 
   return next;
