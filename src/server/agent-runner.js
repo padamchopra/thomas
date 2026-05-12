@@ -1,9 +1,12 @@
 "use strict";
 
 const fs = require("node:fs");
+const os = require("node:os");
 const { spawn, spawnSync } = require("node:child_process");
 const path = require("node:path");
 const { defaultRunLogRoot, ensureTicketWorkspace } = require("./workspace");
+
+const BG_JOB_GRACE_MS = 30000;
 
 function createAgentRunner(service, runnerOptions = {}) {
   const runs = new Map();
@@ -31,19 +34,23 @@ function createAgentRunner(service, runnerOptions = {}) {
     const conversationName = buildConversationName(ticket);
     const previousSession = resume ? latestProviderSessionForTicket(runLogRoot, runs, ticket.id, agent.id) : null;
     const prompt = buildPrompt(ticket, options.message || "", { resume });
+    const useClaudeAgents = claudeAgentsEnabled(service, runnerOptions);
     const command = agentCommand(agent, {
       prompt,
       liveActivity,
       resume,
       providerSessionId: previousSession?.providerSessionId || "",
       conversationName,
+      useClaudeAgents,
     });
+    const provider = agentProvider(agent);
+    const bgEligible = provider === "claude" && useClaudeAgents;
     const run = {
       id: runId,
       ticketId: ticket.id,
       agentId: agent.id,
       agentName: agent.name,
-      provider: agentProvider(agent),
+      provider,
       providerSessionId: previousSession?.providerSessionId || "",
       conversationName,
       status: "running",
@@ -62,6 +69,11 @@ function createAgentRunner(service, runnerOptions = {}) {
       stderrPath: path.join(runLogRoot, `${safeRunFileName(runId)}.stderr.log`),
       stdoutOffset: 0,
       stderrOffset: 0,
+      bgEligible,
+      bgMode: false,
+      daemonShort: "",
+      transcriptPath: "",
+      transcriptOffset: 0,
     };
     runs.set(runId, run);
     saveRunMeta(run);
@@ -99,6 +111,13 @@ function createAgentRunner(service, runnerOptions = {}) {
     child.on("error", (error) => finishRun(run, ticket.id, agent.name, 1, error.message));
     child.on("close", (code) => {
       parseRunOutput(run, liveActivity);
+      if (run.bgEligible && !run.stopped) {
+        const short = parseBackgroundedShort(readStdoutText(run));
+        if (short) {
+          adoptBgRun(run, short);
+          return;
+        }
+      }
       finishRun(run, ticket.id, agent.name, code || 0);
     });
 
@@ -124,6 +143,15 @@ function createAgentRunner(service, runnerOptions = {}) {
     if (!run) throw httpError(404, `No running agent for ticket: ${ticketId}`);
     run.stopped = true;
     addRunEvent(run, "status", "Stop requested.");
+    if (run.bgMode && run.daemonShort) {
+      stopBgRun(run);
+      pollBgRun(run, service, runnerOptions);
+      return {
+        ...run,
+        child: undefined,
+        events: selectConversationEvents(run.events || []),
+      };
+    }
     const signalled = killRunProcess(run, "SIGTERM");
     if (!signalled) {
       finishStoppedRun(run, service, ticketId, { detached: true, missingPid: true });
@@ -228,6 +256,10 @@ function isConversationRunEvent(event) {
 
 function refreshRun(run, service, runnerOptions = {}) {
   if (run.status !== "running") return;
+  if (run.bgMode && run.daemonShort) {
+    pollBgRun(run, service, runnerOptions);
+    return;
+  }
   parseRunOutput(run, true);
   if (run.pid && isProcessAlive(run.pid)) {
     saveRunMeta(run);
@@ -262,6 +294,89 @@ function refreshRun(run, service, runnerOptions = {}) {
     }
     saveRunMeta(run);
   }
+}
+
+function pollBgRun(run, service, runnerOptions = {}) {
+  const jobState = readBgJobState(run.daemonShort);
+  if (jobState) {
+    if (!run.transcriptPath || !fs.existsSync(run.transcriptPath)) {
+      const resolved = resolveBgTranscriptPath(run, jobState);
+      if (resolved) run.transcriptPath = resolved;
+    }
+    if (jobState.sessionId && !run.providerSessionId) {
+      run.providerSessionId = String(jobState.sessionId);
+    }
+  }
+  parseTranscriptOutput(run);
+
+  if (run.stopped && (!jobState || isTerminalBgState(jobState))) {
+    finishStoppedRun(run, service, run.ticketId, { detached: true });
+    return;
+  }
+  if (jobState && isTerminalBgState(jobState)) {
+    const summary = jobState.output?.result || jobState.detail || run.summary;
+    if (summary) run.summary = summary;
+    const exitCode = jobState.state === "failed" ? 1 : 0;
+    const ticket = safeFindTicket(service, run.ticketId);
+    finishRunFromState(run, service, ticket, exitCode, "", runnerOptions);
+    return;
+  }
+  if (!jobState) {
+    const sinceStart = Date.now() - new Date(run.startedAt).getTime();
+    if (sinceStart > BG_JOB_GRACE_MS) {
+      run.status = "interrupted";
+      run.endedAt = new Date().toISOString();
+      addRunEvent(run, "stopped", "Claude bg job vanished before producing a transcript.");
+      try {
+        service.updateTicket(run.ticketId, { status: "human_review" }, "agent");
+      } catch {
+        // Best-effort recovery; ticket update may fail if the service is mid-shutdown.
+      }
+      saveRunMeta(run);
+      return;
+    }
+  }
+  saveRunMeta(run);
+}
+
+function isTerminalBgState(jobState) {
+  if (!jobState) return false;
+  if (jobState.state === "done" || jobState.state === "failed") return true;
+  if (jobState.firstTerminalAt && !jobState.inFlight?.tasks) return true;
+  return false;
+}
+
+function safeFindTicket(service, ticketId) {
+  try {
+    return service.getState().tickets.find((item) => item.id === ticketId) || null;
+  } catch {
+    return null;
+  }
+}
+
+function finishRunFromState(run, service, ticket, exitCode, errorMessage, runnerOptions) {
+  if (run.status !== "running") return;
+  run.status = exitCode === 0 ? "finished" : "failed";
+  run.exitCode = exitCode;
+  run.endedAt = new Date().toISOString();
+  const summary = cleanSummary(run.summary) || errorMessage || `${run.agentName} finished.`;
+  addRunEvent(run, run.status, finalRunEventText(run, run.agentName || "Agent", exitCode, errorMessage));
+  try {
+    if (ticket?.status === "in_progress") {
+      const prUrl = ticket.prUrl || findPullRequestUrl(run, summary, runnerOptions);
+      service.updateTicket(run.ticketId, prUrl ? { status: "pr_review", prUrl } : { status: "human_review" }, "agent");
+    }
+    service.recordActivity("agent.run.finished", run.ticketId, {
+      ticketId: run.ticketId,
+      agentId: run.agentId,
+      runId: run.id,
+      exitCode,
+      bg: true,
+    });
+  } catch {
+    // Activity recording is best-effort.
+  }
+  saveRunMeta(run);
 }
 
 function updateTicketAfterRun(service, ticketId, run, summary, runnerOptions = {}) {
@@ -354,6 +469,11 @@ function readPersistedRuns(runLogRoot) {
       run.stderrPath = run.stderrPath || metaPath.replace(/\.json$/, ".stderr.log");
       run.stdoutOffset = Number.isFinite(run.stdoutOffset) ? run.stdoutOffset : 0;
       run.stderrOffset = Number.isFinite(run.stderrOffset) ? run.stderrOffset : 0;
+      run.transcriptOffset = Number.isFinite(run.transcriptOffset) ? run.transcriptOffset : 0;
+      run.bgEligible = run.bgEligible === true;
+      run.bgMode = run.bgMode === true;
+      run.daemonShort = run.daemonShort || "";
+      run.transcriptPath = run.transcriptPath || "";
       run.events = readRunEvents(run.eventsPath);
       run.nextEventSequence = nextEventSequence(run);
       recoverProviderSessionFromOutput(run);
@@ -388,6 +508,11 @@ function persistRunMeta(run) {
     stdoutOffset: Number.isFinite(run.stdoutOffset) ? run.stdoutOffset : 0,
     stderrOffset: Number.isFinite(run.stderrOffset) ? run.stderrOffset : 0,
     stopped: run.stopped === true,
+    bgEligible: run.bgEligible === true,
+    bgMode: run.bgMode === true,
+    daemonShort: run.daemonShort || "",
+    transcriptPath: run.transcriptPath || "",
+    transcriptOffset: Number.isFinite(run.transcriptOffset) ? run.transcriptOffset : 0,
   };
 }
 
@@ -496,6 +621,8 @@ function consumeOutput(run, chunk, liveActivity, stream = "stdout") {
         addRunEvent(run, parsed.kind, parsed.text);
       }
       if (parsed.summary) run.summary += parsed.append ? parsed.summary : `${parsed.summary}\n`;
+    } else if (stream === "transcript") {
+      // Transcript lines are structured JSON; ignore anything we cannot map cleanly.
     } else {
       if (stream === "stderr") addRunEvent(run, stream, trimmed);
       run.summary += `${trimmed}\n`;
@@ -513,6 +640,9 @@ function parseStructuredEvent(line, run = null) {
   }
   captureProviderSession(run, event);
 
+  if (event.type === "queue-operation" || event.type === "attachment") {
+    return { hidden: true };
+  }
   if (event.type === "stream_event" && event.event) {
     return parseStreamEvent(event.event) || { hidden: true };
   }
@@ -555,6 +685,11 @@ function captureProviderSession(run, event) {
   if (event.type === "system" && event.subtype === "init" && event.session_id) {
     run.provider = run.provider || "claude";
     run.providerSessionId = String(event.session_id);
+    return;
+  }
+  if (event.sessionId && (event.type === "assistant" || event.type === "user" || event.sessionKind === "bg")) {
+    run.provider = run.provider || "claude";
+    run.providerSessionId = String(event.sessionId);
     return;
   }
   if (event.type === "session_meta" && event.payload?.id) {
@@ -606,6 +741,8 @@ function toolLabel(name, input) {
 function addRunEvent(run, kind, text) {
   const cleaned = String(text || "").trim();
   if (!cleaned) return;
+  const last = run.events.at(-1);
+  if (last?.kind === kind && last.text === cleaned) return;
   run.events.push({
     id: nextRunEventId(run),
     kind,
@@ -674,9 +811,14 @@ function agentCommand(agent, options) {
       : [executable, ...presetArgs, "exec", ...(options.liveActivity ? ["--json"] : []), options.prompt];
   }
   if (provider === "claude") {
-    const live = options.liveActivity ? ["--output-format", "stream-json", "--verbose", "--include-partial-messages"] : [];
     const name = options.conversationName ? ["--name", options.conversationName] : [];
     const resumeTarget = options.providerSessionId || options.conversationName || "";
+    if (options.useClaudeAgents) {
+      return options.resume
+        ? [executable, ...presetArgs, "--bg", ...name, ...(resumeTarget ? ["--resume", resumeTarget] : []), options.prompt]
+        : [executable, ...presetArgs, "--bg", ...name, options.prompt];
+    }
+    const live = options.liveActivity ? ["--output-format", "stream-json", "--verbose", "--include-partial-messages"] : [];
     return options.resume
       ? [executable, ...presetArgs, ...live, ...name, ...(resumeTarget ? ["--resume", resumeTarget] : ["--continue"]), "-p", options.prompt]
       : [executable, ...presetArgs, ...live, ...name, "-p", options.prompt];
@@ -688,6 +830,111 @@ function latestProviderSessionForTicket(runLogRoot, activeRuns, ticketId, agentI
   return hydrateRuns(runLogRoot, activeRuns)
     .filter((run) => run.ticketId === ticketId && run.agentId === agentId && run.providerSessionId)
     .sort((a, b) => String(b.startedAt || "").localeCompare(String(a.startedAt || "")))[0] || null;
+}
+
+function claudeHomeRoot() {
+  return process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), ".claude");
+}
+
+function claudeJobsRoot() {
+  return path.join(claudeHomeRoot(), "jobs");
+}
+
+function claudeProjectsRoot() {
+  return path.join(claudeHomeRoot(), "projects");
+}
+
+function encodeProjectCwd(cwd) {
+  return String(cwd || "").replace(/\//g, "-");
+}
+
+function readBgJobState(daemonShort) {
+  if (!daemonShort) return null;
+  try {
+    const text = fs.readFileSync(path.join(claudeJobsRoot(), daemonShort, "state.json"), "utf8");
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+}
+
+function resolveBgTranscriptPath(run, jobState) {
+  if (run.transcriptPath && fs.existsSync(run.transcriptPath)) return run.transcriptPath;
+  if (jobState?.linkScanPath && fs.existsSync(jobState.linkScanPath)) return jobState.linkScanPath;
+  if (jobState?.sessionId && run.cwd) {
+    const candidate = path.join(claudeProjectsRoot(), encodeProjectCwd(run.cwd), `${jobState.sessionId}.jsonl`);
+    if (fs.existsSync(candidate)) return candidate;
+  }
+  return "";
+}
+
+function parseBackgroundedShort(output) {
+  const match = String(output || "").match(/backgrounded\s*[·•]\s*([a-f0-9]+)/i);
+  return match ? match[1] : "";
+}
+
+function readStdoutText(run) {
+  if (!run.stdoutPath) return "";
+  try {
+    return fs.readFileSync(run.stdoutPath, "utf8");
+  } catch {
+    return "";
+  }
+}
+
+function stopBgRun(run) {
+  if (!run.daemonShort) return false;
+  const result = spawnSync("claude", ["stop", run.daemonShort], {
+    stdio: ["ignore", "pipe", "pipe"],
+    timeout: 15000,
+  });
+  return result.status === 0;
+}
+
+function adoptBgRun(run, daemonShort) {
+  run.bgMode = true;
+  run.daemonShort = daemonShort;
+  run.pid = null;
+  run.summary = "";
+  addRunEvent(run, "status", `Backgrounded as Claude job ${daemonShort}.`);
+  const jobState = readBgJobState(daemonShort);
+  if (jobState?.sessionId && !run.providerSessionId) {
+    run.providerSessionId = String(jobState.sessionId);
+  }
+  const transcript = resolveBgTranscriptPath(run, jobState);
+  if (transcript) run.transcriptPath = transcript;
+  saveRunMeta(run);
+}
+
+function parseTranscriptOutput(run) {
+  if (!run.transcriptPath || !fs.existsSync(run.transcriptPath)) return;
+  let stat;
+  try {
+    stat = fs.statSync(run.transcriptPath);
+  } catch {
+    return;
+  }
+  const offset = Math.min(run.transcriptOffset || 0, stat.size);
+  if (stat.size <= offset) return;
+  const fd = fs.openSync(run.transcriptPath, "r");
+  try {
+    const size = stat.size - offset;
+    const buffer = Buffer.alloc(size);
+    fs.readSync(fd, buffer, 0, size, offset);
+    run.transcriptOffset = stat.size;
+    consumeOutput(run, buffer, true, "transcript");
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+function claudeAgentsEnabled(service, runnerOptions = {}) {
+  if (typeof runnerOptions.useClaudeAgents === "boolean") return runnerOptions.useClaudeAgents;
+  try {
+    return service.getState().settings?.useClaudeAgents !== false;
+  } catch {
+    return true;
+  }
 }
 
 function agentProvider(agent, executable = "") {

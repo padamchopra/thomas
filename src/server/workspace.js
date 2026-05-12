@@ -67,11 +67,13 @@ function ensureTicketWorkspace(ticket, options = {}) {
   }
   fs.mkdirSync(path.join(worktreePath, ".context"), { recursive: true });
   addWorktreeExclude(worktreePath, ".context/");
-  runProjectSetupScript(ticket.project, {
-    name: ticket.workspaceId || ticket.id?.toLowerCase(),
-    branch,
-    path: worktreePath,
-  });
+  if (options.runSetup !== false) {
+    runProjectSetupScript(ticket.project, {
+      name: ticket.workspaceId || ticket.id?.toLowerCase(),
+      branch,
+      path: worktreePath,
+    });
+  }
   return { path: path.resolve(worktreePath), source: "worktree", projectPath };
 }
 
@@ -128,7 +130,7 @@ function addWorktreeExclude(worktreePath, pattern) {
 
 function runProjectSetupScript(project, workspace) {
   const setupScript = String(project?.setupScript || "").trim();
-  if (!setupScript) return;
+  if (!setupScript) return { skipped: true, stdout: "", stderr: "" };
   const scriptPath = path.join(workspace.path, ".context", "thomas-setup-script");
   fs.mkdirSync(path.dirname(scriptPath), { recursive: true });
   fs.writeFileSync(scriptPath, setupScript);
@@ -152,6 +154,27 @@ function runProjectSetupScript(project, workspace) {
   if (result.status !== 0) {
     throw workspaceError(result.stderr.trim() || result.stdout.trim() || `Setup script failed with exit code ${result.status}`);
   }
+  return { skipped: false, stdout: result.stdout || "", stderr: result.stderr || "" };
+}
+
+function runTicketSetupScript(ticket, options = {}) {
+  const workspace = ensureTicketWorkspace(ticket, { ...options, runSetup: false });
+  const branch = currentBranch(workspace.path);
+  const result = runProjectSetupScript(ticket.project, {
+    name: ticket.workspaceId || ticket.id?.toLowerCase(),
+    branch,
+    path: workspace.path,
+  });
+  return {
+    ...result,
+    repoPath: workspace.path,
+    workspaceSource: workspace.source,
+  };
+}
+
+function currentBranch(repoPath) {
+  const result = git(repoPath, ["branch", "--show-current"]);
+  return result.status === 0 ? result.stdout.trim() : "";
 }
 
 function git(repoPath, args) {
@@ -193,5 +216,6 @@ module.exports = {
   isGitRoot,
   preferredTicketWorktreePath,
   resolveTicketWorkspace,
+  runTicketSetupScript,
   thomasHome,
 };

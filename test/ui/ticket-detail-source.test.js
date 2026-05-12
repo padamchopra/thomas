@@ -18,6 +18,23 @@ test("ticket details merge live run activity into the conversation tab", () => {
   assert.doesNotMatch(source, /detailTab === "conversation"[\s\S]*<LiveActivity run=\{ticketRun\}/);
 });
 
+test("ticket details expose manual setup script action for the ticket worktree", () => {
+  const source = mainSource();
+  const api = fs.readFileSync(path.join(repoRoot, "ui/src/lib/api.js"), "utf8");
+  const server = fs.readFileSync(path.join(repoRoot, "src/server/app.js"), "utf8");
+  const workspace = fs.readFileSync(path.join(repoRoot, "src/server/workspace.js"), "utf8");
+  assert.match(api, /export async function runTicketSetupScript\(ticketId\)/);
+  assert.match(api, /\/run-setup-script/);
+  assert.match(source, /onRunSetupScript=\{handleRunTicketSetupScript\}/);
+  assert.match(source, /function TicketDetail\([\s\S]*onRunSetupScript/);
+  assert.match(source, /title="Run setup script in worktree"/);
+  assert.match(source, /const result = await onRunSetupScript\(ticket\.id\)/);
+  assert.match(server, /parts\[2\] === "run-setup-script"/);
+  assert.match(workspace, /function runTicketSetupScript\(ticket, options = \{\}\)/);
+  assert.match(workspace, /ensureTicketWorkspace\(ticket, \{ \.\.\.options, runSetup: false \}\)/);
+  assert.match(workspace, /cwd:\s*workspace\.path/);
+});
+
 test("conversation timeline sorts comments and live activity together by timestamp", () => {
   const source = mainSource();
   assert.match(source, /function buildConversationTimelineItems\(comments, runs\)/);
@@ -33,9 +50,29 @@ test("conversation timeline dedupes run events with stable keys", () => {
   assert.match(source, /const seenEvents = new Set\(\)/);
   assert.match(source, /runEventDedupeKey\(run, event, id\)/);
   assert.match(source, /countEventIds\(run, events\)/);
+  assert.match(source, /return `\$\{run\?\.id \|\| "run"\}:\$\{event\?\.kind \|\| "event"\}:\$\{event\?\.createdAt \|\| ""\}:\$\{textKey\}`/);
   assert.match(source, /return `event-\$\{scopedId\}`/);
   assert.match(source, /return `event-\$\{scopedId\}:\$\{index \+ 1\}`/);
   assert.doesNotMatch(source, /activeCollapsedGroup\.id = `collapsed-\$\{activeCollapsedGroup\.events\[0\]\.id\}-\$\{item\.id\}`/);
+});
+
+test("conversation timeline is an internally scrolling frame that sticks to bottom", () => {
+  const source = mainSource();
+  const css = cssSource();
+  assert.match(source, /const frameRef = useRef\(null\)/);
+  assert.match(source, /const shouldStickRef = useRef\(true\)/);
+  assert.match(source, /frame\.scrollTop = frame\.scrollHeight/);
+  assert.match(source, /distanceFromBottom < 48/);
+  assert.match(source, /<div className="conversation-frame">/);
+  assert.match(source, /<div className="conversation-scroll" ref=\{frameRef\} onScroll=\{handleScroll\}>/);
+  assert.match(css, /\.conversation-frame[\s\S]*overflow:\s*hidden/);
+  assert.match(css, /\.conversation-scroll[\s\S]*overflow-y:\s*auto/);
+});
+
+test("agent runner skips exact consecutive duplicate run events", () => {
+  const runner = fs.readFileSync(path.join(repoRoot, "src/server/agent-runner.js"), "utf8");
+  assert.match(runner, /const last = run\.events\.at\(-1\)/);
+  assert.match(runner, /if \(last\?\.kind === kind && last\.text === cleaned\) return;/);
 });
 
 test("live activity collapses tool, output, stderr, and thinking rows by default", () => {

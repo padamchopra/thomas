@@ -32,7 +32,7 @@ import {
   FileDiff,
   FileText,
 } from "lucide-react";
-import { addComment, chooseProjectFolder, createAgent, createProject, createTicket, deleteTicket, fetchState, fetchTicketDiff, openTicketFile, openTicketWorktree, refreshTicketStatus, resumeTicketTerminal, stopTicketRun, updateProject, updateSettings, updateTicket } from "./lib/api";
+import { addComment, chooseProjectFolder, createAgent, createProject, createTicket, deleteTicket, fetchState, fetchTicketDiff, openTicketFile, openTicketWorktree, refreshTicketStatus, resumeTicketTerminal, runTicketSetupScript, stopTicketRun, updateProject, updateSettings, updateTicket } from "./lib/api";
 import {
   IssueRow,
   KanbanBoard,
@@ -42,12 +42,24 @@ import {
   StatusIcon,
   timeAgo,
 } from "./components/primitives";
-import { Button, Card } from "./components/ui";
+import { Card } from "./components/ui";
+import { Switch } from "./components/ui/switch";
+import { Button } from "./components/ui/button";
+import { Input } from "./components/ui/input";
+import { Label } from "./components/ui/label";
+import { Separator } from "./components/ui/separator";
+import { Skeleton } from "./components/ui/skeleton";
 import "./styles.css";
 
 const BOARD_STATUSES = ["backlog", "todo", "in_progress", "blocked", "human_review", "pr_review", "done"];
 const ROUTE_VIEWS = new Set(["dashboard", "inbox", "tickets", "projects", "agents", "activity", "settings"]);
 const RESERVED_TOP_LEVEL = new Set([...ROUTE_VIEWS, "board", "list"]);
+const TICKET_PRESET_LABELS = {
+  in_flight: "In flight",
+  needs_review: "Needs review",
+  unassigned: "Unassigned",
+  done: "Completed",
+};
 const TERMINAL_OPTIONS = [
   { value: "warp", label: "Warp" },
   { value: "terminal", label: "Terminal" },
@@ -131,6 +143,7 @@ function App() {
   const [statusFilter, setStatusFilter] = useState("all");
   const [projectFilter, setProjectFilter] = useState("all");
   const [assigneeFilter, setAssigneeFilter] = useState("all");
+  const [ticketPresetFilter, setTicketPresetFilter] = useState("all");
   const [selectedTicketId, setSelectedTicketId] = useState(initialRoute.ticketId);
   const [selectedAgentId, setSelectedAgentId] = useState(initialRoute.agentId);
   const [selectedProjectId, setSelectedProjectId] = useState(initialRoute.projectId || null);
@@ -158,6 +171,49 @@ function App() {
     setPendingProjectPrefix(null);
     setView(nextView);
     pushPath(pathForView(nextView, ticketLayout), options);
+  };
+
+  const openTicketsWithPreset = (preset) => {
+    setSelectedTicketId(null);
+    setSelectedAgentId(null);
+    setSelectedProjectId(null);
+    setPendingProjectPrefix(null);
+    setQuery("");
+    setStatusFilter("all");
+    setProjectFilter("all");
+    setAssigneeFilter("all");
+    setTicketPresetFilter(preset);
+    setView("tickets");
+    pushPath(pathForView("tickets", ticketLayout));
+  };
+
+  const openTicketsWithStatus = (status) => {
+    setSelectedTicketId(null);
+    setSelectedAgentId(null);
+    setSelectedProjectId(null);
+    setPendingProjectPrefix(null);
+    setQuery("");
+    setTicketPresetFilter("all");
+    setProjectFilter("all");
+    setAssigneeFilter("all");
+    setStatusFilter(status);
+    setView("tickets");
+    pushPath(pathForView("tickets", ticketLayout));
+  };
+
+  const updateStatusFilter = (value) => {
+    setTicketPresetFilter("all");
+    setStatusFilter(value);
+  };
+
+  const updateProjectFilter = (value) => {
+    setTicketPresetFilter("all");
+    setProjectFilter(value);
+  };
+
+  const updateAssigneeFilter = (value) => {
+    setTicketPresetFilter("all");
+    setAssigneeFilter(value);
   };
 
   const changeTicketLayout = (layout) => {
@@ -307,6 +363,7 @@ function App() {
     : selectedProject && view === "projects"
       ? `${projectOpenCounts.get(selectedProject.id) || 0} open tickets · ${selectedProject.prefix}`
     : `${state?.stats.openTickets || 0} open tickets · ${state?.stats.activeAgents || 0} agents · ${state?.stats.unassignedTodo || 0} unassigned to-do`;
+  const isDashboardHome = !selectedTicket && view === "dashboard";
 
   const filteredTickets = useMemo(() => {
     const needle = query.trim().toLowerCase();
@@ -317,6 +374,9 @@ function App() {
     if (assigneeFilter !== "all" && assigneeFilter !== "unassigned") {
       tickets = tickets.filter((ticket) => ticket.assigneeAgentId === assigneeFilter);
     }
+    if (ticketPresetFilter !== "all") {
+      tickets = tickets.filter((ticket) => ticketMatchesPreset(ticket, state?.runs || [], ticketPresetFilter));
+    }
     if (needle) {
       tickets = tickets.filter((ticket) =>
         [ticket.id, ticket.title, ticket.description, ticket.project?.name, ticket.assignee?.name, ticket.statusLabel]
@@ -325,7 +385,7 @@ function App() {
       );
     }
     return [...tickets].sort((a, b) => compareTickets(a, b, sortBy));
-  }, [state, query, sortBy, statusFilter, projectFilter, assigneeFilter]);
+  }, [state, query, sortBy, statusFilter, projectFilter, assigneeFilter, ticketPresetFilter]);
 
   const handleCreateProject = async (event) => {
     event.preventDefault();
@@ -431,6 +491,17 @@ function App() {
     }
   };
 
+  const handleRunTicketSetupScript = async (ticketId) => {
+    try {
+      const result = await runTicketSetupScript(ticketId);
+      await refresh();
+      return result;
+    } catch (err) {
+      setError(err.message);
+      throw err;
+    }
+  };
+
   const handleOpenTicketWorktree = async (ticketId) => {
     try {
       await openTicketWorktree(ticketId);
@@ -449,15 +520,18 @@ function App() {
 
   const handleSettingsPatch = async (patch) => {
     try {
-      await updateSettings(patch);
-      await refresh();
+      const data = await updateSettings(patch);
+      if (data?.state) setState(data.state);
+      else await refresh();
+      setError("");
     } catch (err) {
       setError(err.message);
+      throw err;
     }
   };
 
   if (!state) {
-    return <Shell error={error}><div className="notice-loading">Loading Thomas...</div></Shell>;
+    return <Shell error={error}><AppSkeleton /></Shell>;
   }
 
   return (
@@ -526,22 +600,22 @@ function App() {
             </button>
             <div>
               <h1>{headerTitle}</h1>
-              <p>{headerSubtitle}</p>
+              {!isDashboardHome ? <p>{headerSubtitle}</p> : null}
             </div>
           </div>
           <div className="header-actions">
             {!selectedTicket && state.projects.length > 0 && ["dashboard", "inbox", "tickets"].includes(view) ? (
               <Button onClick={() => openNewTicket()}><SquarePen /> New Ticket</Button>
             ) : null}
-            {!selectedTicket && <div className="view-switch">
+            {!selectedTicket && !isDashboardHome && <div className="view-switch">
               <button className={view === "dashboard" ? "active" : ""} onClick={() => openView("dashboard")} title="Dashboard"><LayoutDashboard /></button>
               <button className={view === "inbox" ? "active" : ""} onClick={() => openView("inbox")} title="Inbox"><Inbox /></button>
               <button className={view === "tickets" ? "active" : ""} onClick={() => openView("tickets")} title="Tickets"><Columns3 /></button>
             </div>}
-            <label className="find-box">
+            {!isDashboardHome ? <label className="find-box">
               <Search />
               <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search tickets" />
-            </label>
+            </label> : null}
           </div>
         </header>
 
@@ -556,6 +630,7 @@ function App() {
             onDelete={handleDeleteTicket}
             onStopRun={handleStopTicketRun}
             onRefreshStatus={handleRefreshTicketStatus}
+            onRunSetupScript={handleRunTicketSetupScript}
             onOpenWorktree={handleOpenTicketWorktree}
             onResumeTerminal={handleResumeTicketTerminal}
             onComment={async (body, metadata = {}) => {
@@ -586,17 +661,19 @@ function App() {
                     statusFilter={statusFilter}
                     projectFilter={projectFilter}
                     assigneeFilter={assigneeFilter}
+                    presetFilter={ticketPresetFilter}
                     onSortBy={setSortBy}
                     onLayout={changeTicketLayout}
-                    onStatusFilter={setStatusFilter}
-                    onProjectFilter={setProjectFilter}
-                    onAssigneeFilter={setAssigneeFilter}
+                    onStatusFilter={updateStatusFilter}
+                    onProjectFilter={updateProjectFilter}
+                    onAssigneeFilter={updateAssigneeFilter}
+                    onPresetFilter={setTicketPresetFilter}
                     groupBy={groupBy}
                     onGroupBy={setGroupBy}
                     resultCount={filteredTickets.length}
                   />
                 )}
-                {view === "dashboard" && <Dashboard state={state} onOpenTicket={openTicket} />}
+                {view === "dashboard" && <Dashboard state={state} onOpenTicket={openTicket} onOpenTicketsPreset={openTicketsWithPreset} onOpenTicketsStatus={openTicketsWithStatus} onOpenAgent={openAgent} onOpenProject={openProject} />}
                 {view === "inbox" && <InboxView state={state} onOpenTicket={openTicket} />}
                 {view === "tickets" && ticketLayout === "board" && <Board state={state} tickets={filteredTickets} onOpenTicket={openTicket} />}
                 {view === "tickets" && ticketLayout === "list" && <TicketList tickets={filteredTickets} runs={state.runs || []} groupBy={groupBy} onOpenTicket={openTicket} />}
@@ -620,6 +697,74 @@ function Shell({ children, error, theme = "system" }) {
       {children}
       {error ? <div className="error-toast">{error}</div> : null}
     </div>
+  );
+}
+
+function AppSkeleton() {
+  return (
+    <>
+      <aside className="side-pane">
+        <div className="instance-header gap-2">
+          <Skeleton className="size-[26px] rounded-md" />
+          <div className="grid gap-1">
+            <Skeleton className="h-3 w-20" />
+            <Skeleton className="h-2.5 w-28" />
+          </div>
+        </div>
+        <nav className="command-nav">
+          <Skeleton className="h-9 w-full" />
+          <div className="grid gap-1.5 px-1">
+            {Array.from({ length: 3 }).map((_, idx) => (
+              <Skeleton key={idx} className="h-7 w-full" />
+            ))}
+          </div>
+          <div className="grid gap-1.5 px-1 pt-2">
+            <Skeleton className="h-2.5 w-12" />
+            {Array.from({ length: 3 }).map((_, idx) => (
+              <Skeleton key={idx} className="h-7 w-full" />
+            ))}
+          </div>
+          <div className="grid gap-1.5 px-1 pt-2">
+            <Skeleton className="h-2.5 w-10" />
+            {Array.from({ length: 3 }).map((_, idx) => (
+              <Skeleton key={idx} className="h-7 w-full" />
+            ))}
+          </div>
+        </nav>
+      </aside>
+      <main className="content-stage">
+        <header className="page-header">
+          <div className="page-title-row">
+            <div className="grid gap-1.5">
+              <Skeleton className="h-5 w-32" />
+              <Skeleton className="h-3 w-48" />
+            </div>
+          </div>
+          <div className="header-actions">
+            <Skeleton className="h-9 w-28" />
+            <Skeleton className="h-9 w-64" />
+          </div>
+        </header>
+        <div className="grid gap-3 px-1 pt-1">
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+            {Array.from({ length: 4 }).map((_, idx) => (
+              <Skeleton key={idx} className="h-24 w-full" />
+            ))}
+          </div>
+          <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_320px]">
+            <div className="grid gap-2">
+              {Array.from({ length: 4 }).map((_, idx) => (
+                <Skeleton key={idx} className="h-16 w-full" />
+              ))}
+            </div>
+            <div className="grid gap-2">
+              <Skeleton className="h-32 w-full" />
+              <Skeleton className="h-32 w-full" />
+            </div>
+          </div>
+        </div>
+      </main>
+    </>
   );
 }
 
@@ -778,22 +923,26 @@ function IssueControls({
   statusFilter,
   projectFilter,
   assigneeFilter,
+  presetFilter,
   onSortBy,
   onLayout,
   onStatusFilter,
   onProjectFilter,
   onAssigneeFilter,
+  onPresetFilter,
   groupBy,
   onGroupBy,
   resultCount,
 }) {
   const [expanded, setExpanded] = useState(false);
   const activeFilterCount = [
+    presetFilter !== "all",
     statusFilter !== "all",
     projectFilter !== "all",
     assigneeFilter !== "all",
   ].filter(Boolean).length;
   const clearFilters = () => {
+    onPresetFilter("all");
     onStatusFilter("all");
     onProjectFilter("all");
     onAssigneeFilter("all");
@@ -803,6 +952,7 @@ function IssueControls({
       <div className="filter-summary">
         <span><SlidersHorizontal /> {resultCount} ticket{resultCount === 1 ? "" : "s"}</span>
         <span className={activeFilterCount ? "filter-count active" : "filter-count"}>{activeFilterCount} filters</span>
+        {presetFilter !== "all" ? <span className="filter-count active">{TICKET_PRESET_LABELS[presetFilter] || "Dashboard"}</span> : null}
       </div>
       <div className="quick-filters">
         <div className="layout-toggle" aria-label="Ticket layout">
@@ -1207,13 +1357,38 @@ function AgentsView({ state, selectedAgentId, onSelectAgent, onBack, onCreateAge
 }
 
 function SettingsView({ state, onUpdateSettings }) {
-  const settings = state.settings || {};
+  const serverSettings = state.settings || {};
   const cacheBytes = state.cache?.bytes || 0;
-  const [branchPrefixDraft, setBranchPrefixDraft] = useState(settings.branchPrefix || "thomas");
+  const [pendingPatch, setPendingPatch] = useState({});
+  const settings = { ...serverSettings, ...pendingPatch };
+  const [branchPrefixDraft, setBranchPrefixDraft] = useState(serverSettings.branchPrefix || "thomas");
   const [notificationStatus, setNotificationStatus] = useState(() => notificationSupportStatus().message);
+  const [savedKey, setSavedKey] = useState("");
+  const savedTimeoutRef = useRef(null);
   useEffect(() => {
-    setBranchPrefixDraft(settings.branchPrefix || "thomas");
-  }, [settings.branchPrefix]);
+    setBranchPrefixDraft(serverSettings.branchPrefix || "thomas");
+  }, [serverSettings.branchPrefix]);
+  useEffect(() => () => clearTimeout(savedTimeoutRef.current), []);
+  const handlePatch = async (key, patch) => {
+    setPendingPatch((prev) => ({ ...prev, ...patch }));
+    setSavedKey(key);
+    clearTimeout(savedTimeoutRef.current);
+    savedTimeoutRef.current = setTimeout(() => setSavedKey(""), 1600);
+    try {
+      await onUpdateSettings(patch);
+    } finally {
+      setPendingPatch((prev) => {
+        const next = { ...prev };
+        for (const k of Object.keys(patch)) delete next[k];
+        return next;
+      });
+    }
+  };
+  const commitBranchPrefix = () => {
+    const next = branchPrefixDraft.trim() || "thomas";
+    if (next === (serverSettings.branchPrefix || "thomas")) return;
+    handlePatch("branchPrefix", { branchPrefix: next });
+  };
   const testNotification = async () => {
     const support = notificationSupportStatus();
     if (!support.supported) {
@@ -1237,61 +1412,156 @@ function SettingsView({ state, onUpdateSettings }) {
     setNotificationStatus(permission === "denied" ? "Notifications are blocked for this browser. Allow them in site settings, then test again." : "Notification permission was not granted.");
   };
   return (
-    <section className="settings-layout">
-      <div className="data-panel">
-        <div className="section-titlebar">
-          <div>
-            <h2>Settings</h2>
-            <p>Controls that affect Thomas and dispatched agents.</p>
-          </div>
+    <section className="grid w-full max-w-[760px] gap-4">
+      <div className="overflow-hidden rounded-[var(--radius)] border border-border bg-card/95 shadow-sm">
+        <div className="flex flex-wrap items-baseline gap-x-5 gap-y-1 border-b border-border/70 bg-card/70 px-3.5 py-2.5">
+          <span className="inline-flex items-baseline gap-1.5 text-[11px] text-muted-foreground">
+            <span className="text-[10px] uppercase tracking-wide">Version</span>
+            <code className="font-mono text-xs font-medium text-foreground">{state.appVersion || "unknown"}</code>
+          </span>
+          <span className="inline-flex items-baseline gap-1.5 text-[11px] text-muted-foreground">
+            <span className="text-[10px] uppercase tracking-wide">Cache</span>
+            <code className="font-mono text-xs font-medium text-foreground">{formatBytes(cacheBytes)}</code>
+          </span>
         </div>
-        <div className="settings-stack">
-          <div className="setting-row">
-            <span><strong>Version</strong><small>Currently running Thomas build.</small></span>
-            <code>{state.appVersion || "unknown"}</code>
-          </div>
-          <div className="setting-row">
-            <span><strong>Cache size</strong><small>Thomas worktrees and local run activity files.</small></span>
-            <code>{formatBytes(cacheBytes)}</code>
-          </div>
-          <label className="setting-row">
-            <span><strong>Theme</strong><small>Applies to this local UI.</small></span>
-            <select value={settings.theme || "system"} onChange={(event) => onUpdateSettings({ theme: event.target.value })}>
-              <option value="system">System</option>
-              <option value="dark">Dark</option>
-              <option value="light">Light</option>
-            </select>
-          </label>
-          <label className="setting-row">
-            <span><strong>Default terminal</strong><small>Used by the ticket resume button.</small></span>
-            <select value={settings.preferredTerminal || "warp"} onChange={(event) => onUpdateSettings({ preferredTerminal: event.target.value })}>
-              {TERMINAL_OPTIONS.map((terminal) => <option key={terminal.value} value={terminal.value}>{terminal.label}</option>)}
-            </select>
-          </label>
-          <form
-            className="setting-row"
+
+        <SettingsSection title="Appearance">
+          <SettingsRow as="label" title="Theme" description="Applies to this local UI.">
+            <SettingsControl>
+              <SavedIndicator visible={savedKey === "theme"} />
+              <SettingsSelect
+                value={settings.theme || "system"}
+                onChange={(event) => handlePatch("theme", { theme: event.target.value })}
+              >
+                <option value="system">System</option>
+                <option value="dark">Dark</option>
+                <option value="light">Light</option>
+              </SettingsSelect>
+            </SettingsControl>
+          </SettingsRow>
+        </SettingsSection>
+
+        <SettingsSection title="Workflow">
+          <SettingsRow as="label" title="Default terminal" description="Used by the ticket resume button.">
+            <SettingsControl>
+              <SavedIndicator visible={savedKey === "preferredTerminal"} />
+              <SettingsSelect
+                value={settings.preferredTerminal || "warp"}
+                onChange={(event) => handlePatch("preferredTerminal", { preferredTerminal: event.target.value })}
+              >
+                {TERMINAL_OPTIONS.map((terminal) => <option key={terminal.value} value={terminal.value}>{terminal.label}</option>)}
+              </SettingsSelect>
+            </SettingsControl>
+          </SettingsRow>
+          <SettingsRow
+            as="form"
+            title="Branch prefix"
+            description="New worktree branches use this prefix."
             onSubmit={(event) => {
               event.preventDefault();
-              onUpdateSettings({ branchPrefix: branchPrefixDraft });
+              commitBranchPrefix();
+              event.currentTarget.querySelector("input")?.blur();
             }}
           >
-            <span><strong>Branch prefix</strong><small>New worktree branches use this prefix.</small></span>
-            <span className="setting-inline-control">
-              <input value={branchPrefixDraft} onChange={(event) => setBranchPrefixDraft(event.target.value)} placeholder="thomas" />
-              <button type="submit" className="quiet-button"><CheckCircle2 /> Save</button>
-            </span>
-          </form>
-          <label className="setting-row">
-            <span><strong>Notify on Human Review</strong><small>Only alert when an agent leaves a ticket ready for review.</small></span>
-            <span className="setting-inline-control">
-              <input type="checkbox" checked={settings.notifyHumanReview === true} onChange={(event) => onUpdateSettings({ notifyHumanReview: event.target.checked })} />
-              <button type="button" className="quiet-button" onClick={testNotification}>Test</button>
-            </span>
-            <small className="notification-status">{notificationStatus}</small>
-          </label>
-        </div>
+            <SettingsControl>
+              <SavedIndicator visible={savedKey === "branchPrefix"} />
+              <Input
+                className="h-8 w-[180px] text-sm"
+                value={branchPrefixDraft}
+                onChange={(event) => setBranchPrefixDraft(event.target.value)}
+                onBlur={commitBranchPrefix}
+                placeholder="thomas"
+              />
+            </SettingsControl>
+          </SettingsRow>
+        </SettingsSection>
+
+        <SettingsSection title="Agents">
+          <SettingsRow title="Use Claude agents tab" description="Dispatches Claude with --bg so runs appear in Claude Code's agents tab and can be stopped from there.">
+            <SettingsControl>
+              <SavedIndicator visible={savedKey === "useClaudeAgents"} />
+              <Switch
+                aria-label="Use Claude agents tab"
+                checked={settings.useClaudeAgents !== false}
+                onCheckedChange={(next) => handlePatch("useClaudeAgents", { useClaudeAgents: next })}
+              />
+            </SettingsControl>
+          </SettingsRow>
+        </SettingsSection>
+
+        <SettingsSection title="Notifications">
+          <SettingsRow
+            title="Notify on Human Review"
+            description="Only alert when an agent leaves a ticket ready for review."
+            footer={<small className="notification-status">{notificationStatus}</small>}
+          >
+            <SettingsControl>
+              <SavedIndicator visible={savedKey === "notifyHumanReview"} />
+              <Button type="button" variant="link" size="sm" className="h-auto px-0 text-xs text-muted-foreground hover:text-foreground" onClick={testNotification}>Test</Button>
+              <Switch
+                aria-label="Notify on Human Review"
+                checked={settings.notifyHumanReview === true}
+                onCheckedChange={(next) => handlePatch("notifyHumanReview", { notifyHumanReview: next })}
+              />
+            </SettingsControl>
+          </SettingsRow>
+        </SettingsSection>
       </div>
     </section>
+  );
+}
+
+function SettingsSection({ title, children }) {
+  return (
+    <section className="border-t border-border/60 first:border-t-0">
+      <div className="px-3.5 pt-3 pb-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">{title}</div>
+      <div className="grid">{children}</div>
+    </section>
+  );
+}
+
+function SettingsRow({ as: Component = "div", title, description, children, footer, ...props }) {
+  return (
+    <Component
+      className="grid min-h-11 items-center gap-4 px-3.5 py-2 [&+&]:border-t [&+&]:border-border/40"
+      style={{ gridTemplateColumns: "minmax(220px, 1fr) auto" }}
+      {...props}
+    >
+      <span className="grid gap-0.5">
+        <strong className="text-[13px] font-medium leading-tight">{title}</strong>
+        <small className="text-xs leading-snug text-muted-foreground">{description}</small>
+      </span>
+      {children}
+      {footer ? <div className="col-span-2 mt-1">{footer}</div> : null}
+    </Component>
+  );
+}
+
+function SettingsControl({ children }) {
+  return <span className="flex min-w-0 items-center justify-end gap-2.5 justify-self-end">{children}</span>;
+}
+
+function SettingsSelect({ children, ...props }) {
+  return (
+    <select
+      data-slot="settings-select"
+      className="h-8 min-w-[140px] rounded-md border border-input bg-card px-2.5 text-sm text-foreground outline-none transition-colors focus-visible:border-ring focus-visible:ring-ring/30 focus-visible:ring-[3px]"
+      {...props}
+    >
+      {children}
+    </select>
+  );
+}
+
+function SavedIndicator({ visible }) {
+  return (
+    <span
+      data-visible={visible ? "true" : "false"}
+      aria-hidden={!visible}
+      className="pointer-events-none inline-flex items-center gap-1 text-[11px] text-[var(--green)] opacity-0 transition-opacity duration-150 data-[visible=true]:opacity-100"
+    >
+      <CheckCircle2 className="size-3" /> Saved
+    </span>
   );
 }
 
@@ -1402,17 +1672,12 @@ function ActivityView({ state }) {
   );
 }
 
-function Dashboard({ state, onOpenTicket }) {
-  const recent = [...state.tickets].sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt)).slice(0, 8);
-  const attention = state.tickets
-    .filter((ticket) => ticket.status === "blocked" || (ticket.status === "todo" && !ticket.assigneeAgentId))
-    .sort((a, b) => dateValue(b.updatedAt) - dateValue(a.updatedAt))
-    .slice(0, 8);
-  const active = state.tickets
-    .filter((ticket) => ["in_progress", "human_review", "pr_review"].includes(ticket.status))
-    .sort((a, b) => dateValue(b.updatedAt) - dateValue(a.updatedAt))
-    .slice(0, 8);
+function Dashboard({ state, onOpenTicket, onOpenTicketsPreset, onOpenTicketsStatus, onOpenAgent, onOpenProject }) {
+  const runs = state.runs || [];
   const openTickets = state.tickets.filter((ticket) => !["done", "cancelled"].includes(ticket.status));
+  const reviewTickets = openTickets.filter((ticket) => ["human_review", "pr_review"].includes(ticket.status));
+  const runningTicketIds = new Set(runs.filter((run) => run.status === "running").map((run) => run.ticketId));
+  const inFlightCount = openTickets.filter((ticket) => ticket.status === "in_progress" || runningTicketIds.has(ticket.id)).length;
   const agentWorkload = state.agents.map((agent) => {
     const assigned = openTickets.filter((ticket) => ticket.assigneeAgentId === agent.id);
     return {
@@ -1423,51 +1688,27 @@ function Dashboard({ state, onOpenTicket }) {
     };
   });
   const unassigned = openTickets.filter((ticket) => !ticket.assigneeAgentId);
+  const maxAgentLoad = Math.max(1, ...agentWorkload.map((row) => row.assigned.length), unassigned.length);
   const statusRows = BOARD_STATUSES.map((status) => ({
     status,
     label: state.statuses.find((item) => item.value === status)?.label || titleCase(status),
-    count: state.stats.byStatus[status] || 0,
+    count: openTickets.filter((ticket) => ticket.status === status).length,
+    share: openTickets.length ? Math.round((openTickets.filter((ticket) => ticket.status === status).length / openTickets.length) * 100) : 0,
   })).filter((row) => row.count > 0);
   const projectRows = state.projects.map((project) => ({
     project,
     open: openTickets.filter((ticket) => ticket.projectId === project.id).length,
     review: openTickets.filter((ticket) => ticket.projectId === project.id && ["human_review", "pr_review"].includes(ticket.status)).length,
+    blocked: openTickets.filter((ticket) => ticket.projectId === project.id && ticket.status === "blocked").length,
   })).filter((row) => row.open > 0 || row.review > 0);
   return (
     <section className="operations-dashboard">
       <div className="ops-main">
-        <Stats stats={state.stats} />
-        <div className="data-panel ops-panel">
-          <div className="section-titlebar">
-            <div>
-              <h2>Needs Attention</h2>
-            </div>
-            <span className="panel-count">{attention.length}</span>
-          </div>
-          <div className="row-stack">
-            {attention.length ? attention.map((ticket) => <DashboardTicketRow key={ticket.id} ticket={ticket} run={runningRunForTicket(state.runs || [], ticket.id)} onOpenTicket={onOpenTicket} />) : <EmptyPanel message="No blocked or unassigned to-do tickets." />}
-          </div>
-        </div>
-        <div className="data-panel ops-panel">
-          <div className="section-titlebar">
-            <div>
-              <h2>Active Review</h2>
-            </div>
-            <span className="panel-count">{active.length}</span>
-          </div>
-          <div className="row-stack">
-            {active.length ? active.map((ticket) => <DashboardTicketRow key={ticket.id} ticket={ticket} run={runningRunForTicket(state.runs || [], ticket.id)} onOpenTicket={onOpenTicket} />) : <EmptyPanel message="No in-progress or review tickets." />}
-          </div>
-        </div>
-        <div className="data-panel ops-panel">
-          <div className="section-titlebar">
-            <div>
-              <h2>Recent Tickets</h2>
-            </div>
-          </div>
-          <div className="row-stack">
-            {recent.length ? recent.map((ticket) => <DashboardTicketRow key={ticket.id} ticket={ticket} run={runningRunForTicket(state.runs || [], ticket.id)} onOpenTicket={onOpenTicket} />) : <EmptyPanel message="No tickets yet." />}
-          </div>
+        <div className="dashboard-signal-grid">
+          <DashboardMetricCard icon={CircleDot} label="In Flight" value={inFlightCount} detail={`${runningTicketIds.size} running`} tone="blue" onClick={() => onOpenTicketsPreset("in_flight")} />
+          <DashboardMetricCard icon={ShieldAlert} label="Needs Review" value={reviewTickets.length} detail={`${state.stats.blocked} blocked`} tone="yellow" onClick={() => onOpenTicketsPreset("needs_review")} />
+          <DashboardMetricCard icon={UserRound} label="Unassigned" value={state.stats.unassignedTodo} detail="ready to triage" tone="violet" onClick={() => onOpenTicketsPreset("unassigned")} />
+          <DashboardMetricCard icon={CheckCircle2} label="Completed" value={state.stats.done} detail="archived locally" tone="green" onClick={() => onOpenTicketsPreset("done")} />
         </div>
       </div>
       <aside className="ops-rail">
@@ -1475,21 +1716,33 @@ function Dashboard({ state, onOpenTicket }) {
           <div className="section-titlebar"><h2>Agent Workload</h2></div>
           <div className="workload-list">
             {agentWorkload.map((row) => (
-              <div className="workload-row" key={row.agent.id}>
+              <button type="button" className="workload-row row-link" key={row.agent.id} onClick={() => onOpenAgent(row.agent.id)}>
                 <div className="workload-identity">
-                  <span className="presence-dot" />
-                  <strong>{row.agent.name}</strong>
+                  <span className={`presence-dot agent-${row.agent.status}`} />
+                  <span>
+                    <strong>{row.agent.name}</strong>
+                    <small>{row.review} review · {row.blocked} blocked</small>
+                  </span>
                 </div>
-                <span className="rail-count">{row.assigned.length}</span>
-              </div>
+                <div className="workload-meter" aria-label={`${row.agent.name} has ${row.assigned.length} open tickets`}>
+                  <span style={{ width: `${Math.max(6, (row.assigned.length / maxAgentLoad) * 100)}%` }} />
+                </div>
+                <strong className="rail-count">{row.assigned.length}</strong>
+              </button>
             ))}
-            <div className="workload-row workload-unassigned">
+            <button type="button" className="workload-row workload-unassigned row-link" onClick={() => onOpenTicketsPreset("unassigned")}>
               <div className="workload-identity">
                 <span className="presence-dot presence-muted" />
-                <strong>Unassigned</strong>
+                <span>
+                  <strong>Unassigned</strong>
+                  <small>triage queue</small>
+                </span>
               </div>
-              <span className="rail-count">{unassigned.length}</span>
-            </div>
+              <div className="workload-meter" aria-label={`${unassigned.length} unassigned open tickets`}>
+                <span style={{ width: `${Math.max(6, (unassigned.length / maxAgentLoad) * 100)}%` }} />
+              </div>
+              <strong className="rail-count">{unassigned.length}</strong>
+            </button>
           </div>
         </div>
 
@@ -1497,10 +1750,11 @@ function Dashboard({ state, onOpenTicket }) {
           <div className="section-titlebar"><h2>Status Mix</h2></div>
           <div className="status-list">
             {statusRows.map((row) => (
-              <div className="status-row" key={row.status}>
+              <button type="button" className="status-row status-mix-row row-link" key={row.status} onClick={() => onOpenTicketsStatus(row.status)}>
                 <span><StatusIcon status={row.status} /> {row.label}</span>
+                <div className="status-meter"><span style={{ width: `${Math.max(4, row.share)}%` }} /></div>
                 <strong>{row.count}</strong>
-              </div>
+              </button>
             ))}
           </div>
         </div>
@@ -1509,28 +1763,33 @@ function Dashboard({ state, onOpenTicket }) {
           <div className="section-titlebar"><h2>Project Queues</h2></div>
           <div className="status-list">
             {projectRows.length ? projectRows.map((row) => (
-              <div className="status-row" key={row.project.id}>
+              <button type="button" className="status-row project-queue-row row-link" key={row.project.id} onClick={() => onOpenProject(row.project.id)}>
                 <span>{row.project.name}</span>
+                <div>
+                  {row.review ? <em>{row.review} review</em> : null}
+                  {row.blocked ? <em>{row.blocked} blocked</em> : null}
+                </div>
                 <strong>{row.open}</strong>
-              </div>
+              </button>
             )) : <EmptyPanel message="No open project work." />}
           </div>
         </div>
 
-        <div className="data-panel ops-panel">
-          <div className="section-titlebar"><h2>Activity</h2></div>
-          <div className="event-log">
-            {state.activity.length ? state.activity.slice(0, 8).map((event) => (
-              <div className="event-row" key={event.id}>
-                <span>{event.type}</span>
-                <strong>{event.subject || "system"}</strong>
-                <time>{timeAgo(event.createdAt)}</time>
-              </div>
-            )) : <EmptyPanel message="No activity yet." />}
-          </div>
-        </div>
       </aside>
     </section>
+  );
+}
+
+function DashboardMetricCard({ icon: Icon, label, value, detail, tone, onClick }) {
+  return (
+    <button type="button" className="dashboard-metric-card" data-tone={tone} onClick={onClick}>
+      <span><Icon /></span>
+      <div>
+        <strong>{value}</strong>
+        <p>{label}</p>
+      </div>
+      <small>{detail}</small>
+    </button>
   );
 }
 
@@ -1539,6 +1798,7 @@ function EmptyPanel({ message }) {
 }
 
 function InboxView({ state, onOpenTicket }) {
+  const runs = state.runs || [];
   const blocked = state.tickets
     .filter((ticket) => ticket.status === "blocked")
     .sort((a, b) => dateValue(b.updatedAt) - dateValue(a.updatedAt));
@@ -1553,25 +1813,31 @@ function InboxView({ state, onOpenTicket }) {
     .sort((a, b) => dateValue(b.updatedAt) - dateValue(a.updatedAt));
 
   return (
-    <section className="dashboard-groups">
-      <div className="split-columns">
-        <InboxPanel title="Blocked" tickets={blocked} runs={state.runs || []} empty="No blocked tickets." onOpenTicket={onOpenTicket} />
-        <InboxPanel title="Unassigned To-do" tickets={unassigned} runs={state.runs || []} empty="No unassigned to-do tickets." onOpenTicket={onOpenTicket} />
-      </div>
-      <div className="split-columns">
-        <InboxPanel title="Human Review" tickets={review} runs={state.runs || []} empty="No human review tickets." onOpenTicket={onOpenTicket} />
-        <InboxPanel title="PR Review" tickets={prReview} runs={state.runs || []} empty="No PR review tickets." onOpenTicket={onOpenTicket} />
+    <section className="inbox-workspace">
+      <div className="inbox-triage-list">
+        <InboxQueuePanel title="Human Review" description="Agent handoffs waiting for your decision." count={review.length} tone="review" tickets={review} runs={runs} empty="No human review tickets." onOpenTicket={onOpenTicket} />
+        <InboxQueuePanel title="PR Review" description="Pull requests waiting for review or merge." count={prReview.length} tone="pr" tickets={prReview} runs={runs} empty="No PR review tickets." onOpenTicket={onOpenTicket} />
+        <InboxQueuePanel title="Blocked" description="Tickets that need an unblock decision." count={blocked.length} tone="blocked" tickets={blocked} runs={runs} empty="No blocked tickets." onOpenTicket={onOpenTicket} />
+        <InboxQueuePanel title="Unassigned" description="To-do tickets ready for triage." count={unassigned.length} tone="unassigned" tickets={unassigned} runs={runs} empty="No unassigned to-do tickets." onOpenTicket={onOpenTicket} />
       </div>
     </section>
   );
 }
 
-function InboxPanel({ title, tickets, runs = [], empty, onOpenTicket }) {
+function InboxQueuePanel({ title, description, count, tone, tickets, runs = [], empty, onOpenTicket }) {
   return (
-    <div className="data-panel">
-      <div className="section-titlebar"><h2>{title}</h2></div>
+    <div className="data-panel inbox-panel inbox-queue-panel" data-tone={tone}>
+      <div className="section-titlebar">
+        <div>
+          <h2>{title}</h2>
+          <p>{description}</p>
+        </div>
+        <span className="panel-count">{count}</span>
+      </div>
       <div className="row-stack">
-        {tickets.length ? tickets.map((ticket) => <TicketRow key={ticket.id} ticket={ticket} run={runningRunForTicket(runs, ticket.id)} onOpenTicket={onOpenTicket} />) : <EmptyPanel message={empty} />}
+        {tickets.length ? tickets.map((ticket) => (
+          <DashboardTicketRow key={ticket.id} ticket={ticket} run={runningRunForTicket(runs, ticket.id)} onOpenTicket={onOpenTicket} />
+        )) : <EmptyPanel message={empty} />}
       </div>
     </div>
   );
@@ -1657,10 +1923,6 @@ function groupRank(key, groupBy) {
   return 0;
 }
 
-function TicketRow({ ticket, run = null, onOpenTicket }) {
-  return <IssueRow ticket={ticket} run={run} onOpenTicket={onOpenTicket} compact />;
-}
-
 function DashboardTicketRow({ ticket, run = null, onOpenTicket }) {
   return (
     <button className="dashboard-ticket-row" onClick={() => onOpenTicket(ticket.id)}>
@@ -1677,11 +1939,13 @@ function DashboardTicketRow({ ticket, run = null, onOpenTicket }) {
   );
 }
 
-function TicketDetail({ state, ticket, onClose, onOpenTicket, onOpenProject, onPatch, onDelete, onStopRun, onRefreshStatus, onOpenWorktree, onResumeTerminal, onComment, onCreateSubIssue }) {
+function TicketDetail({ state, ticket, onClose, onOpenTicket, onOpenProject, onPatch, onDelete, onStopRun, onRefreshStatus, onRunSetupScript, onOpenWorktree, onResumeTerminal, onComment, onCreateSubIssue }) {
   const [detailTab, setDetailTab] = useState("conversation");
   const [comment, setComment] = useState("");
   const [terminalMenuOpen, setTerminalMenuOpen] = useState(false);
   const [statusRefreshBusy, setStatusRefreshBusy] = useState(false);
+  const [setupScriptBusy, setSetupScriptBusy] = useState(false);
+  const [setupScriptMessage, setSetupScriptMessage] = useState("");
   const [diff, setDiff] = useState(null);
   const [diffError, setDiffError] = useState("");
   const [diffBusy, setDiffBusy] = useState(false);
@@ -1716,6 +1980,8 @@ function TicketDetail({ state, ticket, onClose, onOpenTicket, onOpenProject, onP
     setReviewComment("");
     setTerminalMenuOpen(false);
     setStatusRefreshBusy(false);
+    setSetupScriptBusy(false);
+    setSetupScriptMessage("");
   }, [ticket.id]);
 
   const refreshStatus = async () => {
@@ -1724,6 +1990,20 @@ function TicketDetail({ state, ticket, onClose, onOpenTicket, onOpenProject, onP
       await onRefreshStatus(ticket.id);
     } finally {
       setStatusRefreshBusy(false);
+    }
+  };
+
+  const runSetupScript = async () => {
+    setSetupScriptBusy(true);
+    setSetupScriptMessage("");
+    try {
+      const result = await onRunSetupScript(ticket.id);
+      const setup = result?.setup;
+      setSetupScriptMessage(setup?.skipped ? "No setup script configured." : `Setup script ran in ${setup?.repoPath || "worktree"}.`);
+    } catch (err) {
+      setSetupScriptMessage(err.message || "Setup script failed.");
+    } finally {
+      setSetupScriptBusy(false);
     }
   };
 
@@ -1765,6 +2045,7 @@ function TicketDetail({ state, ticket, onClose, onOpenTicket, onOpenProject, onP
           <div className="detail-topline">
             <button className="close-action" onClick={onClose}>Back</button>
             <button className="quiet-button icon-action" onClick={() => onOpenWorktree(ticket.id)} title="Open worktree in Finder" aria-label="Open worktree in Finder"><FolderOpen /></button>
+            <button className="quiet-button icon-action" onClick={runSetupScript} disabled={setupScriptBusy} title="Run setup script in worktree" aria-label="Run setup script in worktree"><RefreshCw /></button>
             <div className="terminal-split-action">
               <button className="quiet-button icon-action terminal-main-action" onClick={() => onResumeTerminal(ticket.id, defaultTerminal)} title={`Open ${terminalLabel(defaultTerminal)} and copy resume command`} aria-label={`Open ${terminalLabel(defaultTerminal)} and copy resume command`}><Terminal /></button>
               <button className="quiet-button icon-action terminal-menu-action" onClick={() => setTerminalMenuOpen((open) => !open)} title="Choose terminal" aria-label="Choose terminal"><ChevronDown /></button>
@@ -1797,6 +2078,7 @@ function TicketDetail({ state, ticket, onClose, onOpenTicket, onOpenProject, onP
             ) : null}
           </div>
           <div className="detail-kicker">
+            {setupScriptMessage ? <span className="setup-script-message">{setupScriptMessage}</span> : null}
             <span className="status-refresh-group">
               <span className={`status-chip state-${ticket.status}`}>{ticket.statusLabel}</span>
               <button
@@ -1840,7 +2122,7 @@ function TicketDetail({ state, ticket, onClose, onOpenTicket, onOpenProject, onP
         <div className="detail-layout">
           <div className="detail-primary">
             {detailTab === "conversation" && (
-              <section className="detail-tab-panel">
+              <section className="detail-tab-panel conversation-tab-panel">
                 <ConversationTimeline comments={orderedComments} runs={ticketRuns} />
                 <form className="note-form note-form-primary" onSubmit={async (event) => {
                   event.preventDefault();
@@ -2009,12 +2291,32 @@ function PropertyRow({ label, children }) {
 function ConversationTimeline({ comments, runs }) {
   const timelineItems = buildConversationTimelineItems(comments, runs);
   const groups = groupConversationTimelineItems(timelineItems);
+  const frameRef = useRef(null);
+  const shouldStickRef = useRef(true);
+
+  useEffect(() => {
+    const frame = frameRef.current;
+    if (!frame || !shouldStickRef.current) return;
+    frame.scrollTop = frame.scrollHeight;
+  }, [groups.length, groups.at(-1)?.id]);
+
+  const handleScroll = () => {
+    const frame = frameRef.current;
+    if (!frame) return;
+    const distanceFromBottom = frame.scrollHeight - frame.scrollTop - frame.clientHeight;
+    shouldStickRef.current = distanceFromBottom < 48;
+  };
+
   return (
-    <div className="comment-stack conversation-timeline">
-      {groups.length ? groups.map((group) => {
-        if (group.type === "comment") return <ConversationComment comment={group.comment} key={group.id} />;
-        return <LiveActivityEvent event={group.event} key={group.id} />;
-      }) : <EmptyPanel message="No comments yet." />}
+    <div className="conversation-frame">
+      <div className="conversation-scroll" ref={frameRef} onScroll={handleScroll}>
+        <div className="comment-stack conversation-timeline">
+          {groups.length ? groups.map((group) => {
+            if (group.type === "comment") return <ConversationComment comment={group.comment} key={group.id} />;
+            return <LiveActivityEvent event={group.event} key={group.id} />;
+          }) : <EmptyPanel message="No comments yet." />}
+        </div>
+      </div>
     </div>
   );
 }
@@ -2085,7 +2387,7 @@ function stableRunEventTimelineId(run, event, index, counts) {
 
 function runEventDedupeKey(run, event, stableId) {
   const textKey = hashText(event?.text || "");
-  return `${run?.id || "run"}:${event?.id || stableId}:${event?.kind || "event"}:${event?.createdAt || ""}:${textKey}`;
+  return `${run?.id || "run"}:${event?.kind || "event"}:${event?.createdAt || ""}:${textKey}`;
 }
 
 function hashText(value) {
@@ -2481,6 +2783,16 @@ function compareTickets(a, b, sortBy) {
   if (sortBy === "id") return ticketNumber(a) - ticketNumber(b);
   if (sortBy === "title") return String(a.title || "").localeCompare(String(b.title || ""));
   return dateValue(b.updatedAt) - dateValue(a.updatedAt);
+}
+
+function ticketMatchesPreset(ticket, runs, preset) {
+  if (preset === "in_flight") {
+    return ticket.status === "in_progress" || runs.some((run) => run.status === "running" && run.ticketId === ticket.id);
+  }
+  if (preset === "needs_review") return ["human_review", "pr_review"].includes(ticket.status);
+  if (preset === "unassigned") return ticket.status === "todo" && !ticket.assigneeAgentId;
+  if (preset === "done") return ticket.status === "done";
+  return true;
 }
 
 function projectIdentifier(project) {

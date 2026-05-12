@@ -166,14 +166,55 @@ test("Claude ticket resumes reuse the captured provider session and keep a ticke
     assert.equal(runs[1].conversationName, "thomas-app-1");
     const invocations = fs.readFileSync(argsPath, "utf8").trim().split(/\r?\n/).map((line) => JSON.parse(line));
     assert.equal(invocations.length, 2);
+    assert.equal(invocations[0].includes("--bg"), true);
     assert.equal(invocations[0].includes("--name"), true);
     assert.equal(invocations[0][invocations[0].indexOf("--name") + 1], "thomas-app-1");
     assert.equal(invocations[0].includes("--resume"), false);
     assert.equal(invocations[0].includes("--continue"), false);
+    assert.equal(invocations[1].includes("--bg"), true);
     assert.equal(invocations[1].includes("--resume"), true);
     assert.equal(invocations[1][invocations[1].indexOf("--resume") + 1], "session-app-1");
     assert.equal(invocations[1][invocations[1].indexOf("--name") + 1], "thomas-app-1");
     assert.equal(invocations[1].includes("--continue"), false);
+  });
+});
+
+test("Disabling useClaudeAgents falls back to legacy streaming flags for Claude", async () => {
+  await withServer(async (baseUrl, tmp) => {
+    const repoPath = path.join(tmp, "repo");
+    createGitRepo(repoPath);
+    const argsPath = path.join(tmp, "claude-legacy-args.jsonl");
+    const agentScript = path.join(tmp, "fake-claude-legacy.js");
+    fs.writeFileSync(agentScript, [
+      "const fs = require('node:fs');",
+      `fs.appendFileSync(${JSON.stringify(argsPath)}, JSON.stringify(process.argv.slice(2)) + '\\n');`,
+      "console.log(JSON.stringify({ type: 'system', subtype: 'init', session_id: 'legacy-session-1' }));",
+      "console.log(JSON.stringify({ type: 'result', result: 'SUMMARY: legacy claude done' }));",
+    ].join("\n"));
+
+    await patchAsUi(`${baseUrl}/api/settings`, { useClaudeAgents: false });
+
+    const project = await post(`${baseUrl}/api/projects`, { name: "Legacy", prefix: "LEG", repoPath });
+    const agent = await post(`${baseUrl}/api/agents`, {
+      name: "Claude",
+      type: "claude",
+      command: `${process.execPath} ${agentScript}`,
+    });
+    await post(`${baseUrl}/api/tickets`, {
+      projectId: project.project.id,
+      title: "Legacy run",
+      assigneeAgentId: agent.agent.id,
+    });
+
+    await waitForState(baseUrl, (next) => {
+      return next.runs.find((item) => item.status === "finished" && item.providerSessionId === "legacy-session-1");
+    });
+
+    const invocations = fs.readFileSync(argsPath, "utf8").trim().split(/\r?\n/).map((line) => JSON.parse(line));
+    assert.equal(invocations.length, 1);
+    assert.equal(invocations[0].includes("--bg"), false);
+    assert.equal(invocations[0].includes("--output-format"), true);
+    assert.equal(invocations[0].includes("-p"), true);
   });
 });
 
@@ -734,7 +775,12 @@ test("ticket actions open worktree and prepare resume command", async () => {
   await withServer(async (baseUrl, tmp) => {
     const repoPath = path.join(tmp, "repo with spaces");
     createGitRepo(repoPath);
-    const project = await post(`${baseUrl}/api/projects`, { name: "App", prefix: "APP", repoPath });
+    const project = await post(`${baseUrl}/api/projects`, {
+      name: "App",
+      prefix: "APP",
+      repoPath,
+      setupScript: "printf x >> setup-runs.txt\nprintf \"%s\" \"$PWD\" > setup-pwd.txt",
+    });
     const agent = await post(`${baseUrl}/api/agents`, {
       name: "Claude",
       type: "claude",
@@ -752,6 +798,14 @@ test("ticket actions open worktree and prepare resume command", async () => {
     assert.equal(opened.opened.repoPath, expectedWorktree);
     assert.equal(opened.opened.workspaceSource, "worktree");
     assert.equal(actions.openedPath, expectedWorktree);
+    assert.equal(fs.readFileSync(path.join(expectedWorktree, "setup-runs.txt"), "utf8"), "x");
+
+    const setup = await post(`${baseUrl}/api/tickets/${ticket.ticket.id}/run-setup-script`, {});
+    assert.equal(setup.setup.repoPath, expectedWorktree);
+    assert.equal(setup.setup.workspaceSource, "worktree");
+    assert.equal(setup.setup.skipped, false);
+    assert.equal(fs.readFileSync(path.join(expectedWorktree, "setup-runs.txt"), "utf8"), "xx");
+    assert.equal(fs.readFileSync(path.join(expectedWorktree, "setup-pwd.txt"), "utf8"), fs.realpathSync(expectedWorktree));
 
     const terminal = await post(`${baseUrl}/api/tickets/${ticket.ticket.id}/resume-terminal`, {});
     assert.equal(terminal.opened.repoPath, expectedWorktree);

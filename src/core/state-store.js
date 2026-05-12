@@ -73,6 +73,7 @@ function defaultState() {
       notifyHumanReview: false,
       preferredTerminal: "warp",
       branchPrefix: "thomas",
+      useClaudeAgents: true,
     },
   };
 }
@@ -643,6 +644,7 @@ function normalizeSettings(settings) {
     notifyHumanReview: settings.notifyHumanReview === true,
     preferredTerminal,
     branchPrefix: normalizeBranchPrefix(settings.branchPrefix),
+    useClaudeAgents: settings.useClaudeAgents !== false,
   };
 }
 

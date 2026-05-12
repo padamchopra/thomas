@@ -7,7 +7,7 @@ const { spawnSync } = require("node:child_process");
 const { URL } = require("node:url");
 const { createThomasService } = require("../core/thomas-service");
 const { createAgentRunner } = require("./agent-runner");
-const { defaultRunLogRoot, defaultWorktreeRoot, ensureTicketWorkspace, isGitRoot, resolveTicketWorkspace } = require("./workspace");
+const { defaultRunLogRoot, defaultWorktreeRoot, ensureTicketWorkspace, isGitRoot, resolveTicketWorkspace, runTicketSetupScript } = require("./workspace");
 const PACKAGE = require("../../package.json");
 
 function createApp(options = {}) {
@@ -136,6 +136,11 @@ async function handleApi(service, runner, req, res, requestUrl, options = {}) {
 
   if (method === "POST" && parts.length === 3 && parts[0] === "tickets" && parts[2] === "open-worktree") {
     sendJson(res, 200, { ok: true, opened: openTicketWorktree(service, runner, parts[1], options) });
+    return;
+  }
+
+  if (method === "POST" && parts.length === 3 && parts[0] === "tickets" && parts[2] === "run-setup-script") {
+    sendJson(res, 200, { ok: true, setup: runTicketSetup(service, parts[1], options), state: stateWithRuns(service, runner, options) });
     return;
   }
 
@@ -761,6 +766,20 @@ function openTicketWorktree(service, runner, ticketId, options = {}) {
   const { repoPath, workspaceSource } = ticketRepositoryForWorkspaceAction(service, runner, ticketId, options);
   openPath(repoPath, options);
   return { repoPath, workspaceSource };
+}
+
+function runTicketSetup(service, ticketId, options = {}) {
+  const state = service.getState();
+  const ticket = state.tickets.find((item) => item.id === ticketId);
+  if (!ticket) {
+    const error = new Error(`Unknown ticket: ${ticketId}`);
+    error.status = 404;
+    throw error;
+  }
+  return runTicketSetupScript(ticket, {
+    ...options,
+    branchPrefix: options.getBranchPrefix?.(),
+  });
 }
 
 function openResumeTerminal(service, runner, ticketId, input = {}, options = {}) {

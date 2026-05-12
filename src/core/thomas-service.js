@@ -63,6 +63,7 @@ function createThomasService(options = {}) {
           ...(input.notifyHumanReview !== undefined ? { notifyHumanReview: input.notifyHumanReview === true } : {}),
           ...(input.preferredTerminal !== undefined ? { preferredTerminal: normalizeTerminal(input.preferredTerminal) } : {}),
           ...(input.branchPrefix !== undefined ? { branchPrefix: normalizeBranchPrefix(input.branchPrefix) } : {}),
+          ...(input.useClaudeAgents !== undefined ? { useClaudeAgents: input.useClaudeAgents === true } : {}),
         };
         return { value: state.settings, activityDetails: { changed: changedKeys(before, state.settings) } };
       });
