@@ -191,6 +191,70 @@ test("ticket plans discover plan files, store overlay comments, and bundle comme
   });
 });
 
+test("comments on running tickets are queued and automatically resumed after the active run", async () => {
+  await withServer(async (baseUrl, tmp) => {
+    const repoPath = path.join(tmp, "repo");
+    createGitRepo(repoPath);
+    const promptsPath = path.join(tmp, "prompts.jsonl");
+    const counterPath = path.join(tmp, "count.txt");
+    const agentScript = path.join(tmp, "queue-agent.js");
+    fs.writeFileSync(agentScript, [
+      "const fs = require('node:fs');",
+      `const counterPath = ${JSON.stringify(counterPath)};`,
+      `const promptsPath = ${JSON.stringify(promptsPath)};`,
+      "const count = fs.existsSync(counterPath) ? Number(fs.readFileSync(counterPath, 'utf8')) + 1 : 1;",
+      "fs.writeFileSync(counterPath, String(count));",
+      "fs.appendFileSync(promptsPath, JSON.stringify({ count, prompt: process.argv.at(-1), args: process.argv.slice(2) }) + '\\n');",
+      "console.log(JSON.stringify({ type: 'system', subtype: 'init', session_id: 'queue-session-' + count }));",
+      "if (count === 1) setTimeout(() => { console.log(JSON.stringify({ type: 'result', result: 'first done' })); }, 450);",
+      "else console.log(JSON.stringify({ type: 'result', result: 'queued done' }));",
+    ].join("\n"));
+
+    const project = await post(`${baseUrl}/api/projects`, { name: "App", prefix: "APP", repoPath });
+    const agent = await post(`${baseUrl}/api/agents`, { name: "Fake", type: "claude", command: `${process.execPath} ${agentScript}` });
+    const ticket = await post(`${baseUrl}/api/tickets`, { projectId: project.project.id, title: "Queue replies", assigneeAgentId: agent.agent.id });
+    assert.equal(ticket.ticket.status, "in_progress");
+
+    const first = await postAsUi(`${baseUrl}/api/tickets/${ticket.ticket.id}/comments`, { body: "first queued reply" });
+    const second = await postAsUi(`${baseUrl}/api/tickets/${ticket.ticket.id}/comments`, { body: "second queued reply" });
+    assert.equal(first.comment, null);
+    assert.equal(first.queuedFollowup.body, "first queued reply");
+    assert.equal(second.queuedFollowup.body, "second queued reply");
+    assert.equal(second.state.tickets.find((item) => item.id === ticket.ticket.id).queuedFollowups.length, 2);
+
+    const state = await waitForState(baseUrl, (next) => {
+      const runs = next.runs.filter((item) => item.ticketId === ticket.ticket.id && item.status === "finished");
+      const updated = next.tickets.find((item) => item.id === ticket.ticket.id);
+      return runs.length >= 2 && updated?.queuedFollowups?.length === 0;
+    });
+    const updated = state.tickets.find((item) => item.id === ticket.ticket.id);
+    assert.deepEqual(updated.queuedFollowups, []);
+    assert.equal(updated.comments.map((comment) => comment.body).join("|"), "first queued reply|second queued reply");
+    const prompts = fs.readFileSync(promptsPath, "utf8").trim().split(/\r?\n/).map((line) => JSON.parse(line));
+    assert.equal(prompts.length, 2);
+    assert.match(prompts[1].prompt, /Queued human follow-ups/);
+    assert.match(prompts[1].prompt, /1\. first queued reply/);
+    assert.match(prompts[1].prompt, /2\. second queued reply/);
+  });
+});
+
+test("queued ticket follow-ups can be removed before they are sent", async () => {
+  await withServer(async (baseUrl, tmp) => {
+    const repoPath = path.join(tmp, "repo");
+    createGitRepo(repoPath);
+    const agentScript = path.join(tmp, "slow-agent.js");
+    fs.writeFileSync(agentScript, "setTimeout(() => console.log(JSON.stringify({ type: 'result', result: 'done' })), 500);");
+    const project = await post(`${baseUrl}/api/projects`, { name: "App", prefix: "APP", repoPath });
+    const agent = await post(`${baseUrl}/api/agents`, { name: "Fake", type: "custom", command: `${process.execPath} ${agentScript}` });
+    const ticket = await post(`${baseUrl}/api/tickets`, { projectId: project.project.id, title: "Remove queued", assigneeAgentId: agent.agent.id });
+    const queued = await postAsUi(`${baseUrl}/api/tickets/${ticket.ticket.id}/comments`, { body: "remove me" });
+    const removed = await deleteAsUi(`${baseUrl}/api/tickets/${ticket.ticket.id}/queued-followups/${queued.queuedFollowup.id}`);
+    assert.equal(removed.ok, true);
+    assert.equal(removed.removed.body, "remove me");
+    assert.equal(removed.state.tickets.find((item) => item.id === ticket.ticket.id).queuedFollowups.length, 0);
+  });
+});
+
 test("Claude ticket resumes reuse the captured provider session and keep a ticket conversation name", async () => {
   await withServer(async (baseUrl, tmp) => {
     const repoPath = path.join(tmp, "repo");
@@ -233,16 +297,114 @@ test("Claude ticket resumes reuse the captured provider session and keep a ticke
     assert.equal(runs[1].conversationName, "thomas-app-1");
     const invocations = fs.readFileSync(argsPath, "utf8").trim().split(/\r?\n/).map((line) => JSON.parse(line));
     assert.equal(invocations.length, 2);
-    assert.equal(invocations[0].includes("--bg"), true);
+    assert.equal(invocations[0].includes("--bg"), false);
+    assert.equal(invocations[0].includes("--output-format"), true);
+    assert.equal(invocations[0].includes("-p"), true);
     assert.equal(invocations[0].includes("--name"), true);
     assert.equal(invocations[0][invocations[0].indexOf("--name") + 1], "thomas-app-1");
     assert.equal(invocations[0].includes("--resume"), false);
     assert.equal(invocations[0].includes("--continue"), false);
-    assert.equal(invocations[1].includes("--bg"), true);
+    assert.equal(invocations[1].includes("--bg"), false);
+    assert.equal(invocations[1].includes("--output-format"), true);
+    assert.equal(invocations[1].includes("-p"), true);
     assert.equal(invocations[1].includes("--resume"), true);
     assert.equal(invocations[1][invocations[1].indexOf("--resume") + 1], "session-app-1");
     assert.equal(invocations[1][invocations[1].indexOf("--name") + 1], "thomas-app-1");
     assert.equal(invocations[1].includes("--continue"), false);
+  });
+});
+
+test("Claude work background runs hydrate transcripts from profile-specific config roots", async () => {
+  const previousHome = process.env.HOME;
+  try {
+    await withServer(async (baseUrl, tmp) => {
+      const fakeHome = path.join(tmp, "home");
+      fs.mkdirSync(fakeHome, { recursive: true });
+      process.env.HOME = fakeHome;
+
+      const repoPath = path.join(tmp, "repo");
+      createGitRepo(repoPath);
+      const binDir = path.join(tmp, "bin");
+      fs.mkdirSync(binDir, { recursive: true });
+      const agentScript = path.join(binDir, "claude-work");
+      const profileRoot = path.join(fakeHome, ".claude-work");
+      fs.writeFileSync(agentScript, [
+        "#!/usr/bin/env node",
+        `// CLAUDE_CONFIG_DIR=${profileRoot}`,
+        "const fs = require('node:fs');",
+        "const path = require('node:path');",
+        "const cwd = process.cwd();",
+        `const config = ${JSON.stringify(profileRoot)};`,
+        "const short = 'abc1234';",
+        "const sessionId = 'session-work-1';",
+        "const encoded = cwd.replace(/[\\/.]/g, '-');",
+        "fs.mkdirSync(path.join(config, 'jobs', short), { recursive: true });",
+        "fs.mkdirSync(path.join(config, 'projects', encoded), { recursive: true });",
+        "fs.writeFileSync(path.join(config, 'jobs', short, 'state.json'), JSON.stringify({ state: 'working', sessionId }));",
+        "fs.writeFileSync(path.join(config, 'projects', encoded, `${sessionId}.jsonl`), JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'Profile transcript update' }] }, sessionId }) + '\\n');",
+        "console.log('backgrounded · ' + short);",
+      ].join("\n"));
+      fs.chmodSync(agentScript, 0o755);
+
+      const project = await post(`${baseUrl}/api/projects`, { name: "App", prefix: "APP", repoPath });
+      const agent = await post(`${baseUrl}/api/agents`, {
+        name: "Claude Work",
+        type: "claude",
+        command: agentScript,
+      });
+      const ticket = await post(`${baseUrl}/api/tickets`, {
+        projectId: project.project.id,
+        title: "Use work profile",
+        assigneeAgentId: agent.agent.id,
+      });
+      assert.equal(ticket.run.status, "running");
+
+      const state = await waitForState(baseUrl, (next) => {
+        const run = next.runs.find((item) => item.ticketId === ticket.ticket.id);
+        return run?.providerSessionId === "session-work-1" && run.events.some((event) => event.text === "Profile transcript update");
+      });
+      const run = state.runs.find((item) => item.ticketId === ticket.ticket.id);
+      assert.equal(run.events.some((event) => event.kind === "assistant" && event.text === "Profile transcript update"), true);
+    }, (tmp) => ({ workspaceRoot: path.join(tmp, ".worktrees"), allowClaudeManagedWorktrees: true }));
+  } finally {
+    process.env.HOME = previousHome;
+  }
+});
+
+test("Claude resume falls back to continue when no provider session id was captured", async () => {
+  await withServer(async (baseUrl, tmp) => {
+    const repoPath = path.join(tmp, "repo");
+    createGitRepo(repoPath);
+    const argsPath = path.join(tmp, "claude-no-session-args.jsonl");
+    const agentScript = path.join(tmp, "fake-claude-no-session.js");
+    fs.writeFileSync(agentScript, [
+      "const fs = require('node:fs');",
+      `fs.appendFileSync(${JSON.stringify(argsPath)}, JSON.stringify(process.argv.slice(2)) + '\\n');`,
+      "console.log(JSON.stringify({ type: 'result', result: 'SUMMARY: claude run complete' }));",
+    ].join("\n"));
+
+    const project = await post(`${baseUrl}/api/projects`, { name: "App", prefix: "APP", repoPath });
+    const agent = await post(`${baseUrl}/api/agents`, {
+      name: "Claude",
+      type: "claude",
+      command: `${process.execPath} ${agentScript}`,
+    });
+    const ticket = await post(`${baseUrl}/api/tickets`, {
+      projectId: project.project.id,
+      title: "Resume without session",
+      assigneeAgentId: agent.agent.id,
+    });
+
+    await waitForState(baseUrl, (next) => next.runs.find((item) => item.ticketId === ticket.ticket.id && item.status === "finished"));
+    await postAsUi(`${baseUrl}/api/tickets/${ticket.ticket.id}/comments`, { body: "Please continue" });
+    await waitForState(baseUrl, (next) => next.runs.filter((item) => item.ticketId === ticket.ticket.id && item.status === "finished").length === 2);
+
+    const invocations = fs.readFileSync(argsPath, "utf8").trim().split(/\r?\n/).map((line) => JSON.parse(line));
+    assert.equal(invocations.length, 2);
+    assert.equal(invocations[1].includes("--resume"), false);
+    assert.equal(invocations[1].includes("--continue"), true);
+    assert.equal(invocations[1].includes("--name"), true);
+    assert.equal(invocations[1][invocations[1].indexOf("--name") + 1], "thomas-app-1");
   });
 });
 
@@ -321,6 +483,46 @@ test("API updates project setup scripts and uses settings branch prefix for work
     systemActions: {
       openPath: (targetPath) => {
         actions.openedPath = targetPath;
+      },
+    },
+  });
+});
+
+test("tickets assigned to You can be manually moved and still open local tools", async () => {
+  const actions = {};
+  await withServer(async (baseUrl, tmp) => {
+    const repoPath = path.join(tmp, "repo");
+    createGitRepo(repoPath);
+    const project = await post(`${baseUrl}/api/projects`, {
+      name: "App",
+      prefix: "APP",
+      repoPath,
+    });
+    const ticket = await post(`${baseUrl}/api/tickets`, {
+      projectId: project.project.id,
+      title: "Manual work",
+      assigneeAgentId: "you",
+    });
+    assert.equal(ticket.ticket.assignee.name, "You");
+    assert.equal(ticket.run, null);
+
+    const moved = await patchAsUi(`${baseUrl}/api/tickets/${ticket.ticket.id}`, { status: "human_review" });
+    assert.equal(moved.ticket.status, "human_review");
+
+    const opened = await post(`${baseUrl}/api/tickets/${ticket.ticket.id}/open-worktree`, {});
+    assert.equal(actions.openedPath, opened.opened.repoPath);
+
+    const terminal = await post(`${baseUrl}/api/tickets/${ticket.ticket.id}/resume-terminal`, { terminal: "terminal" });
+    assert.equal(actions.openedTerminal.path, terminal.opened.repoPath);
+    assert.equal(actions.openedTerminal.terminal, "terminal");
+    assert.equal(terminal.opened.command, "");
+  }, {
+    systemActions: {
+      openPath: (targetPath) => {
+        actions.openedPath = targetPath;
+      },
+      openTerminal: (targetPath, terminal) => {
+        actions.openedTerminal = { path: targetPath, terminal };
       },
     },
   });

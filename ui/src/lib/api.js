@@ -146,6 +146,12 @@ export async function addComment(ticketId, payload) {
   });
 }
 
+export async function removeQueuedFollowup(ticketId, followupId) {
+  return request(`/api/tickets/${encodeURIComponent(ticketId)}/queued-followups/${encodeURIComponent(followupId)}`, {
+    method: "DELETE",
+  });
+}
+
 async function request(path, options = {}) {
   const response = await fetch(path, {
     headers: { "content-type": "application/json", "x-thomas-actor": "ui" },

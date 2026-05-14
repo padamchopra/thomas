@@ -3,6 +3,15 @@
 const { PRIORITIES, STATUS_LABELS, TICKET_STATUSES } = require("./schema");
 const { createStateStore } = require("./state-store");
 
+const SELF_ASSIGNEE_ID = "you";
+const SELF_ASSIGNEE = Object.freeze({
+  id: SELF_ASSIGNEE_ID,
+  name: "You",
+  type: "human",
+  status: "available",
+  self: true,
+});
+
 function createThomasService(options = {}) {
   const store = options.store || createStateStore(options);
 
@@ -170,7 +179,8 @@ function createThomasService(options = {}) {
         if (input.description !== undefined) ticket.description = String(input.description || "");
         const statusChangedToDone = input.status !== undefined && normalizeStatus(input.status) === "done";
         if (input.status !== undefined) {
-          if (actor === "ui") throw httpError(400, "Ticket status is controlled by the agent workflow.");
+          const assigneeAgentId = input.assigneeAgentId !== undefined ? input.assigneeAgentId || null : ticket.assigneeAgentId;
+          if (actor === "ui" && !isSelfAssigneeId(assigneeAgentId)) throw httpError(400, "Ticket status is controlled by the agent workflow.");
           ticket.status = normalizeStatus(input.status);
         }
         if (input.priority !== undefined) ticket.priority = normalizePriority(input.priority);
@@ -213,6 +223,7 @@ function createThomasService(options = {}) {
         const ticket = requireTicket(state, ticketId);
         state.tickets = state.tickets.filter((item) => item.id !== ticket.id);
         state.comments = state.comments.filter((comment) => comment.ticketId !== ticket.id);
+        state.queuedFollowups = state.queuedFollowups.filter((followup) => followup.ticketId !== ticket.id);
         state.planComments = state.planComments.filter((comment) => comment.ticketId !== ticket.id);
         state.activity = state.activity.filter((event) => event.subject !== ticket.id && event.details?.ticketId !== ticket.id);
         for (const other of state.tickets) {
@@ -242,6 +253,59 @@ function createThomasService(options = {}) {
         state.comments.push(comment);
         ticket.updatedAt = now;
         return { value: comment, activityDetails: { ticketId: ticket.id, commentId: comment.id } };
+      });
+    },
+
+    addQueuedFollowup(ticketId, input, actor = "api") {
+      return mutate(actor, "queued_followup.created", ticketId, (state) => {
+        const ticket = requireTicket(state, ticketId);
+        const body = requireString(input.body, "body");
+        const now = new Date().toISOString();
+        const followup = {
+          id: nextId(state, "queuedFollowup", "queued-followup"),
+          ticketId: ticket.id,
+          author: normalizeCommentAuthor(input.author || actor),
+          body,
+          createdAt: now,
+          updatedAt: now,
+        };
+        state.queuedFollowups.push(followup);
+        ticket.updatedAt = now;
+        return { value: followup, activityDetails: { ticketId: ticket.id, queuedFollowupId: followup.id } };
+      });
+    },
+
+    removeQueuedFollowup(ticketId, followupId, actor = "api") {
+      return mutate(actor, "queued_followup.removed", ticketId, (state) => {
+        const ticket = requireTicket(state, ticketId);
+        const followup = state.queuedFollowups.find((item) => item.ticketId === ticket.id && item.id === followupId);
+        if (!followup) throw httpError(404, `Unknown queued follow-up: ${followupId}`);
+        state.queuedFollowups = state.queuedFollowups.filter((item) => item.id !== followup.id);
+        ticket.updatedAt = new Date().toISOString();
+        return { value: followup, activityDetails: { ticketId: ticket.id, queuedFollowupId: followup.id } };
+      });
+    },
+
+    drainQueuedFollowups(ticketId, actor = "agent") {
+      return mutate(actor, "queued_followup.drained", ticketId, (state) => {
+        const ticket = requireTicket(state, ticketId);
+        const followups = state.queuedFollowups.filter((item) => item.ticketId === ticket.id);
+        if (!followups.length) return { value: [], skipActivity: true };
+        const now = new Date().toISOString();
+        for (const followup of followups) {
+          state.comments.push({
+            id: nextId(state, "comment", "comment"),
+            ticketId: ticket.id,
+            author: followup.author || "you",
+            body: followup.body,
+            metadata: { queuedFollowupId: followup.id },
+            createdAt: followup.createdAt || now,
+            updatedAt: now,
+          });
+        }
+        state.queuedFollowups = state.queuedFollowups.filter((item) => item.ticketId !== ticket.id);
+        ticket.updatedAt = now;
+        return { value: followups, activityDetails: { ticketId: ticket.id, queuedFollowupIds: followups.map((item) => item.id) } };
       });
     },
 
@@ -305,7 +369,9 @@ function isAgentRunComment(comment) {
 function presentState(state, statePath) {
   const projectsById = new Map(state.projects.map((project) => [project.id, project]));
   const agentsById = new Map(state.agents.map((agent) => [agent.id, agent]));
+  agentsById.set(SELF_ASSIGNEE_ID, SELF_ASSIGNEE);
   const commentsByTicket = groupBy(state.comments, "ticketId");
+  const queuedFollowupsByTicket = groupBy(state.queuedFollowups || [], "ticketId");
   const planCommentsByTicket = groupBy(state.planComments || [], "ticketId");
   const tickets = state.tickets.map((ticket) => {
     const children = state.tickets.filter((candidate) => candidate.parentTicketId === ticket.id);
@@ -317,6 +383,7 @@ function presentState(state, statePath) {
       project: projectsById.get(ticket.projectId) || null,
       assignee: ticket.assigneeAgentId ? agentsById.get(ticket.assigneeAgentId) || null : null,
       comments: commentsByTicket.get(ticket.id) || [],
+      queuedFollowups: queuedFollowupsByTicket.get(ticket.id) || [],
       planComments: planCommentsByTicket.get(ticket.id) || [],
       children: children.map((item) => summarizeTicket(item)),
       blockedBy: ticket.blockedByTicketIds.map((id) => summarizeTicket(state.tickets.find((item) => item.id === id))).filter(Boolean),
@@ -391,9 +458,14 @@ function findProject(state, value) {
 }
 
 function requireAgent(state, id) {
+  if (isSelfAssigneeId(id)) return SELF_ASSIGNEE;
   const agent = state.agents.find((item) => item.id === id);
   if (!agent) throw httpError(404, `Unknown agent: ${id}`);
   return agent;
+}
+
+function isSelfAssigneeId(id) {
+  return String(id || "").trim().toLowerCase() === SELF_ASSIGNEE_ID;
 }
 
 function requireTicket(state, id) {
@@ -528,6 +600,7 @@ function trimDoneTicketState(state, ticketId) {
   ticket.labels = [];
   ticket.workspaceId = null;
   state.comments = state.comments.filter((comment) => comment.ticketId !== ticketId);
+  state.queuedFollowups = state.queuedFollowups.filter((followup) => followup.ticketId !== ticketId);
   state.planComments = state.planComments.filter((comment) => comment.ticketId !== ticketId);
   state.activity = state.activity.filter((event) => event.subject !== ticketId && event.details?.ticketId !== ticketId);
   for (const other of state.tickets) {

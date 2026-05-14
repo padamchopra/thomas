@@ -10,6 +10,7 @@ const { createAgentRunner } = require("./agent-runner");
 const { createThomasPlanFile, discoverPlanFiles, readPlanFile } = require("./plans");
 const { defaultRunLogRoot, defaultWorktreeRoot, ensureTicketWorkspace, isGitRoot, resolveTicketWorkspace, runTicketSetupScript } = require("./workspace");
 const PACKAGE = require("../../package.json");
+const SELF_ASSIGNEE_ID = "you";
 
 function createApp(options = {}) {
   const service = options.service || createThomasService(options);
@@ -19,6 +20,7 @@ function createApp(options = {}) {
   const runner = options.runner || createAgentRunner(service, {
     workspaceRoot,
     runLogRoot,
+    allowClaudeManagedWorktrees: options.allowClaudeManagedWorktrees,
     findPullRequestUrl: options.findPullRequestUrl,
     getBranchPrefix: () => service.getState().settings?.branchPrefix,
   });
@@ -97,12 +99,24 @@ async function handleApi(service, runner, req, res, requestUrl, options = {}) {
   if (method === "POST" && parts.length === 3 && parts[0] === "tickets" && parts[2] === "comments") {
     const body = await readJson(req);
     const beforeTicket = service.getState().tickets.find((item) => item.id === parts[1]);
-    const comment = service.addComment(parts[1], body, actor);
+    let comment = null;
+    let queuedFollowup = null;
     let run = null;
-    if (shouldDispatchAfterComment(beforeTicket, body, actor, runner)) {
-      run = runner.dispatch(parts[1], { message: body.body || "", resume: true });
+    if (shouldQueueComment(beforeTicket, body, actor, runner)) {
+      queuedFollowup = service.addQueuedFollowup(parts[1], body, actor);
+    } else {
+      comment = service.addComment(parts[1], body, actor);
+      if (shouldDispatchAfterComment(beforeTicket, body, actor, runner)) {
+        run = runner.dispatch(parts[1], { message: body.body || "", resume: true });
+      }
     }
-    sendJson(res, 201, { ok: true, comment, run: sanitizeRun(run), state: stateWithRuns(service, runner, options) });
+    sendJson(res, 201, { ok: true, comment, queuedFollowup, run: sanitizeRun(run), state: stateWithRuns(service, runner, options) });
+    return;
+  }
+
+  if (method === "DELETE" && parts.length === 4 && parts[0] === "tickets" && parts[2] === "queued-followups") {
+    const removed = service.removeQueuedFollowup(parts[1], parts[3], actor);
+    sendJson(res, 200, { ok: true, removed, state: stateWithRuns(service, runner, options) });
     return;
   }
 
@@ -532,12 +546,23 @@ function pruneEmptyParents(start, stop) {
   }
 }
 
+function shouldQueueComment(ticket, body, actor, runner) {
+  if (!ticket || ticket.status !== "in_progress") return false;
+  if (!isHumanComment(body, actor)) return false;
+  return runner.getRuns().some((run) => run.ticketId === ticket.id && run.status === "running");
+}
+
 function shouldDispatchAfterComment(ticket, body, actor, runner) {
   if (!ticket || ["in_progress", "done"].includes(ticket.status)) return false;
   if (!ticket.assigneeAgentId) return false;
-  const author = String(body?.author || actor || "").trim().toLowerCase();
-  if (!["ui", "you", "human"].includes(author)) return false;
+  if (isSelfAssigneeId(ticket.assigneeAgentId)) return false;
+  if (!isHumanComment(body, actor)) return false;
   return !runner.getRuns().some((run) => run.ticketId === ticket.id && run.status === "running");
+}
+
+function isHumanComment(body, actor) {
+  const author = String(body?.author || actor || "").trim().toLowerCase();
+  return ["ui", "you", "human"].includes(author);
 }
 
 function autoDispatchAfterAssignment(beforeTicket, ticket, input, runner) {
@@ -548,6 +573,7 @@ function autoDispatchAfterAssignment(beforeTicket, ticket, input, runner) {
 
 function autoDispatchTodoTicket(ticket, runner) {
   if (!ticket || ticket.status !== "todo" || !ticket.assigneeAgentId) return null;
+  if (isSelfAssigneeId(ticket.assigneeAgentId)) return null;
   if (runner.getRuns().some((run) => run.ticketId === ticket.id && run.status === "running")) return null;
   return runner.dispatch(ticket.id);
 }
@@ -837,6 +863,11 @@ function runTicketSetup(service, ticketId, options = {}) {
 
 function openResumeTerminal(service, runner, ticketId, input = {}, options = {}) {
   const { ticket, repoPath, workspaceSource } = ticketRepositoryForWorkspaceAction(service, runner, ticketId, options);
+  const terminal = normalizeTerminal(input.terminal || service.getState().settings?.preferredTerminal || "warp");
+  if (isSelfAssigneeId(ticket.assigneeAgentId)) {
+    openTerminal(repoPath, terminal, options);
+    return { repoPath, workspaceSource, command: "", terminal };
+  }
   const agent = ticket.assigneeAgentId ? service.getState().agents.find((item) => item.id === ticket.assigneeAgentId) : null;
   if (!agent) {
     const error = new Error("Assign an agent before resuming a session.");
@@ -844,10 +875,13 @@ function openResumeTerminal(service, runner, ticketId, input = {}, options = {})
     throw error;
   }
   const command = buildResumeCommand(ticket, agent, runner.getRuns());
-  const terminal = normalizeTerminal(input.terminal || service.getState().settings?.preferredTerminal || "warp");
   copyToClipboard(command, options);
   openTerminal(repoPath, terminal, options);
   return { repoPath, workspaceSource, command, terminal };
+}
+
+function isSelfAssigneeId(id) {
+  return String(id || "").trim().toLowerCase() === SELF_ASSIGNEE_ID;
 }
 
 function ticketRepositoryForWorkspaceAction(service, runner, ticketId, options = {}) {

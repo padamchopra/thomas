@@ -41,6 +41,7 @@ function defaultState() {
       activity: 1,
       agent: 1,
       comment: 1,
+      queuedFollowup: 1,
       planComment: 1,
       project: 1,
       ticket: 1,
@@ -68,6 +69,7 @@ function defaultState() {
     ],
     tickets: [],
     comments: [],
+    queuedFollowups: [],
     planComments: [],
     activity: [],
     settings: {
@@ -96,6 +98,7 @@ function ensureStateDb(dbPath) {
   createSchema(dbPath);
   ensureColumn(dbPath, "projects", "setup_script", "TEXT NOT NULL DEFAULT ''");
   ensureColumn(dbPath, "comments", "metadata", "TEXT NOT NULL DEFAULT '{}'");
+  createQueuedFollowupsSchema(dbPath);
 }
 
 function createSchema(dbPath) {
@@ -163,6 +166,14 @@ CREATE TABLE IF NOT EXISTS comments (
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS queued_followups (
+  id TEXT PRIMARY KEY,
+  ticket_id TEXT NOT NULL REFERENCES tickets(id) ON DELETE CASCADE,
+  author TEXT NOT NULL,
+  body TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS plan_comments (
   id TEXT PRIMARY KEY,
   ticket_id TEXT NOT NULL REFERENCES tickets(id) ON DELETE CASCADE,
@@ -185,8 +196,23 @@ CREATE TABLE IF NOT EXISTS activity (
 CREATE INDEX IF NOT EXISTS tickets_project_index ON tickets(project_id);
 CREATE INDEX IF NOT EXISTS tickets_assignee_index ON tickets(assignee_agent_id);
 CREATE INDEX IF NOT EXISTS comments_ticket_index ON comments(ticket_id);
+CREATE INDEX IF NOT EXISTS queued_followups_ticket_index ON queued_followups(ticket_id);
 CREATE INDEX IF NOT EXISTS plan_comments_ticket_index ON plan_comments(ticket_id);
 CREATE INDEX IF NOT EXISTS activity_created_at_index ON activity(created_at);
+`);
+}
+
+function createQueuedFollowupsSchema(dbPath) {
+  sqliteExec(dbPath, `
+CREATE TABLE IF NOT EXISTS queued_followups (
+  id TEXT PRIMARY KEY,
+  ticket_id TEXT NOT NULL REFERENCES tickets(id) ON DELETE CASCADE,
+  author TEXT NOT NULL,
+  body TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS queued_followups_ticket_index ON queued_followups(ticket_id);
 `);
 }
 
@@ -286,6 +312,18 @@ ORDER BY created_at;
     metadata: parseJson(comment.metadata, {}),
   }));
 
+  state.queuedFollowups = sqliteJson(dbPath, `
+SELECT
+  id,
+  ticket_id AS ticketId,
+  author,
+  body,
+  created_at AS createdAt,
+  updated_at AS updatedAt
+FROM queued_followups
+ORDER BY created_at;
+`);
+
   state.planComments = sqliteJson(dbPath, `
 SELECT
   id,
@@ -332,6 +370,7 @@ function writeState(dbPath, state, options = {}) {
     "BEGIN IMMEDIATE;",
     "DELETE FROM activity;",
     "DELETE FROM plan_comments;",
+    "DELETE FROM queued_followups;",
     "DELETE FROM comments;",
     "DELETE FROM ticket_labels;",
     "DELETE FROM ticket_blockers;",
@@ -418,6 +457,19 @@ function writeState(dbPath, state, options = {}) {
       ${sqlValue(JSON.stringify(comment.metadata || {}))},
       ${sqlValue(comment.createdAt)},
       ${sqlValue(comment.updatedAt)}
+    );`);
+  }
+
+  for (const followup of state.queuedFollowups || []) {
+    statements.push(`INSERT INTO queued_followups (
+      id, ticket_id, author, body, created_at, updated_at
+    ) VALUES (
+      ${sqlValue(followup.id)},
+      ${sqlValue(followup.ticketId)},
+      ${sqlValue(followup.author || "you")},
+      ${sqlValue(followup.body || "")},
+      ${sqlValue(followup.createdAt)},
+      ${sqlValue(followup.updatedAt)}
     );`);
   }
 
@@ -653,6 +705,7 @@ function normalizeState(state) {
     agents: Array.isArray(state?.agents) && state.agents.length > 0 ? state.agents : base.agents,
     tickets: Array.isArray(state?.tickets) ? state.tickets : [],
     comments: Array.isArray(state?.comments) ? state.comments : [],
+    queuedFollowups: Array.isArray(state?.queuedFollowups) ? state.queuedFollowups : [],
     planComments: Array.isArray(state?.planComments) ? state.planComments : [],
     activity: Array.isArray(state?.activity) ? state.activity : [],
   };
@@ -684,6 +737,11 @@ function normalizeState(state) {
 
   for (const comment of next.comments) {
     comment.metadata = comment.metadata && typeof comment.metadata === "object" ? comment.metadata : {};
+  }
+
+  for (const followup of next.queuedFollowups) {
+    followup.author = followup.author || "you";
+    followup.body = followup.body || "";
   }
 
   for (const comment of next.planComments) {

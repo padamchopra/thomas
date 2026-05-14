@@ -34,7 +34,7 @@ function createAgentRunner(service, runnerOptions = {}) {
     const conversationName = buildConversationName(ticket);
     const previousSession = resume ? latestProviderSessionForTicket(runLogRoot, runs, ticket.id, agent.id) : null;
     const prompt = buildPrompt(ticket, options.message || "", { resume });
-    const useClaudeAgents = claudeAgentsEnabled(service, runnerOptions);
+    const useClaudeAgents = claudeAgentsEnabled(service, runnerOptions) && runnerOptions.allowClaudeManagedWorktrees === true;
     const command = agentCommand(agent, {
       prompt,
       liveActivity,
@@ -44,6 +44,7 @@ function createAgentRunner(service, runnerOptions = {}) {
       useClaudeAgents,
     });
     const provider = agentProvider(agent);
+    const claudeConfigDir = provider === "claude" ? resolveClaudeConfigDir(command[0]) : "";
     const bgEligible = provider === "claude" && useClaudeAgents;
     const run = {
       id: runId,
@@ -72,6 +73,7 @@ function createAgentRunner(service, runnerOptions = {}) {
       bgEligible,
       bgMode: false,
       daemonShort: "",
+      claudeConfigDir,
       transcriptPath: "",
       transcriptOffset: 0,
     };
@@ -215,6 +217,25 @@ function createAgentRunner(service, runnerOptions = {}) {
       exitCode,
       stopped: run.stopped === true,
     });
+    dispatchQueuedFollowups(ticketId, run);
+  }
+
+  function dispatchQueuedFollowups(ticketId, previousRun) {
+    if (previousRun?.stopped || previousRun?.status === "failed") return null;
+    let followups = [];
+    try {
+      followups = service.drainQueuedFollowups(ticketId, "agent");
+    } catch {
+      return null;
+    }
+    if (!followups.length) return null;
+    addRunEvent(previousRun, "status", `Dispatching ${followups.length} queued follow-up${followups.length === 1 ? "" : "s"}.`);
+    const message = formatQueuedFollowupMessage(followups);
+    try {
+      return dispatch(ticketId, { message, resume: true });
+    } catch {
+      return null;
+    }
   }
 
   return { dispatch, getRuns, stop, cleanupTicketRuns };
@@ -297,7 +318,7 @@ function refreshRun(run, service, runnerOptions = {}) {
 }
 
 function pollBgRun(run, service, runnerOptions = {}) {
-  const jobState = readBgJobState(run.daemonShort);
+  const jobState = readBgJobState(run.daemonShort, run);
   if (jobState) {
     if (!run.transcriptPath || !fs.existsSync(run.transcriptPath)) {
       const resolved = resolveBgTranscriptPath(run, jobState);
@@ -473,6 +494,7 @@ function readPersistedRuns(runLogRoot) {
       run.bgEligible = run.bgEligible === true;
       run.bgMode = run.bgMode === true;
       run.daemonShort = run.daemonShort || "";
+      run.claudeConfigDir = run.claudeConfigDir || "";
       run.transcriptPath = run.transcriptPath || "";
       run.events = readRunEvents(run.eventsPath);
       run.nextEventSequence = nextEventSequence(run);
@@ -511,6 +533,7 @@ function persistRunMeta(run) {
     bgEligible: run.bgEligible === true,
     bgMode: run.bgMode === true,
     daemonShort: run.daemonShort || "",
+    claudeConfigDir: run.claudeConfigDir || "",
     transcriptPath: run.transcriptPath || "",
     transcriptOffset: Number.isFinite(run.transcriptOffset) ? run.transcriptOffset : 0,
   };
@@ -812,7 +835,7 @@ function agentCommand(agent, options) {
   }
   if (provider === "claude") {
     const name = options.conversationName ? ["--name", options.conversationName] : [];
-    const resumeTarget = options.providerSessionId || options.conversationName || "";
+    const resumeTarget = options.providerSessionId || (options.useClaudeAgents ? options.conversationName : "");
     if (options.useClaudeAgents) {
       return options.resume
         ? [executable, ...presetArgs, "--bg", ...name, ...(resumeTarget ? ["--resume", resumeTarget] : []), options.prompt]
@@ -832,26 +855,57 @@ function latestProviderSessionForTicket(runLogRoot, activeRuns, ticketId, agentI
     .sort((a, b) => String(b.startedAt || "").localeCompare(String(a.startedAt || "")))[0] || null;
 }
 
-function claudeHomeRoot() {
-  return process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), ".claude");
+function resolveClaudeConfigDir(executable) {
+  const fallback = process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), ".claude");
+  const executableName = path.basename(String(executable || "claude"));
+  const wrapperDir = readClaudeConfigDirFromWrapper(executable);
+  if (wrapperDir) return wrapperDir;
+  if (executableName && executableName !== "claude" && executableName.startsWith("claude-")) {
+    return path.join(os.homedir(), `.${executableName}`);
+  }
+  return fallback;
 }
 
-function claudeJobsRoot() {
-  return path.join(claudeHomeRoot(), "jobs");
+function readClaudeConfigDirFromWrapper(executable) {
+  const source = String(executable || "");
+  if (!source || !path.isAbsolute(source)) return "";
+  try {
+    const text = fs.readFileSync(source, "utf8");
+    const match = text.match(/CLAUDE_CONFIG_DIR\s*=\s*(["']?)([^"'\s;]+)\1/);
+    if (!match) return "";
+    return expandHomePath(match[2]);
+  } catch {
+    return "";
+  }
 }
 
-function claudeProjectsRoot() {
-  return path.join(claudeHomeRoot(), "projects");
+function expandHomePath(value) {
+  return String(value || "")
+    .replace(/^~(?=\/|$)/, os.homedir())
+    .replace(/^\$HOME(?=\/|$)/, os.homedir())
+    .replace(/^\$\{HOME\}(?=\/|$)/, os.homedir());
+}
+
+function claudeHomeRoot(run = null) {
+  return run?.claudeConfigDir || process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), ".claude");
+}
+
+function claudeJobsRoot(run = null) {
+  return path.join(claudeHomeRoot(run), "jobs");
+}
+
+function claudeProjectsRoot(run = null) {
+  return path.join(claudeHomeRoot(run), "projects");
 }
 
 function encodeProjectCwd(cwd) {
-  return String(cwd || "").replace(/\//g, "-");
+  return String(cwd || "").replace(/[/.]/g, "-");
 }
 
-function readBgJobState(daemonShort) {
+function readBgJobState(daemonShort, run = null) {
   if (!daemonShort) return null;
   try {
-    const text = fs.readFileSync(path.join(claudeJobsRoot(), daemonShort, "state.json"), "utf8");
+    const text = fs.readFileSync(path.join(claudeJobsRoot(run), daemonShort, "state.json"), "utf8");
     return JSON.parse(text);
   } catch {
     return null;
@@ -862,8 +916,17 @@ function resolveBgTranscriptPath(run, jobState) {
   if (run.transcriptPath && fs.existsSync(run.transcriptPath)) return run.transcriptPath;
   if (jobState?.linkScanPath && fs.existsSync(jobState.linkScanPath)) return jobState.linkScanPath;
   if (jobState?.sessionId && run.cwd) {
-    const candidate = path.join(claudeProjectsRoot(), encodeProjectCwd(run.cwd), `${jobState.sessionId}.jsonl`);
-    if (fs.existsSync(candidate)) return candidate;
+    const candidates = [run.cwd];
+    try {
+      const real = fs.realpathSync(run.cwd);
+      if (real && real !== run.cwd) candidates.push(real);
+    } catch {
+      // If the worktree disappeared, fall back to the recorded cwd.
+    }
+    for (const cwd of candidates) {
+      const candidate = path.join(claudeProjectsRoot(run), encodeProjectCwd(cwd), `${jobState.sessionId}.jsonl`);
+      if (fs.existsSync(candidate)) return candidate;
+    }
   }
   return "";
 }
@@ -887,6 +950,10 @@ function stopBgRun(run) {
   const result = spawnSync("claude", ["stop", run.daemonShort], {
     stdio: ["ignore", "pipe", "pipe"],
     timeout: 15000,
+    env: {
+      ...process.env,
+      ...(run.claudeConfigDir ? { CLAUDE_CONFIG_DIR: run.claudeConfigDir } : {}),
+    },
   });
   return result.status === 0;
 }
@@ -897,7 +964,7 @@ function adoptBgRun(run, daemonShort) {
   run.pid = null;
   run.summary = "";
   addRunEvent(run, "status", `Backgrounded as Claude job ${daemonShort}.`);
-  const jobState = readBgJobState(daemonShort);
+  const jobState = readBgJobState(daemonShort, run);
   if (jobState?.sessionId && !run.providerSessionId) {
     run.providerSessionId = String(jobState.sessionId);
   }
@@ -949,6 +1016,14 @@ function agentProvider(agent, executable = "") {
 function buildConversationName(ticket) {
   const id = String(ticket?.id || "ticket").trim().toLowerCase().replace(/[^a-z0-9_.-]+/g, "-").replace(/^-+|-+$/g, "");
   return `thomas-${id || "ticket"}`;
+}
+
+function formatQueuedFollowupMessage(followups) {
+  const list = (followups || [])
+    .map((followup, index) => `${index + 1}. ${String(followup.body || "").trim()}`)
+    .filter((line) => !line.match(/^\d+\.\s*$/))
+    .join("\n");
+  return ["Queued human follow-ups:", list].filter(Boolean).join("\n");
 }
 
 function buildPrompt(ticket, message, options = {}) {

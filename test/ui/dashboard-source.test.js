@@ -53,9 +53,9 @@ test("dashboard cards open tickets with matching preset filters", () => {
 test("dashboard header stays focused on title and new ticket action", () => {
   const source = mainSource();
   assert.match(source, /const isDashboardHome = !selectedTicket && view === "dashboard"/);
-  assert.match(source, /\{!isDashboardHome \? <p>\{headerSubtitle\}<\/p> : null\}/);
+  assert.match(source, /\{!isDashboardHome && headerSubtitle \? <p>\{headerSubtitle\}<\/p> : null\}/);
   assert.match(source, /\{!selectedTicket && !isDashboardHome && <div className="view-switch">/);
-  assert.match(source, /\{!isDashboardHome \? <label className="find-box">/);
+  assert.match(source, /\{!selectedTicket && !isDashboardHome \? <label className="find-box">/);
 });
 
 test("dashboard rail shows workload and status meters for scanability", () => {

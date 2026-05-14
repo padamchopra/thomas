@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import {
+  ArrowLeft,
   ChevronDown,
   CheckCircle2,
   CircleDot,
@@ -16,6 +17,7 @@ import {
   List,
   Menu,
   MessageSquare,
+  MoreHorizontal,
   Plus,
   RefreshCw,
   Search,
@@ -32,7 +34,7 @@ import {
   FileDiff,
   FileText,
 } from "lucide-react";
-import { addComment, addPlanComment, chooseProjectFolder, createAgent, createProject, createTicket, createTicketPlan, deleteTicket, fetchState, fetchTicketDiff, fetchTicketPlans, openTicketFile, openTicketWorktree, refreshTicketStatus, resumeTicketTerminal, runTicketSetupScript, stopTicketRun, updatePlanComment, updateProject, updateSettings, updateTicket } from "./lib/api";
+import { addComment, addPlanComment, chooseProjectFolder, createAgent, createProject, createTicket, createTicketPlan, deleteTicket, fetchState, fetchTicketDiff, fetchTicketPlans, openTicketFile, openTicketWorktree, refreshTicketStatus, removeQueuedFollowup, resumeTicketTerminal, runTicketSetupScript, stopTicketRun, updatePlanComment, updateProject, updateSettings, updateTicket } from "./lib/api";
 import {
   IssueRow,
   KanbanBoard,
@@ -66,6 +68,7 @@ const TERMINAL_OPTIONS = [
   { value: "iterm", label: "iTerm" },
   { value: "system", label: "System" },
 ];
+const SELF_ASSIGNEE_ID = "you";
 
 function projectPrefixFromTicketId(ticketId) {
   const parts = String(ticketId || "").split("-");
@@ -77,7 +80,8 @@ function readRoute() {
   const parts = window.location.pathname.split("/").filter(Boolean);
   if (parts[0] === "tickets" && parts[1]) {
     const ticketId = decodeURIComponent(parts[1]);
-    return { view: "projects", ticketId, agentId: null, projectId: null, projectPrefix: projectPrefixFromTicketId(ticketId), layout: "board" };
+    const ticketSurface = parts[2] === "diff" || parts[2] === "plan" ? parts[2] : "detail";
+    return { view: "projects", ticketId, ticketSurface, agentId: null, projectId: null, projectPrefix: projectPrefixFromTicketId(ticketId), layout: "board" };
   }
   if (parts[0] === "tickets") {
     const layout = new URLSearchParams(window.location.search).get("layout") === "list" ? "list" : "board";
@@ -98,11 +102,12 @@ function readRoute() {
   if (parts.length >= 1 && !RESERVED_TOP_LEVEL.has(parts[0])) {
     const prefix = decodeURIComponent(parts[0]);
     if (parts[1] === "issue" && parts[2]) {
-      return { view: "projects", ticketId: decodeURIComponent(parts[2]), agentId: null, projectId: null, projectPrefix: prefix, layout: "board" };
+      const ticketSurface = parts[3] === "diff" || parts[3] === "plan" ? parts[3] : "detail";
+      return { view: "projects", ticketId: decodeURIComponent(parts[2]), ticketSurface, agentId: null, projectId: null, projectPrefix: prefix, layout: "board" };
     }
     return { view: "projects", ticketId: null, agentId: null, projectId: null, projectPrefix: prefix, layout: "board" };
   }
-  return { view: "dashboard", ticketId: null, agentId: null, projectId: null, projectPrefix: null, layout: "board" };
+  return { view: "dashboard", ticketId: null, ticketSurface: "detail", agentId: null, projectId: null, projectPrefix: null, layout: "board" };
 }
 
 function pathForView(view, layout = "board") {
@@ -122,6 +127,18 @@ function pathForTicket(ticketId, project) {
   const prefix = String(project?.prefix || projectPrefixFromTicketId(ticketId));
   if (!prefix) return `/tickets/${encodeURIComponent(ticketId)}`;
   return `/${encodeURIComponent(prefix)}/issue/${encodeURIComponent(ticketId)}`;
+}
+
+function pathForTicketSurface(ticketId, project, surface) {
+  const base = pathForTicket(ticketId, project);
+  return surface && surface !== "detail" ? `${base}/${surface}` : base;
+}
+
+function newTicketModalTitle(defaults = {}) {
+  if (defaults.parentTicketId) return "New Sub-issue";
+  if (defaults.blocksTicketId) return "New Blocking Ticket";
+  if (defaults.blockedByTicketIds?.length) return "New Blocked Ticket";
+  return "New Ticket";
 }
 
 function pushPath(path, { replace = false } = {}) {
@@ -145,12 +162,14 @@ function App() {
   const [assigneeFilter, setAssigneeFilter] = useState("all");
   const [ticketPresetFilter, setTicketPresetFilter] = useState("all");
   const [selectedTicketId, setSelectedTicketId] = useState(initialRoute.ticketId);
+  const [selectedTicketSurface, setSelectedTicketSurface] = useState(initialRoute.ticketSurface || "detail");
   const [selectedAgentId, setSelectedAgentId] = useState(initialRoute.agentId);
   const [selectedProjectId, setSelectedProjectId] = useState(initialRoute.projectId || null);
   const [pendingProjectPrefix, setPendingProjectPrefix] = useState(initialRoute.projectPrefix || null);
   const [newTicketOpen, setNewTicketOpen] = useState(false);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const [ticketDraftDefaults, setTicketDraftDefaults] = useState({});
+  const [ticketDiffOpen, setTicketDiffOpen] = useState(false);
   const notifiedHumanReviewTicketIds = useRef(new Set());
   const notificationBaselineReady = useRef(false);
 
@@ -166,6 +185,7 @@ function App() {
 
   const openView = (nextView, options = {}) => {
     setSelectedTicketId(null);
+    setSelectedTicketSurface("detail");
     setSelectedAgentId(null);
     setSelectedProjectId(null);
     setPendingProjectPrefix(null);
@@ -175,6 +195,7 @@ function App() {
 
   const openTicketsWithPreset = (preset) => {
     setSelectedTicketId(null);
+    setSelectedTicketSurface("detail");
     setSelectedAgentId(null);
     setSelectedProjectId(null);
     setPendingProjectPrefix(null);
@@ -189,6 +210,7 @@ function App() {
 
   const openTicketsWithStatus = (status) => {
     setSelectedTicketId(null);
+    setSelectedTicketSurface("detail");
     setSelectedAgentId(null);
     setSelectedProjectId(null);
     setPendingProjectPrefix(null);
@@ -226,9 +248,11 @@ function App() {
   const openTicket = (ticketId, options = {}) => {
     const ticket = options.ticket || state?.tickets.find((item) => item.id === ticketId) || null;
     setSelectedTicketId(ticketId);
+    setTicketDiffOpen(false);
+    setSelectedTicketSurface(options.surface || "detail");
     setSelectedAgentId(null);
     const project = ticket ? state?.projects.find((item) => item.id === ticket.projectId) : null;
-    pushPath(pathForTicket(ticketId, project), options);
+    pushPath(pathForTicketSurface(ticketId, project, options.surface || "detail"), options);
     setSelectedProjectId(ticket?.projectId || null);
     setPendingProjectPrefix(null);
     if (ticket) setView("projects");
@@ -236,6 +260,7 @@ function App() {
 
   const openAgent = (agentId, options = {}) => {
     setSelectedTicketId(null);
+    setSelectedTicketSurface("detail");
     setSelectedAgentId(agentId);
     setSelectedProjectId(null);
     setPendingProjectPrefix(null);
@@ -246,6 +271,7 @@ function App() {
   const openProject = (projectId, options = {}) => {
     const project = findProjectByIdentifier(state?.projects || [], projectId) || { id: projectId };
     setSelectedTicketId(null);
+    setSelectedTicketSurface("detail");
     setSelectedAgentId(null);
     setSelectedProjectId(project.id);
     setPendingProjectPrefix(null);
@@ -289,6 +315,8 @@ function App() {
       const route = readRoute();
       setView(route.view);
       setSelectedTicketId(route.ticketId);
+      setTicketDiffOpen(false);
+      setSelectedTicketSurface(route.ticketSurface || "detail");
       setSelectedAgentId(route.agentId);
       setTicketLayout(route.layout || "board");
       if (route.projectPrefix) {
@@ -355,9 +383,9 @@ function App() {
     }
     return counts;
   }, [state]);
-  const headerTitle = selectedTicket ? selectedTicket.id : selectedAgent && view === "agents" ? selectedAgent.name : selectedProject && view === "projects" ? selectedProject.name : viewTitle(view);
+  const headerTitle = selectedTicket ? `${selectedTicket.id} ${selectedTicket.title}` : selectedAgent && view === "agents" ? selectedAgent.name : selectedProject && view === "projects" ? selectedProject.name : viewTitle(view);
   const headerSubtitle = selectedTicket
-    ? `${selectedTicket.statusLabel} · ${selectedTicket.project?.name || "Unknown project"} · updated ${timeAgo(selectedTicket.updatedAt)}`
+    ? ""
     : selectedAgent && view === "agents"
       ? `${selectedAgent.type} · ${selectedAgent.status} · ${agentOpenCounts.get(selectedAgent.id) || 0} open tickets`
     : selectedProject && view === "projects"
@@ -428,7 +456,14 @@ function App() {
         description: form.get("description"),
         assigneeAgentId,
         parentTicketId: form.get("parentTicketId") || null,
+        blockedByTicketIds: ticketDraftDefaults.blockedByTicketIds || [],
       });
+      if (ticketDraftDefaults.blocksTicketId) {
+        const target = state.tickets.find((ticket) => ticket.id === ticketDraftDefaults.blocksTicketId);
+        if (target && !target.blockedByTicketIds.includes(response.ticket.id)) {
+          await updateTicket(target.id, { blockedByTicketIds: [...target.blockedByTicketIds, response.ticket.id] });
+        }
+      }
       target.reset();
       await refresh();
       closeNewTicket();
@@ -570,7 +605,7 @@ function App() {
             ))}
           </SidebarSection>
           <SidebarSection label="Team">
-            <SidebarNavItem active={view === "agents" && !selectedAgentId} onClick={() => openView("agents")} icon={UsersRound} label="Agents" />
+            <SidebarNavItem active={view === "agents" && !selectedAgentId} onClick={() => openView("agents")} icon={UsersRound} label="Assignees" />
             {state.agents.map((agent) => (
               <Button
                 variant="ghost"
@@ -598,12 +633,14 @@ function App() {
             <button type="button" className="mobile-sidebar-toggle" aria-label="Open navigation" onClick={() => setMobileSidebarOpen(true)}>
               <Menu />
             </button>
+            {selectedTicket ? <button className="close-action icon-action ticket-header-back" onClick={closeTicket} title="Back" aria-label="Back"><ArrowLeft /></button> : null}
             <div>
               <h1>{headerTitle}</h1>
-              {!isDashboardHome ? <p>{headerSubtitle}</p> : null}
+              {!isDashboardHome && headerSubtitle ? <p>{headerSubtitle}</p> : null}
             </div>
           </div>
           <div className="header-actions">
+            {selectedTicket ? <TicketHeaderDiffStat ticket={selectedTicket} active={ticketDiffOpen} onToggle={() => setTicketDiffOpen((open) => !open)} /> : null}
             {!selectedTicket && state.projects.length > 0 && ["dashboard", "inbox", "tickets"].includes(view) ? (
               <Button onClick={() => openNewTicket()}><SquarePen /> New Ticket</Button>
             ) : null}
@@ -612,7 +649,7 @@ function App() {
               <button className={view === "inbox" ? "active" : ""} onClick={() => openView("inbox")} title="Inbox"><Inbox /></button>
               <button className={view === "tickets" ? "active" : ""} onClick={() => openView("tickets")} title="Tickets"><Columns3 /></button>
             </div>}
-            {!isDashboardHome ? <label className="find-box">
+            {!selectedTicket && !isDashboardHome ? <label className="find-box">
               <Search />
               <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search tickets" />
             </label> : null}
@@ -620,6 +657,32 @@ function App() {
         </header>
 
         {selectedTicket ? (
+          <TicketHeaderProperties
+            state={state}
+            ticket={selectedTicket}
+            onPatch={handleTicketPatch}
+            onOpenProject={openProject}
+            onNewTicket={openNewTicket}
+            onRefreshStatus={handleRefreshTicketStatus}
+          />
+        ) : null}
+
+        {selectedTicket && selectedTicketSurface === "diff" ? (
+          <TicketDiffPage
+            ticket={selectedTicket}
+            onBack={() => openTicket(selectedTicket.id, { ticket: selectedTicket, surface: "detail" })}
+            onComment={async (body, metadata = {}) => {
+              await addComment(selectedTicket.id, { body, metadata });
+              await refresh();
+            }}
+          />
+        ) : selectedTicket && selectedTicketSurface === "plan" ? (
+          <TicketPlanPage
+            ticket={selectedTicket}
+            onBack={() => openTicket(selectedTicket.id, { ticket: selectedTicket, surface: "detail" })}
+            onStateUpdate={setState}
+          />
+        ) : selectedTicket ? (
           <TicketDetail
             state={state}
             ticket={selectedTicket}
@@ -634,8 +697,13 @@ function App() {
             onOpenWorktree={handleOpenTicketWorktree}
             onResumeTerminal={handleResumeTicketTerminal}
             onStateUpdate={setState}
+            showDiff={ticketDiffOpen}
             onComment={async (body, metadata = {}) => {
               await addComment(selectedTicket.id, { body, metadata });
+              await refresh();
+            }}
+            onRemoveQueuedFollowup={async (ticketId, followupId) => {
+              await removeQueuedFollowup(ticketId, followupId);
               await refresh();
             }}
             onCreateSubIssue={() => openNewTicket({
@@ -684,7 +752,7 @@ function App() {
         )}
       </main>
       {newTicketOpen && (
-        <Modal title={ticketDraftDefaults.parentTicketId ? "New Sub-issue" : "New Ticket"} onClose={closeNewTicket}>
+        <Modal title={newTicketModalTitle(ticketDraftDefaults)} onClose={closeNewTicket}>
           <CreateTicket state={state} onSubmit={handleCreateTicket} compact defaults={ticketDraftDefaults} />
         </Modal>
       )}
@@ -853,6 +921,7 @@ function CreateTicket({ state, onSubmit, compact = false, defaults = {} }) {
             Assignee
             <select name="assigneeAgentId" defaultValue={defaults.assigneeAgentId || ""}>
               <option value="">No assignee</option>
+              <option value={SELF_ASSIGNEE_ID}>You</option>
               {state.agents.map((agent) => <option key={agent.id} value={agent.id}>{agent.name}</option>)}
             </select>
           </label>
@@ -887,6 +956,7 @@ function CreateTicket({ state, onSubmit, compact = false, defaults = {} }) {
         <input id="quickCreateTitle" name="title" placeholder="Title" required />
         <select name="assigneeAgentId" defaultValue={defaults.assigneeAgentId || ""}>
           <option value="">No assignee</option>
+          <option value={SELF_ASSIGNEE_ID}>You</option>
           {state.agents.map((agent) => <option key={agent.id} value={agent.id}>{agent.name}</option>)}
         </select>
         <select name="parentTicketId" defaultValue={defaults.parentTicketId || ""}>
@@ -961,8 +1031,8 @@ function IssueControls({
           <button className={layout === "list" ? "active" : ""} onClick={() => onLayout("list")} title="List layout"><List /></button>
         </div>
         <button className={statusFilter === "all" && assigneeFilter === "all" ? "active" : ""} onClick={clearFilters}>All</button>
-        <button className={statusFilter === "human_review" ? "active" : ""} onClick={() => onStatusFilter("human_review")}>Human review</button>
-        <button className={statusFilter === "pr_review" ? "active" : ""} onClick={() => onStatusFilter("pr_review")}>PR review</button>
+        <button className={statusFilter === "human_review" ? "active" : ""} onClick={() => onStatusFilter("human_review")}>Human Review</button>
+        <button className={statusFilter === "pr_review" ? "active" : ""} onClick={() => onStatusFilter("pr_review")}>PR Review</button>
         <button className={assigneeFilter === "unassigned" ? "active" : ""} onClick={() => onAssigneeFilter("unassigned")}>Unassigned</button>
         {activeFilterCount ? <button onClick={clearFilters}>Clear</button> : null}
         <button className={expanded ? "active" : ""} onClick={() => setExpanded((value) => !value)}><SlidersHorizontal /> Filters</button>
@@ -1940,50 +2010,118 @@ function DashboardTicketRow({ ticket, run = null, onOpenTicket }) {
   );
 }
 
-function TicketDetail({ state, ticket, onClose, onOpenTicket, onOpenProject, onPatch, onDelete, onStopRun, onRefreshStatus, onRunSetupScript, onOpenWorktree, onResumeTerminal, onStateUpdate, onComment, onCreateSubIssue }) {
-  const [detailTab, setDetailTab] = useState("conversation");
-  const [comment, setComment] = useState("");
-  const [terminalMenuOpen, setTerminalMenuOpen] = useState(false);
+function TicketHeaderProperties({ state, ticket, onPatch, onOpenProject, onNewTicket, onRefreshStatus }) {
+  const [labelPickerOpen, setLabelPickerOpen] = useState(false);
+  const [labelQuery, setLabelQuery] = useState("");
+  const [blockerPickerOpen, setBlockerPickerOpen] = useState(false);
+  const [blockerQuery, setBlockerQuery] = useState("");
+  const [blockingPickerOpen, setBlockingPickerOpen] = useState(false);
+  const [blockingQuery, setBlockingQuery] = useState("");
   const [statusRefreshBusy, setStatusRefreshBusy] = useState(false);
-  const [setupScriptBusy, setSetupScriptBusy] = useState(false);
-  const [setupScriptMessage, setSetupScriptMessage] = useState("");
-  const [diff, setDiff] = useState(null);
-  const [diffError, setDiffError] = useState("");
-  const [diffBusy, setDiffBusy] = useState(false);
-  const [autoLoadedDiffTicketId, setAutoLoadedDiffTicketId] = useState(null);
-  const [reviewTarget, setReviewTarget] = useState(null);
-  const [reviewComment, setReviewComment] = useState("");
-  const [blockers, setBlockers] = useState(ticket.blockedByTicketIds.join(", "));
-  const [labels, setLabels] = useState(ticket.labels.join(", "));
-  const latestComment = ticket.comments.slice().sort((a, b) => dateValue(b.createdAt) - dateValue(a.createdAt))[0];
-  const orderedComments = ticket.comments.slice().sort((a, b) => dateValue(a.createdAt) - dateValue(b.createdAt));
-  const handoffLines = buildHandoffLines(ticket, latestComment);
-  const ticketRuns = (state.runs || [])
-    .filter((run) => run.ticketId === ticket.id && ["running", "finished", "failed", "stopped", "interrupted"].includes(run.status))
-    .sort((a, b) => dateValue(a.startedAt) - dateValue(b.startedAt));
+  const labelPickerRef = useRef(null);
+  const blockerPickerRef = useRef(null);
+  const blockingPickerRef = useRef(null);
+  const labels = ticket.labels || [];
+  const isSelfAssigned = ticket.assigneeAgentId === SELF_ASSIGNEE_ID;
   const runningTicketRun = state.runs?.find((run) => run.ticketId === ticket.id && run.status === "running") || null;
-  const defaultTerminal = state.settings?.preferredTerminal || "warp";
+  const knownLabels = Array.from(new Set((state.tickets || []).flatMap((item) => item.labels || []))).sort((a, b) => a.localeCompare(b));
+  const possibleBlockers = (state.tickets || []).filter((item) => item.id !== ticket.id);
+  const normalizedQuery = labelQuery.trim().toLowerCase();
+  const normalizedBlockerQuery = blockerQuery.trim().toLowerCase();
+  const normalizedBlockingQuery = blockingQuery.trim().toLowerCase();
+  const filteredLabels = knownLabels.filter((label) =>
+    !labels.includes(label) &&
+    (!normalizedQuery || label.toLowerCase().includes(normalizedQuery))
+  );
+  const filteredBlockers = possibleBlockers.filter((item) =>
+    !ticket.blockedByTicketIds.includes(item.id) &&
+    (!normalizedBlockerQuery ||
+      item.id.toLowerCase().includes(normalizedBlockerQuery) ||
+      String(item.title || "").toLowerCase().includes(normalizedBlockerQuery))
+  );
+  const filteredBlocking = possibleBlockers.filter((item) =>
+    !item.blockedByTicketIds.includes(ticket.id) &&
+    (!normalizedBlockingQuery ||
+      item.id.toLowerCase().includes(normalizedBlockingQuery) ||
+      String(item.title || "").toLowerCase().includes(normalizedBlockingQuery))
+  );
+  const canCreateLabel = Boolean(labelQuery.trim()) && !knownLabels.some((label) => label.toLowerCase() === normalizedQuery);
 
   useEffect(() => {
-    setBlockers(ticket.blockedByTicketIds.join(", "));
-  }, [ticket.id, ticket.blockedByTicketIds]);
-
-  useEffect(() => {
-    setLabels(ticket.labels.join(", "));
-  }, [ticket.id, ticket.labels]);
-
-  useEffect(() => {
-    setDetailTab("conversation");
-    setDiff(null);
-    setDiffError("");
-    setAutoLoadedDiffTicketId(null);
-    setReviewTarget(null);
-    setReviewComment("");
-    setTerminalMenuOpen(false);
-    setStatusRefreshBusy(false);
-    setSetupScriptBusy(false);
-    setSetupScriptMessage("");
+    setLabelPickerOpen(false);
+    setLabelQuery("");
+    setBlockerPickerOpen(false);
+    setBlockerQuery("");
+    setBlockingPickerOpen(false);
+    setBlockingQuery("");
   }, [ticket.id]);
+
+  useEffect(() => {
+    if (!labelPickerOpen) return undefined;
+    const closeOnOutsideClick = (event) => {
+      if (labelPickerRef.current?.contains(event.target)) return;
+      setLabelPickerOpen(false);
+      setLabelQuery("");
+    };
+    document.addEventListener("pointerdown", closeOnOutsideClick);
+    return () => document.removeEventListener("pointerdown", closeOnOutsideClick);
+  }, [labelPickerOpen]);
+
+  useEffect(() => {
+    if (!blockerPickerOpen) return undefined;
+    const closeOnOutsideClick = (event) => {
+      if (blockerPickerRef.current?.contains(event.target)) return;
+      setBlockerPickerOpen(false);
+      setBlockerQuery("");
+    };
+    document.addEventListener("pointerdown", closeOnOutsideClick);
+    return () => document.removeEventListener("pointerdown", closeOnOutsideClick);
+  }, [blockerPickerOpen]);
+
+  useEffect(() => {
+    if (!blockingPickerOpen) return undefined;
+    const closeOnOutsideClick = (event) => {
+      if (blockingPickerRef.current?.contains(event.target)) return;
+      setBlockingPickerOpen(false);
+      setBlockingQuery("");
+    };
+    document.addEventListener("pointerdown", closeOnOutsideClick);
+    return () => document.removeEventListener("pointerdown", closeOnOutsideClick);
+  }, [blockingPickerOpen]);
+
+  const addLabel = async (label) => {
+    const nextLabel = String(label || "").trim();
+    if (!nextLabel || labels.includes(nextLabel)) return;
+    await onPatch(ticket.id, { labels: [...labels, nextLabel] });
+    setLabelQuery("");
+    setLabelPickerOpen(false);
+  };
+
+  const removeLabel = async (label) => {
+    await onPatch(ticket.id, { labels: labels.filter((item) => item !== label) });
+  };
+
+  const updateAssignee = async (event) => {
+    await onPatch(ticket.id, { assigneeAgentId: event.target.value || null });
+  };
+
+  const updateStatus = async (event) => {
+    await onPatch(ticket.id, { status: event.target.value });
+  };
+
+  const addBlocker = async (ticketId) => {
+    if (!ticketId || ticket.blockedByTicketIds.includes(ticketId)) return;
+    await onPatch(ticket.id, { blockedByTicketIds: [...ticket.blockedByTicketIds, ticketId] });
+    setBlockerPickerOpen(false);
+    setBlockerQuery("");
+  };
+
+  const addBlocking = async (targetTicket) => {
+    if (!targetTicket || targetTicket.blockedByTicketIds.includes(ticket.id)) return;
+    await onPatch(targetTicket.id, { blockedByTicketIds: [...targetTicket.blockedByTicketIds, ticket.id] });
+    setBlockingPickerOpen(false);
+    setBlockingQuery("");
+  };
 
   const refreshStatus = async () => {
     setStatusRefreshBusy(true);
@@ -1993,6 +2131,163 @@ function TicketDetail({ state, ticket, onClose, onOpenTicket, onOpenProject, onP
       setStatusRefreshBusy(false);
     }
   };
+
+  return (
+    <div className="ticket-meta-row">
+      {isSelfAssigned ? (
+        <span className={`status-chip status-chip-select state-${ticket.status}`}>
+          <StatusIcon status={ticket.status} />
+          <select value={ticket.status} onChange={updateStatus} aria-label="Ticket status">
+            {state.statuses.map((status) => <option key={status.value} value={status.value}>{status.label}</option>)}
+          </select>
+        </span>
+      ) : (
+        <span className={`status-chip state-${ticket.status}`}>
+          {ticket.statusLabel}
+          <button type="button" onClick={refreshStatus} disabled={statusRefreshBusy} title="Refresh ticket status" aria-label="Refresh ticket status"><RefreshCw /></button>
+        </span>
+      )}
+      <label className="ticket-meta-chip ticket-meta-select">
+        <UserRound />
+        <select value={ticket.assigneeAgentId || ""} onChange={updateAssignee} aria-label="Ticket assignee">
+          <option value="">Unassigned</option>
+          <option value={SELF_ASSIGNEE_ID}>You</option>
+          {state.agents.map((agent) => <option key={agent.id} value={agent.id}>{agent.name}</option>)}
+        </select>
+      </label>
+      {ticket.projectId && onOpenProject ? (
+        <button type="button" className="ticket-meta-chip ticket-meta-link" onClick={() => onOpenProject(ticket.projectId)}>
+          <FolderGit2 /> {ticket.project?.name || "Unknown project"}
+        </button>
+      ) : <span className="ticket-meta-chip"><FolderGit2 /> {ticket.project?.name || "Unknown project"}</span>}
+      {ticket.parentTicketId ? <span className="ticket-meta-chip">Parent {ticket.parentTicketId}</span> : null}
+      {ticket.prUrl ? <a className="ticket-meta-chip ticket-meta-link" href={ticket.prUrl}><GitPullRequest /> PR</a> : null}
+      <span className="ticket-meta-chip">Updated {timeAgo(ticket.updatedAt)}</span>
+      {runningTicketRun ? <RunningElapsed run={runningTicketRun} /> : null}
+      {labels.map((label) => (
+        <span className="ticket-label-chip" key={label}>
+          <Tag /> {label}
+          <button type="button" onClick={() => removeLabel(label)} title={`Remove ${label}`} aria-label={`Remove ${label}`}><X /></button>
+        </span>
+      ))}
+      <div className="label-picker" ref={labelPickerRef}>
+        <button type="button" className="ticket-label-add" onClick={() => setLabelPickerOpen((open) => !open)} title="Add label" aria-label="Add label">
+          <Plus />
+        </button>
+        {labelPickerOpen ? (
+          <div className="label-picker-menu">
+            <label className="label-picker-search">
+              <Search />
+              <input value={labelQuery} onChange={(event) => setLabelQuery(event.target.value)} placeholder="Search or create label" autoFocus />
+            </label>
+            <div className="label-picker-list">
+              {filteredLabels.length ? filteredLabels.slice(0, 8).map((label) => (
+                <button type="button" key={label} onClick={() => addLabel(label)}>
+                  <Tag /> <span>{label}</span>
+                </button>
+              )) : null}
+              {canCreateLabel ? (
+                <button type="button" onClick={() => addLabel(labelQuery)}>
+                  <Plus /> <span>Create "{labelQuery.trim()}"</span>
+                </button>
+              ) : null}
+              {!filteredLabels.length && !canCreateLabel ? <p>No labels found.</p> : null}
+            </div>
+          </div>
+        ) : null}
+      </div>
+      <div className="ticket-dependency-chips">
+        <div className="dependency-picker" ref={blockerPickerRef}>
+          <button type="button" className={`ticket-dependency-chip ${ticket.blockedBy.length ? "dependency-blocked" : ""}`} onClick={() => setBlockerPickerOpen((open) => !open)}>
+            Blocked by {ticket.blockedBy.length}
+          </button>
+          {blockerPickerOpen ? (
+            <div className="dependency-picker-menu">
+              <label className="label-picker-search">
+                <Search />
+                <input value={blockerQuery} onChange={(event) => setBlockerQuery(event.target.value)} placeholder="Search tickets" autoFocus />
+              </label>
+              <div className="label-picker-list">
+                {filteredBlockers.slice(0, 8).map((item) => (
+                  <button type="button" key={item.id} onClick={() => addBlocker(item.id)}>
+                    <StatusIcon status={item.status} />
+                    <span>{item.id} {item.title}</span>
+                  </button>
+                ))}
+                <button type="button" onClick={() => {
+                  setBlockerPickerOpen(false);
+                  setBlockerQuery("");
+                  onNewTicket({ projectId: ticket.projectId, blocksTicketId: ticket.id });
+                }}>
+                  <Plus /> <span>Create new blocker</span>
+                </button>
+                {!filteredBlockers.length ? <p>No tickets found.</p> : null}
+              </div>
+            </div>
+          ) : null}
+        </div>
+        <div className="dependency-picker" ref={blockingPickerRef}>
+          <button type="button" className="ticket-dependency-chip" onClick={() => setBlockingPickerOpen((open) => !open)}>
+            Blocking {ticket.blocks.length}
+          </button>
+          {blockingPickerOpen ? (
+            <div className="dependency-picker-menu">
+              <label className="label-picker-search">
+                <Search />
+                <input value={blockingQuery} onChange={(event) => setBlockingQuery(event.target.value)} placeholder="Search tickets" autoFocus />
+              </label>
+              <div className="label-picker-list">
+                {filteredBlocking.slice(0, 8).map((item) => (
+                  <button type="button" key={item.id} onClick={() => addBlocking(item)}>
+                    <StatusIcon status={item.status} />
+                    <span>{item.id} {item.title}</span>
+                  </button>
+                ))}
+                <button type="button" onClick={() => {
+                  setBlockingPickerOpen(false);
+                  setBlockingQuery("");
+                  onNewTicket({ projectId: ticket.projectId, blockedByTicketIds: [ticket.id] });
+                }}>
+                  <Plus /> <span>Create blocked ticket</span>
+                </button>
+                {!filteredBlocking.length ? <p>No tickets found.</p> : null}
+              </div>
+            </div>
+          ) : null}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function TicketDetail({ state, ticket, onOpenTicket, onOpenProject, onPatch, onDelete, onStopRun, onRefreshStatus, onRunSetupScript, onOpenWorktree, onResumeTerminal, onStateUpdate, showDiff, onComment, onRemoveQueuedFollowup, onCreateSubIssue }) {
+  const [comment, setComment] = useState("");
+  const commentRef = useRef(null);
+  const [terminalMenuOpen, setTerminalMenuOpen] = useState(false);
+  const [actionMenuOpen, setActionMenuOpen] = useState(false);
+  const [setupScriptBusy, setSetupScriptBusy] = useState(false);
+  const [setupScriptMessage, setSetupScriptMessage] = useState("");
+  const orderedComments = ticket.comments.slice().sort((a, b) => dateValue(a.createdAt) - dateValue(b.createdAt));
+  const queuedFollowups = ticket.queuedFollowups || [];
+  const ticketRuns = (state.runs || [])
+    .filter((run) => run.ticketId === ticket.id && ["running", "finished", "failed", "stopped", "interrupted"].includes(run.status))
+    .sort((a, b) => dateValue(a.startedAt) - dateValue(b.startedAt));
+  const runningTicketRun = state.runs?.find((run) => run.ticketId === ticket.id && run.status === "running") || null;
+  const defaultTerminal = state.settings?.preferredTerminal || "warp";
+
+  useEffect(() => {
+    setTerminalMenuOpen(false);
+    setActionMenuOpen(false);
+    setSetupScriptBusy(false);
+    setSetupScriptMessage("");
+  }, [ticket.id]);
+
+  useEffect(() => {
+    const textarea = commentRef.current;
+    if (!textarea) return;
+    textarea.style.height = "auto";
+    textarea.style.height = `${Math.min(textarea.scrollHeight, 132)}px`;
+  }, [comment]);
 
   const runSetupScript = async () => {
     setSetupScriptBusy(true);
@@ -2008,6 +2303,182 @@ function TicketDetail({ state, ticket, onClose, onOpenTicket, onOpenProject, onP
     }
   };
 
+  return (
+    <section className="detail-page">
+      <div className="detail-shell">
+        <div className="ticket-workspace-layout">
+          <div className="ticket-workspace-main">
+            <section className="ticket-description-inline">
+              <MarkdownText value={ticket.description || "No description yet."} className="detail-copy" />
+            </section>
+            {showDiff ? <InlineDiffSection ticket={ticket} onComment={onComment} /> : null}
+            <SubIssuesSection ticket={ticket} onOpenTicket={onOpenTicket} onCreateSubIssue={onCreateSubIssue} />
+            <InlinePlanSection ticket={ticket} onStateUpdate={onStateUpdate} />
+          </div>
+
+          <aside className="conversation-rail">
+            <TicketRailActions
+              ticket={ticket}
+              defaultTerminal={defaultTerminal}
+              terminalMenuOpen={terminalMenuOpen}
+              actionMenuOpen={actionMenuOpen}
+              setupScriptBusy={setupScriptBusy}
+              setupScriptMessage={setupScriptMessage}
+              runningTicketRun={runningTicketRun}
+              onOpenWorktree={onOpenWorktree}
+              onResumeTerminal={onResumeTerminal}
+              onTerminalMenuOpen={setTerminalMenuOpen}
+              onActionMenuOpen={setActionMenuOpen}
+              onRunSetupScript={runSetupScript}
+              onStopRun={onStopRun}
+              onDelete={onDelete}
+            />
+            <div className="conversation-rail-header">
+              <h3><MessageSquare /> Conversation</h3>
+              <span>{orderedComments.length} comment{orderedComments.length === 1 ? "" : "s"}</span>
+            </div>
+            <ConversationTimeline comments={orderedComments} runs={ticketRuns} />
+            <QueuedFollowupsList followups={queuedFollowups} onRemove={(followupId) => onRemoveQueuedFollowup(ticket.id, followupId)} />
+            <form className="note-form note-form-primary conversation-rail-composer" onSubmit={async (event) => {
+              event.preventDefault();
+              if (!comment.trim()) return;
+              await onComment(comment);
+              setComment("");
+            }}>
+              <textarea ref={commentRef} rows={1} value={comment} onChange={(event) => setComment(event.target.value)} placeholder="Reply..." />
+              <button><MessageSquare /> Reply</button>
+            </form>
+          </aside>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function TicketRailActions({ ticket, defaultTerminal, terminalMenuOpen, actionMenuOpen, setupScriptBusy, setupScriptMessage, runningTicketRun, onOpenWorktree, onResumeTerminal, onTerminalMenuOpen, onActionMenuOpen, onRunSetupScript, onStopRun, onDelete }) {
+  return (
+    <section className="ticket-rail-actions">
+      <div className="ticket-rail-action-row">
+        <button className="quiet-button" onClick={() => onOpenWorktree(ticket.id)}><FolderOpen /> Worktree</button>
+        <div className="terminal-split-action">
+          <button className="quiet-button terminal-main-action" onClick={() => onResumeTerminal(ticket.id, defaultTerminal)} title={`Open ${terminalLabel(defaultTerminal)} and copy resume command`}><Terminal /> Terminal</button>
+          <button className="quiet-button icon-action terminal-menu-action" onClick={() => onTerminalMenuOpen((open) => !open)} title="Choose terminal" aria-label="Choose terminal"><ChevronDown /></button>
+          {terminalMenuOpen ? (
+            <div className="terminal-menu">
+              {TERMINAL_OPTIONS.map((terminal) => (
+                <button
+                  key={terminal.value}
+                  type="button"
+                  className={terminal.value === defaultTerminal ? "active" : ""}
+                  onClick={() => {
+                    onTerminalMenuOpen(false);
+                    onResumeTerminal(ticket.id, terminal.value);
+                  }}
+                >
+                  {terminal.label}
+                </button>
+              ))}
+            </div>
+          ) : null}
+        </div>
+        {runningTicketRun ? <button className="quiet-button danger-button" onClick={() => onStopRun(ticket.id)}>Stop</button> : null}
+        <div className="ticket-action-overflow">
+          <button className="quiet-button icon-action" onClick={() => onActionMenuOpen((open) => !open)} title="More actions" aria-label="More actions"><MoreHorizontal /></button>
+          {actionMenuOpen ? (
+            <div className="ticket-action-menu">
+              <button type="button" title="Run setup script in worktree" onClick={() => {
+                onActionMenuOpen(false);
+                onRunSetupScript();
+              }} disabled={setupScriptBusy}><RefreshCw /> Re-run setup script</button>
+              <button type="button" className="danger-menu-item" onClick={() => {
+                onActionMenuOpen(false);
+                onDelete(ticket.id);
+              }}><Trash2 /> Delete ticket</button>
+            </div>
+          ) : null}
+        </div>
+      </div>
+      {setupScriptMessage ? <p className="setup-script-message">{setupScriptMessage}</p> : null}
+    </section>
+  );
+}
+
+function SubIssuesSection({ ticket, onOpenTicket, onCreateSubIssue }) {
+  return (
+    <section className="sub-issues-section">
+      <div className="sub-issues-header">
+        <h3>Sub-issues</h3>
+        <button className="quiet-button inline-action" onClick={onCreateSubIssue}><Plus /> Add</button>
+      </div>
+      {ticket.children.length ? (
+        <div className="sub-issue-list">
+          {ticket.children.map((child) => (
+            <button className="sub-issue-row" key={child.id} onClick={() => onOpenTicket(child.id)}>
+              <StatusIcon status={child.status} />
+              <span className="task-key">{child.id}</span>
+              <span>{child.title}</span>
+            </button>
+          ))}
+        </div>
+      ) : (
+        <button className="sub-issues-empty" onClick={onCreateSubIssue}><Plus /> Add sub-issue</button>
+      )}
+    </section>
+  );
+}
+
+function TicketHeaderDiffStat({ ticket, active, onToggle }) {
+  const [summary, setSummary] = useState({ status: "loading", files: null, additions: 0, deletions: 0, error: "" });
+
+  useEffect(() => {
+    let cancelled = false;
+    setSummary({ status: "loading", files: null, additions: 0, deletions: 0, error: "" });
+    fetchTicketDiff(ticket.id)
+      .then((diff) => {
+        if (cancelled) return;
+        const files = diff?.files || [];
+        setSummary({ status: "ready", files: files.length, additions: diffStatTotal(files, "additions"), deletions: diffStatTotal(files, "deletions"), error: "" });
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        setSummary({ status: "error", files: null, additions: 0, deletions: 0, error: err.message || "Diff unavailable" });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [ticket.id]);
+
+  const title = summary.status === "error" ? summary.error : summary.status === "loading" ? "Checking local diff" : `${summary.files} changed file${summary.files === 1 ? "" : "s"}`;
+
+  return (
+    <button type="button" className={`ticket-diff-stat ticket-diff-stat-${summary.status}${active ? " active" : ""}`} onClick={onToggle} title={title}>
+      <FileDiff />
+      {summary.status === "loading" ? (
+        <span>Diff</span>
+      ) : summary.status === "error" ? (
+        <span>Diff unavailable</span>
+      ) : (
+        <>
+          <span>{summary.files} file{summary.files === 1 ? "" : "s"}</span>
+          <strong className="diff-plus">+{summary.additions}</strong>
+          <strong className="diff-minus">-{summary.deletions}</strong>
+        </>
+      )}
+    </button>
+  );
+}
+
+function diffStatTotal(files, key) {
+  return files.reduce((sum, file) => sum + (file[key] || 0), 0);
+}
+
+function InlineDiffSection({ ticket, onComment }) {
+  const [diff, setDiff] = useState(null);
+  const [diffError, setDiffError] = useState("");
+  const [diffBusy, setDiffBusy] = useState(false);
+  const [reviewTarget, setReviewTarget] = useState(null);
+  const [reviewComment, setReviewComment] = useState("");
+
   const loadDiff = async () => {
     setDiffBusy(true);
     setDiffError("");
@@ -2021,10 +2492,11 @@ function TicketDetail({ state, ticket, onClose, onOpenTicket, onOpenProject, onP
   };
 
   useEffect(() => {
-    if (detailTab !== "review" || ticket.status !== "human_review" || diff || diffBusy || autoLoadedDiffTicketId === ticket.id) return;
-    setAutoLoadedDiffTicketId(ticket.id);
+    setDiff(null);
+    setReviewTarget(null);
+    setReviewComment("");
     loadDiff();
-  }, [detailTab, ticket.id, ticket.status, diff, diffBusy, autoLoadedDiffTicketId]);
+  }, [ticket.id]);
 
   const submitReviewComment = async (event) => {
     event.preventDefault();
@@ -2040,231 +2512,245 @@ function TicketDetail({ state, ticket, onClose, onOpenTicket, onOpenProject, onP
   };
 
   return (
-    <section className="detail-page">
-      <div className="detail-shell">
-        <div className="detail-heading">
-          <div className="detail-topline">
-            <button className="close-action" onClick={onClose}>Back</button>
-            <button className="quiet-button icon-action" onClick={() => onOpenWorktree(ticket.id)} title="Open worktree in Finder" aria-label="Open worktree in Finder"><FolderOpen /></button>
-            <button className="quiet-button icon-action" onClick={runSetupScript} disabled={setupScriptBusy} title="Run setup script in worktree" aria-label="Run setup script in worktree"><RefreshCw /></button>
-            <div className="terminal-split-action">
-              <button className="quiet-button icon-action terminal-main-action" onClick={() => onResumeTerminal(ticket.id, defaultTerminal)} title={`Open ${terminalLabel(defaultTerminal)} and copy resume command`} aria-label={`Open ${terminalLabel(defaultTerminal)} and copy resume command`}><Terminal /></button>
-              <button className="quiet-button icon-action terminal-menu-action" onClick={() => setTerminalMenuOpen((open) => !open)} title="Choose terminal" aria-label="Choose terminal"><ChevronDown /></button>
-              {terminalMenuOpen ? (
-                <div className="terminal-menu">
-                  {TERMINAL_OPTIONS.map((terminal) => (
-                    <button
-                      key={terminal.value}
-                      type="button"
-                      className={terminal.value === defaultTerminal ? "active" : ""}
-                      onClick={() => {
-                        setTerminalMenuOpen(false);
-                        onResumeTerminal(ticket.id, terminal.value);
-                      }}
-                    >
-                      {terminal.label}
-                    </button>
-                  ))}
+    <section className="inline-diff-section">
+      <div className="section-heading-row">
+        <h3><FileDiff /> Diff</h3>
+        <button className="quiet-button" onClick={loadDiff} disabled={diffBusy}>{diffBusy ? "Loading" : "Refresh"}</button>
+      </div>
+      {diffError ? <div className="blank-row">{diffError}</div> : null}
+      {diff ? (
+        <DiffViewer
+          ticketId={ticket.id}
+          diff={diff}
+          reviewTarget={reviewTarget}
+          reviewComment={reviewComment}
+          onSelectTarget={setReviewTarget}
+          onCommentChange={setReviewComment}
+          onSubmit={submitReviewComment}
+        />
+      ) : <EmptyPanel message="Loading local diff." />}
+    </section>
+  );
+}
+
+function InlinePlanSection({ ticket, onStateUpdate }) {
+  const [plans, setPlans] = useState(null);
+  const [selectedPath, setSelectedPath] = useState("");
+  const [planPickerOpen, setPlanPickerOpen] = useState(false);
+  const [planQuery, setPlanQuery] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const selectedPlan = plans?.plan || null;
+  const planFiles = plans?.files || [];
+  const filteredPlanFiles = planFiles.filter((file) => file.path.toLowerCase().includes(planQuery.trim().toLowerCase()));
+  const openPlanCommentCount = (ticket.planComments || []).filter((comment) => comment.status !== "resolved" && (!selectedPlan?.path || comment.planPath === selectedPlan.path)).length;
+
+  const loadPlans = async (pathOverride = selectedPath) => {
+    setBusy(true);
+    setError("");
+    try {
+      const data = await fetchTicketPlans(ticket.id, pathOverride);
+      setPlans(data);
+      setSelectedPath(data.selectedPath || "");
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  useEffect(() => {
+    setPlans(null);
+    setSelectedPath("");
+    setPlanPickerOpen(false);
+    setPlanQuery("");
+    setError("");
+    loadPlans("");
+  }, [ticket.id]);
+
+  const changePlan = async (nextPath) => {
+    setSelectedPath(nextPath);
+    setPlanPickerOpen(false);
+    setPlanQuery("");
+    await loadPlans(nextPath);
+  };
+
+  const createPlan = async () => {
+    setBusy(true);
+    setError("");
+    try {
+      const data = await createTicketPlan(ticket.id);
+      if (data.state) onStateUpdate(data.state);
+      const nextPath = data.plan?.plan?.path || ".context/plan.md";
+      await loadPlans(nextPath);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (!selectedPlan && !error) return null;
+
+  return (
+    <section className="inline-plan-section">
+      <div className="inline-plan-header">
+        <div>
+          <h3><ClipboardList /> Plan</h3>
+          <p>{selectedPlan ? `${selectedPlan.path} · ${selectedPlan.format.toUpperCase()} · ${formatBytes(selectedPlan.bytes)} · ${openPlanCommentCount} open comment${openPlanCommentCount === 1 ? "" : "s"}` : error}</p>
+        </div>
+        <div className="inline-plan-actions">
+          {planFiles.length > 1 ? (
+            <div className="plan-picker">
+              <button type="button" className="quiet-button plan-picker-trigger" onClick={() => setPlanPickerOpen((open) => !open)}>
+                <FileText />
+                <span>{selectedPath || selectedPlan?.path || "Select plan"}</span>
+                <ChevronDown />
+              </button>
+              {planPickerOpen ? (
+                <div className="plan-picker-menu">
+                  <label className="plan-picker-search">
+                    <Search />
+                    <input value={planQuery} onChange={(event) => setPlanQuery(event.target.value)} placeholder="Search plan files" autoFocus />
+                  </label>
+                  <div className="plan-picker-list">
+                    {filteredPlanFiles.length ? filteredPlanFiles.map((file) => (
+                      <button
+                        type="button"
+                        key={file.path}
+                        className={file.path === selectedPath ? "active" : ""}
+                        onClick={() => changePlan(file.path)}
+                      >
+                        <span>{file.path}</span>
+                        <small>{file.format}</small>
+                      </button>
+                    )) : <p>No matching plans.</p>}
+                  </div>
                 </div>
               ) : null}
             </div>
-            {runningTicketRun ? (
-              <button className="quiet-button danger-button" onClick={() => onStopRun(ticket.id)}>Stop</button>
-            ) : null}
-            <button className="quiet-button danger-button icon-action" onClick={() => onDelete(ticket.id)} title="Delete ticket" aria-label="Delete ticket"><Trash2 /></button>
-            {ticket.prUrl ? (
-              <a className="icon-link" href={ticket.prUrl} title={ticket.prUrl} aria-label="Open pull request">
-                <GitPullRequest />
-              </a>
-            ) : null}
-          </div>
-          <div className="detail-kicker">
-            {setupScriptMessage ? <span className="setup-script-message">{setupScriptMessage}</span> : null}
-            <span className="status-refresh-group">
-              <span className={`status-chip state-${ticket.status}`}>{ticket.statusLabel}</span>
-              <button
-                type="button"
-                className="quiet-button icon-action status-refresh-button"
-                onClick={refreshStatus}
-                disabled={statusRefreshBusy}
-                title="Refresh ticket status"
-                aria-label="Refresh ticket status"
-              >
-                <RefreshCw />
-              </button>
-            </span>
-            <span className="reference-chip">{ticket.project?.name || "Unknown project"}</span>
-            <RunningElapsed run={runningTicketRun} />
-          </div>
-          <h2>{ticket.title}</h2>
-          <p>{ticket.id} · updated {timeAgo(ticket.updatedAt)}</p>
+          ) : null}
+          <button className="quiet-button" onClick={() => loadPlans()} disabled={busy}><RefreshCw /> Refresh</button>
+          {!selectedPlan ? <button className="quiet-button" onClick={createPlan} disabled={busy}><Plus /> Thomas plan</button> : null}
         </div>
-        <section className="detail-overview-always">
-          <section className="detail-section detail-description">
-            <h3>Description</h3>
-            <MarkdownText value={ticket.description || "No description yet."} className="detail-copy" />
-          </section>
+      </div>
+      {selectedPlan ? (
+        selectedPlan.format === "html" ? (
+          <iframe className="inline-plan-frame" sandbox="" srcDoc={planFrameSrcDoc(selectedPlan.content)} title={`Plan preview for ${ticket.id}`} />
+        ) : (
+          <MarkdownText value={selectedPlan.content} className="inline-plan-markdown" />
+        )
+      ) : null}
+    </section>
+  );
+}
 
-          <section className="handoff-card">
-            <div className="section-heading-row">
-              <h3><ClipboardList /> Continuation handoff</h3>
-              <span>{timeAgo(ticket.updatedAt)}</span>
-            </div>
-            <div className="handoff-copy">
-              {handoffLines.map((line) => <p key={line}>{line}</p>)}
-            </div>
-          </section>
+function TicketDiffPage({ ticket, onBack, onComment }) {
+  const [diff, setDiff] = useState(null);
+  const [diffError, setDiffError] = useState("");
+  const [diffBusy, setDiffBusy] = useState(false);
+  const [reviewTarget, setReviewTarget] = useState(null);
+  const [reviewComment, setReviewComment] = useState("");
+
+  const loadDiff = async () => {
+    setDiffBusy(true);
+    setDiffError("");
+    try {
+      setDiff(await fetchTicketDiff(ticket.id));
+    } catch (err) {
+      setDiffError(err.message);
+    } finally {
+      setDiffBusy(false);
+    }
+  };
+
+  useEffect(() => {
+    setDiff(null);
+    setReviewTarget(null);
+    setReviewComment("");
+    loadDiff();
+  }, [ticket.id]);
+
+  const submitReviewComment = async (event) => {
+    event.preventDefault();
+    if (!reviewTarget || !reviewComment.trim()) return;
+    await onComment(reviewComment, {
+      type: "diff_review",
+      filePath: reviewTarget.filePath,
+      line: reviewTarget.line,
+      side: reviewTarget.side,
+    });
+    setReviewComment("");
+    setReviewTarget(null);
+  };
+
+  return (
+    <section className="detail-page ticket-surface-page">
+      <div className="detail-shell ticket-surface-shell">
+        <div className="detail-heading">
+          <div className="detail-topline">
+            <button className="close-action" onClick={onBack}>Back to ticket</button>
+            <span className={`status-chip state-${ticket.status}`}>{ticket.statusLabel}</span>
+          </div>
+          <h2>{ticket.id} diff</h2>
+          <p>{ticket.title}</p>
+        </div>
+        <section className="detail-tab-panel diff-review-panel">
+          <div className="section-heading-row">
+            <h3><FileDiff /> Local diff</h3>
+            <button className="quiet-button" onClick={loadDiff} disabled={diffBusy}>{diffBusy ? "Loading" : "Refresh"}</button>
+          </div>
+          {diffError ? <div className="blank-row">{diffError}</div> : null}
+          {diff ? (
+            <DiffViewer
+              ticketId={ticket.id}
+              diff={diff}
+              reviewTarget={reviewTarget}
+              reviewComment={reviewComment}
+              onSelectTarget={setReviewTarget}
+              onCommentChange={setReviewComment}
+              onSubmit={submitReviewComment}
+            />
+          ) : <EmptyPanel message="Loading local diff." />}
         </section>
-        <div className="detail-tabs" role="tablist" aria-label="Ticket detail sections">
-          <button className={detailTab === "conversation" ? "active" : ""} onClick={() => setDetailTab("conversation")}>Conversation</button>
-          <button className={detailTab === "plan" ? "active" : ""} onClick={() => setDetailTab("plan")}>Plan</button>
-          {ticket.status === "human_review" ? <button className={detailTab === "review" ? "active" : ""} onClick={() => setDetailTab("review")}>Review diff</button> : null}
-          <button className={detailTab === "dependencies" ? "active" : ""} onClick={() => setDetailTab("dependencies")}>Dependencies</button>
-        </div>
-        <div className="detail-layout">
-          <div className="detail-primary">
-            {detailTab === "conversation" && (
-              <section className="detail-tab-panel conversation-tab-panel">
-                <ConversationTimeline comments={orderedComments} runs={ticketRuns} />
-                <form className="note-form note-form-primary" onSubmit={async (event) => {
-                  event.preventDefault();
-                  if (!comment.trim()) return;
-                  await onComment(comment);
-                  setComment("");
-                }}>
-                  <textarea value={comment} onChange={(event) => setComment(event.target.value)} placeholder="Add a comment or handoff note" />
-                  <button><MessageSquare /> Comment</button>
-                </form>
-              </section>
-            )}
-
-            {detailTab === "plan" && (
-              <PlanTab ticket={ticket} onStateUpdate={onStateUpdate} />
-            )}
-
-            {detailTab === "review" && (
-              <section className="detail-tab-panel diff-review-panel">
-                <div className="section-heading-row">
-                  <h3><FileDiff /> Review local diff</h3>
-                  <button className="quiet-button" onClick={loadDiff} disabled={diffBusy}>{diffBusy ? "Loading" : diff ? "Refresh" : "Load diff"}</button>
-                </div>
-                {diffError ? <div className="blank-row">{diffError}</div> : null}
-                {diff ? (
-                  <DiffViewer
-                    ticketId={ticket.id}
-                    diff={diff}
-                    reviewTarget={reviewTarget}
-                    reviewComment={reviewComment}
-                    onSelectTarget={setReviewTarget}
-                    onCommentChange={setReviewComment}
-                    onSubmit={submitReviewComment}
-                  />
-                ) : <EmptyPanel message="Load the current local diff when this ticket is ready for human review." />}
-              </section>
-            )}
-
-            {detailTab === "dependencies" && (
-              <section className="detail-tab-panel dependency-tab">
-                <section className="dependency-card">
-                  <h3>Blocked by</h3>
-                  <div className="dependency-editor">
-                    <input value={blockers} onChange={(event) => setBlockers(event.target.value)} placeholder="APP-1, APP-2" />
-                    <button onClick={() => onPatch(ticket.id, { blockedByTicketIds: blockers.split(",").map((item) => item.trim()).filter(Boolean) })}>Save</button>
-                  </div>
-                  {ticket.blockedBy.length ? ticket.blockedBy.map((item) => (
-                    <button className="mini-link" key={item.id} onClick={() => onOpenTicket(item.id)}>
-                      <StatusIcon status={item.status} />
-                      <span className="task-key">{item.id}</span>
-                      <span>{item.title}</span>
-                    </button>
-                  )) : <p className="subtle-copy">No blockers.</p>}
-                </section>
-
-                <section className="dependency-card">
-                  <h3>Blocking</h3>
-                  {ticket.blocks.length ? ticket.blocks.map((item) => (
-                    <button className="mini-link" key={item.id} onClick={() => onOpenTicket(item.id)}>
-                      <StatusIcon status={item.status} />
-                      <span className="task-key">{item.id}</span>
-                      <span>{item.title}</span>
-                    </button>
-                  )) : <p className="subtle-copy">Not blocking other tickets.</p>}
-                </section>
-
-                <section className="dependency-card">
-                  <h3>Sub-issues</h3>
-                  {ticket.children.length ? ticket.children.map((child) => (
-                    <button className="mini-link" key={child.id} onClick={() => onOpenTicket(child.id)}>
-                      <span className="task-key">{child.id}</span>
-                      <span>{child.title}</span>
-                    </button>
-                  )) : <p className="subtle-copy">No sub-issues.</p>}
-                  <button className="quiet-button inline-action" onClick={onCreateSubIssue}><Plus /> Add sub-issue</button>
-                </section>
-              </section>
-            )}
-          </div>
-
-          <aside className="property-panel">
-            <PropertyRow label="Status"><span className={`status-chip state-${ticket.status}`}>{ticket.statusLabel}</span></PropertyRow>
-            <PropertyRow label="Assignee">
-              <select value={ticket.assigneeAgentId || ""} onChange={(event) => onPatch(ticket.id, { assigneeAgentId: event.target.value || null })}>
-                <option value="">No assignee</option>
-                {state.agents.map((agent) => <option key={agent.id} value={agent.id}>{agent.name}</option>)}
-              </select>
-            </PropertyRow>
-            <PropertyRow label="Project">
-              {ticket.projectId && onOpenProject ? (
-                <button type="button" className="property-link link-button" onClick={() => onOpenProject(ticket.projectId)}>
-                  {ticket.project?.name || "Unknown"}
-                </button>
-              ) : <span>{ticket.project?.name || "Unknown"}</span>}
-            </PropertyRow>
-            <PropertyRow label="Parent"><span>{ticket.parentTicketId || "No parent"}</span></PropertyRow>
-            <PropertyRow label="PR">
-              {ticket.prUrl ? <a className="property-link property-link-compact" href={ticket.prUrl} title={ticket.prUrl}><GitPullRequest /> <span>Open</span></a> : <span>None</span>}
-            </PropertyRow>
-            <PropertyRow label="Updated"><span>{timeAgo(ticket.updatedAt)}</span></PropertyRow>
-
-            <section className="property-group">
-              <h3><Tag /> Labels</h3>
-              <div className="dependency-editor">
-                <input value={labels} onChange={(event) => setLabels(event.target.value)} placeholder="ui, api, review" />
-                <button onClick={() => onPatch(ticket.id, { labels: labels.split(",").map((item) => item.trim()).filter(Boolean) })}>Save</button>
-              </div>
-              {ticket.labels.length ? (
-                <div className="chip-list">
-                  {ticket.labels.map((label) => <span className="metadata-chip" key={label}>{label}</span>)}
-                </div>
-              ) : <p className="subtle-copy">No labels.</p>}
-            </section>
-
-          </aside>
-        </div>
       </div>
     </section>
   );
 }
 
-function buildHandoffLines(ticket, latestComment) {
-  const lines = [
-    `Current state: ${ticket.statusLabel.toLowerCase()} ticket assigned to ${ticket.assignee?.name || "no one"}.`,
-  ];
-  if (ticket.blockedBy.length) {
-    lines.push(`Blocked by: ${ticket.blockedBy.map((item) => item.id).join(", ")}.`);
-  } else if (ticket.status === "todo" && !ticket.assigneeAgentId) {
-    lines.push("Next action: triage and assign when an agent is ready to claim it.");
-  } else if (["human_review", "pr_review"].includes(ticket.status)) {
-    lines.push("Next action: review the latest agent output, then move the ticket forward or comment with corrections.");
-  } else if (ticket.status === "done") {
-    lines.push("Next action: no active handoff; keep this available as completed context.");
-  } else {
-    lines.push("Next action: continue from the latest workspace state and leave a comment with any handoff notes.");
-  }
-  if (latestComment) {
-    lines.push(`Latest note from ${displayCommentAuthor(latestComment.author)}: ${summarizeCommentForHandoff(latestComment.body)}`);
-  }
-  return lines;
+function TicketPlanPage({ ticket, onBack, onStateUpdate }) {
+  return (
+    <section className="detail-page ticket-surface-page">
+      <div className="detail-shell ticket-surface-shell">
+        <div className="detail-heading">
+          <div className="detail-topline">
+            <button className="close-action" onClick={onBack}>Back to ticket</button>
+            <span className={`status-chip state-${ticket.status}`}>{ticket.statusLabel}</span>
+          </div>
+          <h2>{ticket.id} plan</h2>
+          <p>{ticket.title}</p>
+        </div>
+        <PlanTab ticket={ticket} onStateUpdate={onStateUpdate} />
+      </div>
+    </section>
+  );
+}
+
+function planFrameSrcDoc(content) {
+  const wrapStyles = `
+    <style>
+      html, body { max-width: 100%; overflow-x: hidden; box-sizing: border-box; }
+      *, *::before, *::after { box-sizing: inherit; max-width: 100%; }
+      body { margin: 0; padding: 16px; overflow-wrap: anywhere; word-break: break-word; }
+      pre, code { white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; }
+      table { display: block; width: 100%; overflow-x: hidden; table-layout: fixed; }
+      img, svg, canvas, video { height: auto; }
+    </style>
+  `;
+  const html = String(content || "");
+  if (/<head[\s>]/i.test(html)) return html.replace(/<head([^>]*)>/i, `<head$1>${wrapStyles}`);
+  if (/<html[\s>]/i.test(html)) return html.replace(/<html([^>]*)>/i, `<html$1><head>${wrapStyles}</head>`);
+  return `<!doctype html><html><head>${wrapStyles}</head><body>${html}</body></html>`;
 }
 
 function displayCommentAuthor(author) {
@@ -2277,19 +2763,20 @@ function commentAuthorClass(author) {
   return displayCommentAuthor(author).toLowerCase();
 }
 
-function summarizeCommentForHandoff(body) {
-  const text = String(body || "");
-  if (text.includes('"type":"stream_event"') || text.includes('"session_id"') || text.includes("parent_tool_use_id")) {
-    return "Agent transcript captured; review the comments below for the full handoff context.";
-  }
-  return truncateText(text, 180);
-}
-
-function PropertyRow({ label, children }) {
+function QueuedFollowupsList({ followups, onRemove }) {
+  if (!followups.length) return null;
   return (
-    <div className="property-row">
-      <span>{label}</span>
-      <div>{children}</div>
+    <div className="queued-followups">
+      <div className="queued-followups-title">Queued for agent</div>
+      {followups.map((followup, index) => (
+        <div key={followup.id} className="queued-followup-item">
+          <div>
+            <span>#{index + 1}</span>
+            <p>{followup.body}</p>
+          </div>
+          <button type="button" className="quiet-button icon-action" onClick={() => onRemove(followup.id)} aria-label={`Remove queued follow-up ${index + 1}`} title="Remove queued follow-up"><X /></button>
+        </div>
+      ))}
     </div>
   );
 }
@@ -2428,7 +2915,7 @@ function LiveActivity({ run }) {
     <section className="live-activity">
       <div className="section-heading-row">
         <h3><CircleDot /> Agent activity</h3>
-        <span className={`status-chip state-${run.status === "running" ? "in_progress" : run.status === "failed" || run.status === "interrupted" ? "blocked" : "human_review"}`}>{run.status}</span>
+        <span className={`status-chip state-${run.status === "running" ? "in_progress" : run.status === "failed" || run.status === "interrupted" ? "blocked" : "human_review"}`}>{statusDisplayLabel(run.status)}</span>
       </div>
       <div className="live-run-meta">
         <span>{run.agentName}</span>
@@ -2688,7 +3175,9 @@ function displayLiveEventKind(kind) {
 function DiffViewer({ ticketId, diff, reviewTarget, reviewComment, onSelectTarget, onCommentChange, onSubmit }) {
   const [openError, setOpenError] = useState("");
   const [treeQuery, setTreeQuery] = useState("");
+  const [treeCollapsed, setTreeCollapsed] = useState(false);
   const [expandedTree, setExpandedTree] = useState(() => new Set());
+  const [expandedContext, setExpandedContext] = useState(() => new Set());
   const filteredTreeRows = useMemo(() => {
     return buildTreeRows(diff.tree?.files || [], diff.tree?.dirs || [], expandedTree, treeQuery).slice(0, 900);
   }, [diff.tree, expandedTree, treeQuery]);
@@ -2707,6 +3196,18 @@ function DiffViewer({ ticketId, diff, reviewTarget, reviewComment, onSelectTarge
     });
   };
 
+  const toggleContext = (groupKey) => {
+    setExpandedContext((current) => {
+      const next = new Set(current);
+      if (next.has(groupKey)) {
+        next.delete(groupKey);
+      } else {
+        next.add(groupKey);
+      }
+      return next;
+    });
+  };
+
   const openFile = async (filePath) => {
     setOpenError("");
     try {
@@ -2716,14 +3217,43 @@ function DiffViewer({ ticketId, diff, reviewTarget, reviewComment, onSelectTarge
     }
   };
 
+  const renderDiffLine = (filePath, hunk, line, index) => {
+    const lineNumber = line.newLine || line.oldLine;
+    const side = line.type === "remove" ? "old" : "new";
+    const selected = reviewTarget?.filePath === filePath && reviewTarget?.line === lineNumber && reviewTarget?.side === side;
+    return (
+      <div className={`diff-line diff-${line.type}${selected ? " selected" : ""}`} key={`${hunk.header}-${index}`}>
+        <button
+          className="diff-comment-target"
+          onClick={() => onSelectTarget({ filePath, line: lineNumber, side })}
+          title="Comment on this line"
+        >
+          +
+        </button>
+        <code>{line.oldLine || ""}</code>
+        <code>{line.newLine || ""}</code>
+        <pre>{line.content || " "}</pre>
+      </div>
+    );
+  };
+
   return (
-    <div className="diff-review-layout">
+    <div className={`diff-review-layout${treeCollapsed ? " tree-collapsed" : ""}`}>
       <aside className="project-tree-panel">
+        {treeCollapsed ? (
+          <button className="quiet-button project-tree-toggle project-tree-toggle-collapsed" onClick={() => setTreeCollapsed(false)} title="Show file tree" aria-label="Show file tree">
+            <Columns3 />
+          </button>
+        ) : (
+          <>
         <div className="project-tree-header">
           <div>
             <strong>{diff.tree?.rootName || "Project"}</strong>
             <span>{visibleFileCount} shown · {treeFileCount} file{treeFileCount === 1 ? "" : "s"}</span>
           </div>
+          <button className="quiet-button project-tree-toggle" onClick={() => setTreeCollapsed(true)} title="Hide file tree" aria-label="Hide file tree">
+            <Columns3 />
+          </button>
           {diff.tree?.truncated ? <span className="tree-badge">truncated</span> : null}
         </div>
         <label className="tree-filter">
@@ -2747,6 +3277,8 @@ function DiffViewer({ ticketId, diff, reviewTarget, reviewComment, onSelectTarge
             </button>
           )) : <EmptyPanel message={treeFileCount ? "No matching files." : "No project files found."} />}
         </div>
+          </>
+        )}
       </aside>
 
       <div className="diff-viewer">
@@ -2759,30 +3291,31 @@ function DiffViewer({ ticketId, diff, reviewTarget, reviewComment, onSelectTarge
                 <strong>{filePath}</strong>
                 <button className="quiet-button diff-open-file" onClick={() => openFile(filePath)}>Open</button>
               </div>
-              {file.hunks.map((hunk) => (
-                <div className="diff-hunk" key={`${filePath}-${hunk.header}`}>
-                  <div className="diff-hunk-header">{hunk.header}</div>
-                  {hunk.lines.map((line, index) => {
-                    const lineNumber = line.newLine || line.oldLine;
-                    const side = line.type === "remove" ? "old" : "new";
-                    const selected = reviewTarget?.filePath === filePath && reviewTarget?.line === lineNumber && reviewTarget?.side === side;
-                    return (
-                      <div className={`diff-line diff-${line.type}${selected ? " selected" : ""}`} key={`${hunk.header}-${index}`}>
-                        <button
-                          className="diff-comment-target"
-                          onClick={() => onSelectTarget({ filePath, line: lineNumber, side })}
-                          title="Comment on this line"
-                        >
-                          +
-                        </button>
-                        <code>{line.oldLine || ""}</code>
-                        <code>{line.newLine || ""}</code>
-                        <pre>{line.content || " "}</pre>
-                      </div>
-                    );
-                  })}
-                </div>
-              ))}
+              {file.hunks.map((hunk) => {
+                const lineBlocks = buildDiffLineBlocks(hunk.lines);
+                return (
+                  <div className="diff-hunk" key={`${filePath}-${hunk.header}`}>
+                    <div className="diff-hunk-header">{hunk.header}</div>
+                    {lineBlocks.map((block) => {
+                      const groupKey = `${filePath}:${hunk.header}:${block.startIndex}:${block.lines.length}`;
+                      if (block.type !== "context") {
+                        return block.lines.map((line, offset) => renderDiffLine(filePath, hunk, line, block.startIndex + offset));
+                      }
+                      const expanded = expandedContext.has(groupKey);
+                      return (
+                        <div className={`diff-context-group${expanded ? " expanded" : ""}`} key={groupKey}>
+                          <button className="diff-context-toggle" onClick={() => toggleContext(groupKey)} aria-expanded={expanded}>
+                            <ChevronDown />
+                            <span>{block.lines.length} unchanged line{block.lines.length === 1 ? "" : "s"}</span>
+                            <strong>{expanded ? "Collapse" : "Expand"}</strong>
+                          </button>
+                          {expanded ? block.lines.map((line, offset) => renderDiffLine(filePath, hunk, line, block.startIndex + offset)) : null}
+                        </div>
+                      );
+                    })}
+                  </div>
+                );
+              })}
             </section>
           );
         }) : <EmptyPanel message="No local changes found in this project." />}
@@ -2796,6 +3329,20 @@ function DiffViewer({ ticketId, diff, reviewTarget, reviewComment, onSelectTarge
       </div>
     </div>
   );
+}
+
+function buildDiffLineBlocks(lines) {
+  const blocks = [];
+  let active = null;
+  for (const [index, line] of (lines || []).entries()) {
+    const type = line.type === "context" ? "context" : "change";
+    if (!active || active.type !== type) {
+      active = { type, startIndex: index, lines: [] };
+      blocks.push(active);
+    }
+    active.lines.push(line);
+  }
+  return blocks;
 }
 
 function buildTreeRows(files, dirs, expandedDirs, queryValue = "") {
@@ -3046,6 +3593,10 @@ function titleCase(value) {
   return String(value || "")
     .replaceAll("_", " ")
     .replace(/\b\w/g, (match) => match.toUpperCase());
+}
+
+function statusDisplayLabel(value) {
+  return titleCase(value).replace(/\bPr\b/g, "PR");
 }
 
 createRoot(document.getElementById("root")).render(<App />);

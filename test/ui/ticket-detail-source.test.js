@@ -9,13 +9,14 @@ const repoRoot = path.resolve(__dirname, "../..");
 const mainSource = () => fs.readFileSync(path.join(repoRoot, "ui/src/main.jsx"), "utf8");
 const cssSource = () => fs.readFileSync(path.join(repoRoot, "ui/src/styles.css"), "utf8");
 
-test("ticket details merge live run activity into the conversation tab", () => {
+test("ticket details merge live run activity into the persistent conversation rail", () => {
   const source = mainSource();
   assert.doesNotMatch(source, /onClick=\{\(\) => setDetailTab\("activity"\)\}>Activity<\/button>/);
   assert.doesNotMatch(source, /detailTab === "activity" &&/);
+  assert.doesNotMatch(source, /detailTab === "conversation"/);
   assert.match(source, /const ticketRuns = \(state\.runs \|\| \[\]\)[\s\S]*\.filter\(\(run\) => run\.ticketId === ticket\.id/);
-  assert.match(source, /detailTab === "conversation"[\s\S]*<ConversationTimeline comments=\{orderedComments\} runs=\{ticketRuns\}/);
-  assert.doesNotMatch(source, /detailTab === "conversation"[\s\S]*<LiveActivity run=\{ticketRun\}/);
+  assert.match(source, /<aside className="conversation-rail">[\s\S]*<ConversationTimeline comments=\{orderedComments\} runs=\{ticketRuns\}/);
+  assert.doesNotMatch(source, /<LiveActivity run=\{ticketRun\}/);
 });
 
 test("ticket details expose manual setup script action for the ticket worktree", () => {
@@ -33,6 +34,50 @@ test("ticket details expose manual setup script action for the ticket worktree",
   assert.match(workspace, /function runTicketSetupScript\(ticket, options = \{\}\)/);
   assert.match(workspace, /ensureTicketWorkspace\(ticket, \{ \.\.\.options, runSetup: false \}\)/);
   assert.match(workspace, /cwd:\s*workspace\.path/);
+});
+
+test("ticket details support You as a manual assignee", () => {
+  const source = mainSource();
+  const css = cssSource();
+  assert.match(source, /const SELF_ASSIGNEE_ID = "you"/);
+  assert.match(source, /<option value=\{SELF_ASSIGNEE_ID\}>You<\/option>/);
+  assert.match(source, /const isSelfAssigned = ticket\.assigneeAgentId === SELF_ASSIGNEE_ID/);
+  assert.match(source, /isSelfAssigned \? \(/);
+  assert.match(source, /<select value=\{ticket\.status\} onChange=\{updateStatus\} aria-label="Ticket status">/);
+  assert.match(source, /<select value=\{ticket\.assigneeAgentId \|\| ""\} onChange=\{updateAssignee\} aria-label="Ticket assignee">/);
+  assert.match(source, /label="Assignees"/);
+  assert.match(css, /\.ticket-meta-select select,[\s\S]*\.status-chip-select select/);
+});
+
+test("ticket details show a live elapsed timer while the ticket run is in progress", () => {
+  const source = mainSource();
+  assert.match(source, /function TicketHeaderProperties\(\{ state, ticket,/);
+  assert.match(source, /const runningTicketRun = state\.runs\?\.find\(\(run\) => run\.ticketId === ticket\.id && run\.status === "running"\) \|\| null/);
+  assert.match(source, /\{runningTicketRun \? <RunningElapsed run=\{runningTicketRun\} \/> : null\}/);
+});
+
+test("sub-issue section stays compact and lets child issue titles wrap", () => {
+  const css = cssSource();
+  assert.match(css, /\.ticket-workspace-main[\s\S]*align-content:\s*start/);
+  assert.match(css, /\.sub-issues-section[\s\S]*align-self:\s*start/);
+  assert.match(css, /\.sub-issue-list[\s\S]*align-items:\s*start/);
+  assert.match(css, /\.sub-issue-row,[\s\S]*width:\s*fit-content/);
+  assert.match(css, /\.sub-issue-row span:last-child[\s\S]*white-space:\s*normal/);
+  assert.match(css, /\.sub-issue-row span:last-child[\s\S]*overflow-wrap:\s*anywhere/);
+});
+
+test("conversation rail shows queued follow-ups with removable cross controls", () => {
+  const source = mainSource();
+  const css = cssSource();
+  const api = fs.readFileSync(path.join(repoRoot, "ui/src/lib/api.js"), "utf8");
+  assert.match(api, /export async function removeQueuedFollowup\(ticketId, followupId\)/);
+  assert.match(source, /onRemoveQueuedFollowup/);
+  assert.match(source, /const queuedFollowups = ticket\.queuedFollowups \|\| \[\]/);
+  assert.match(source, /<QueuedFollowupsList followups=\{queuedFollowups\} onRemove=\{\(followupId\) => onRemoveQueuedFollowup\(ticket\.id, followupId\)\} \/>/);
+  assert.match(source, /function QueuedFollowupsList\(\{ followups, onRemove \}\)/);
+  assert.match(source, /aria-label=\{`Remove queued follow-up/);
+  assert.match(css, /\.queued-followups[\s\S]*display:\s*grid/);
+  assert.match(css, /\.queued-followup-item[\s\S]*grid-template-columns:\s*minmax\(0, 1fr\) auto/);
 });
 
 test("conversation timeline sorts comments and live activity together by timestamp", () => {
@@ -67,6 +112,27 @@ test("conversation timeline is an internally scrolling frame that sticks to bott
   assert.match(source, /<div className="conversation-scroll" ref=\{frameRef\} onScroll=\{handleScroll\}>/);
   assert.match(css, /\.conversation-frame[\s\S]*overflow:\s*hidden/);
   assert.match(css, /\.conversation-scroll[\s\S]*overflow-y:\s*auto/);
+});
+
+test("diff viewer collapses unchanged context and can hide the file tree", () => {
+  const source = mainSource();
+  const css = cssSource();
+  assert.match(source, /const \[treeCollapsed, setTreeCollapsed\] = useState\(false\)/);
+  assert.match(source, /const \[expandedContext, setExpandedContext\] = useState\(\(\) => new Set\(\)\)/);
+  assert.match(source, /function buildDiffLineBlocks\(lines\)/);
+  assert.match(source, /line\.type === "context" \? "context" : "change"/);
+  assert.match(source, /className=\{`diff-review-layout\$\{treeCollapsed \? " tree-collapsed" : ""\}`\}/);
+  assert.match(source, /className="quiet-button project-tree-toggle project-tree-toggle-collapsed"/);
+  assert.match(source, /className=\{`diff-context-group\$\{expanded \? " expanded" : ""\}`\}/);
+  assert.match(source, /className="diff-context-toggle"/);
+  assert.match(source, /\{block\.lines\.length\} unchanged line/);
+  assert.match(css, /\.diff-review-layout\.tree-collapsed[\s\S]*grid-template-columns:\s*42px minmax\(0, 1fr\)/);
+  assert.match(css, /\.diff-context-toggle[\s\S]*grid-template-columns:\s*28px minmax\(0, 1fr\) auto/);
+  assert.match(css, /\.inline-diff-section[\s\S]*max-height:\s*min\(46vh, 560px\)/);
+  assert.match(css, /\.inline-diff-section \.diff-viewer[\s\S]*overflow-y:\s*auto/);
+  assert.match(css, /\.diff-file[\s\S]*overflow-x:\s*auto/);
+  assert.match(css, /\.diff-line[\s\S]*grid-template-columns:\s*28px 44px 44px max-content/);
+  assert.match(css, /\.diff-line pre[\s\S]*overflow:\s*visible/);
 });
 
 test("agent runner skips exact consecutive duplicate run events", () => {
